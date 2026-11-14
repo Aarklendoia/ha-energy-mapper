@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+/frontend/dist/
+# local data extracts: never commit real household consumption data
+/data/
+*.csv
