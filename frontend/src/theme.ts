@@ -39,6 +39,25 @@ export const BASE_INDEX = 8; // grey
 export const SUBMETERED_INDEX = 0; // blue
 export const ESTIMATED_INDEX = 6; // light blue
 const GREYS = [8, 18, 28, 29];
+/** Palette indexes of the named / still to name categories of the split bar (#48). */
+export const NAMED_INDEX = 1; // yellow
+export const TO_NAME_INDEX = 25; // purple
+
+const SPLIT_INDEXES: Record<string, number> = {
+  base: BASE_INDEX,
+  measured: SUBMETERED_INDEX,
+  estimated: ESTIMATED_INDEX,
+  named: NAMED_INDEX,
+  to_name: TO_NAME_INDEX,
+};
+
+/** CSS colour of a category of the split bar: the same as its chart series
+ * for the fixed ones, the disabled colour for the unexplained rest. */
+export function splitColor(key: string): string {
+  const i = SPLIT_INDEXES[key];
+  if (i === undefined) return "var(--disabled-color, #bdbdbd)";
+  return `var(--graph-color-${i + 1}, ${HA_PALETTE[i]})`;
+}
 
 /** Palette indexes given to the appliances: all but the fixed series and the greys. */
 export const SERIES_INDEXES = HA_PALETTE.map((_, i) => i).filter(

@@ -17,6 +17,10 @@ import "./chart.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
   assignColors,
+  categorySeries,
+  maxPowerTime,
+  type SplitKey,
+  splitParts,
   dayEntries,
   type DayEntry,
   dayPresets,
@@ -70,7 +74,15 @@ import {
 } from "./review.ts";
 import { panelStyles } from "./styles.ts";
 import { availableTabs, searchWithTab, shownTab, type Tab, tabForKey, tabFromSearch, toReviewCount } from "./tabs.ts";
-import { BASE_INDEX, chartTheme, type ChartTheme, ESTIMATED_INDEX, SERIES_INDEXES, SUBMETERED_INDEX } from "./theme.ts";
+import {
+  BASE_INDEX,
+  chartTheme,
+  type ChartTheme,
+  ESTIMATED_INDEX,
+  SERIES_INDEXES,
+  splitColor,
+  SUBMETERED_INDEX,
+} from "./theme.ts";
 import type {
   Days,
   Finding,
@@ -121,6 +133,7 @@ export class EnergyMapperPanel extends LitElement {
     _reviewError: { state: true },
     _showIgnored: { state: true },
     _tab: { state: true },
+    _category: { state: true },
   };
 
   static override styles = panelStyles;
@@ -153,12 +166,15 @@ export class EnergyMapperPanel extends LitElement {
   declare _showIgnored: boolean;
   /** the tab asked for (URL ``?tab=``); the one shown may differ (#47) */
   declare _tab: Tab;
+  /** the category of the split bar selected on the Today tab (#48), null: all */
+  declare _category: SplitKey | null;
 
   private started = false;
   private requestId = 0;
   private infoCache: { key: string; info: LocaleInfo } | null = null;
   private modelCache: { report: Report; registry: Registry | null; key: string; model: ChartModel } | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private highlightCache: { key: string; ids: string[] | null } | null = null;
 
   constructor() {
     super();
@@ -184,6 +200,7 @@ export class EnergyMapperPanel extends LitElement {
     this._reviewError = null;
     this._showIgnored = false;
     this._tab = tabFromSearch(location.search);
+    this._category = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -837,52 +854,134 @@ export class EnergyMapperPanel extends LitElement {
   private renderReport(report: Report, t: Translate): TemplateResult {
     const model = this._themeKey ? this.chartModel(report) : null;
     return html`
-      ${this.renderFindings(report.findings ?? [], t)} ${this.renderSummary(report, model, t)}
-      ${this.renderChart(report, model, t)}
+      ${this.renderSummary(report, t)} ${this.renderChart(report, model, t)}
       <div class="columns">${this.renderPeaks(report, model, t)} ${this.renderSwitchedLoads(t)}</div>
-      ${this.renderQuality(report, t)}
+      ${this.renderFindings(report.findings ?? [], t)} ${this.renderQuality(report, t)}
     `;
   }
 
   private renderFindings(findings: Finding[], t: Translate): TemplateResult | typeof nothing {
     if (!findings.length) return nothing;
-    return html`<div class="findings">
-      ${findings.map((f) => {
-        const key = `finding_${f.kind}` as StringKey;
-        const title = t(key) === key ? t("finding_other") : t(key);
-        const text = [f.detail, f.entity_id && !f.detail.includes(f.entity_id) ? `(${f.entity_id})` : ""]
-          .filter(Boolean)
-          .join(" ");
-        return this.alert("warning", text, title);
-      })}
-    </div>`;
+    const n = findings.length;
+    return html`<details class="card findings">
+      <summary>${n === 1 ? t("findings_count_one") : t("findings_count", { count: formatNumber(n, this.info) })}</summary>
+      <ul>
+        ${findings.map((f) => {
+          const key = `finding_${f.kind}` as StringKey;
+          const title = t(key) === key ? t("finding_other") : t(key);
+          const text = [f.detail, f.entity_id && !f.detail.includes(f.entity_id) ? `(${f.entity_id})` : ""]
+            .filter(Boolean)
+            .join(" ");
+          return html`<li><strong>${title}</strong> ${text}</li>`;
+        })}
+      </ul>
+    </details>`;
   }
 
-  private renderSummary(report: Report, model: ChartModel | null, t: Translate): TemplateResult {
+  /** The category of the split bar selected on the Today tab, for the
+   * timeline to highlight (#49); null when none is. */
+  get selectedCategory(): SplitKey | null {
+    return this._category;
+  }
+
+  private selectCategory(key: SplitKey): void {
+    this._category = this._category === key ? null : key;
+  }
+
+  /** Ids of the chart series of the selected category (same array while unchanged). */
+  private highlight(model: ChartModel | null): string[] | null {
+    if (!model || !this._category) return null;
+    const ids = categorySeries(model.stack, this._category, this._registry);
+    const key = JSON.stringify([this._category, ids]);
+    if (this.highlightCache?.key !== key) this.highlightCache = { key, ids };
+    return this.highlightCache.ids;
+  }
+
+  private splitLabel(key: SplitKey, t: Translate): string {
+    switch (key) {
+      case "measured":
+        return t("submetered");
+      case "named":
+        return t("split_named");
+      case "to_name":
+        return t("split_to_name");
+      default:
+        return t(key);
+    }
+  }
+
+  private renderSummary(report: Report, t: Translate): TemplateResult {
     const s = summary(report);
     const info = this.info;
-    const share = (v: number) => (s.house > 0 ? t("of_house", { share: formatPercent(v / s.house, info) }) : "");
-    const color = (id: string) => model?.colors.get(id);
-    const tile = (label: string, value: number, sub: string, dot?: string, main = false) =>
-      html`<div class="card tile ${main ? "main" : ""}">
-        <div class="label">${dot ? html`<span class="dot" style="background:${dot}"></span>` : nothing}${label}</div>
-        <div class="value">${formatEnergy(value, info)}</div>
-        <div class="sub">${sub}</div>
-      </div>`;
-    const firstKnown = model?.stack.find((x) => x.kind === "known")?.id;
-    const firstSig = model?.stack.find((x) => x.kind === "signature")?.id;
-    return html`<div class="tiles">
-      ${tile(t("house"), s.house, report.max_house_w != null ? t("max_power", { power: formatPower(report.max_house_w, info) }) : "", undefined, true)}
-      ${tile(t("grid_import"), s.grid_import, share(s.grid_import))}
-      ${s.has_pv ? tile(t("grid_export"), s.grid_export, "") : nothing}
-      ${s.has_pv ? tile(t("pv"), s.pv, "", model?.theme.pv) : nothing}
-      ${tile(t("base"), s.base, s.base_w != null ? t("always_on", { power: formatPower(s.base_w, info) }) : share(s.base), color("base"))}
-      ${s.submetered > 0 ? tile(t("submetered"), s.submetered, share(s.submetered), color("submetered")) : nothing}
-      ${s.estimated > 0 ? tile(t("estimated"), s.estimated, share(s.estimated), color("estimated")) : nothing}
-      ${tile(t("known"), s.known, share(s.known), firstKnown ? color(firstKnown) : undefined)}
-      ${tile(t("signatures"), s.signatures, share(s.signatures), firstSig ? color(firstSig) : undefined)}
-      ${tile(t("other"), s.other, share(s.other), color("other"))}
-    </div>`;
+    const parts = splitParts(report, this._registry);
+    const selected = this._category;
+    const at = maxPowerTime(report);
+    const strong = (text: string) => html`<strong>${text}</strong>`;
+    // "Highest 3.8 kW at 19:12": the values in bold, the rest muted
+    const fact = (template: string, values: Record<string, string>) =>
+      template.split(/(\{\w+\})/).map((piece) => {
+        const m = /^\{(\w+)\}$/.exec(piece);
+        return m && values[m[1]] != null ? strong(values[m[1]]) : piece;
+      });
+    const exported = s.grid_export >= 0.05;
+    return html`<section class="card summary" aria-labelledby="summary-title">
+      <div class="summary-head">
+        <div>
+          <h2 id="summary-title" class="summary-label">${t("house")}</h2>
+          <div class="summary-value">${formatEnergy(s.house, info)}</div>
+        </div>
+        <div class="summary-facts">
+          ${report.max_house_w != null
+            ? html`<span
+                >${at != null
+                  ? fact(t("peak_at"), { power: formatPower(report.max_house_w, info), time: formatTime(at, info) })
+                  : fact(t("max_power"), { power: formatPower(report.max_house_w, info) })}</span
+              >`
+            : nothing}
+          <span>${fact(t("grid_line"), { energy: formatEnergy(s.grid_import, info) })}</span>
+          ${s.has_pv
+            ? html`<span
+                ><span class="dot" style="background:var(--energy-solar-color, #ff9800)"></span>${exported
+                  ? fact(t("pv_line_export"), { energy: formatEnergy(s.pv, info), export: formatEnergy(s.grid_export, info) })
+                  : fact(t("pv_line"), { energy: formatEnergy(s.pv, info) })}</span
+              >`
+            : nothing}
+        </div>
+      </div>
+      ${parts.length
+        ? html`<div class="split-bar ${selected ? "has-selection" : ""}" role="img" aria-label=${t("split_title")}>
+              ${parts.map(
+                (p) =>
+                  html`<div
+                    class="segment ${selected === p.key ? "selected" : ""}"
+                    style="flex:${p.energy_kwh} 0 0;background:${splitColor(p.key)}"
+                    title=${this.splitLabel(p.key, t)}
+                    @click=${() => this.selectCategory(p.key)}
+                  ></div>`,
+              )}
+            </div>
+            <ul class="split-legend" aria-label=${t("split_hint")}>
+              ${parts.map(
+                (p) =>
+                  html`<li>
+                    <button
+                      class="legend-item ${selected === p.key ? "selected" : ""}"
+                      title=${p.key === "base" && s.base_w != null ? t("always_on", { power: formatPower(s.base_w, info) }) : ""}
+                      aria-pressed=${selected === p.key ? "true" : "false"}
+                      @click=${() => this.selectCategory(p.key)}
+                    >
+                      <span class="dot" style="background:${splitColor(p.key)}"></span>
+                      <span class="legend-name">${this.splitLabel(p.key, t)}</span>
+                      <span class="legend-values"
+                        ><strong>${formatEnergy(p.energy_kwh, info)}</strong>
+                        <span class="legend-share">${formatPercent(p.share, info)}</span></span
+                      >
+                    </button>
+                  </li>`,
+              )}
+            </ul>`
+        : nothing}
+    </section>`;
   }
 
   private chartElement(): EnergyMapperChart | null {
@@ -899,7 +998,11 @@ export class EnergyMapperPanel extends LitElement {
       </div>
       <div class="card-content">
         ${hasCurve
-          ? html`<energy-mapper-chart .model=${model} .narrow=${this.narrow}></energy-mapper-chart>`
+          ? html`<energy-mapper-chart
+              .model=${model}
+              .highlight=${this.highlight(model)}
+              .narrow=${this.narrow}
+            ></energy-mapper-chart>`
           : html`<div class="message">${report.curve_pruned ? t("curve_pruned") : t("no_curve")}</div>`}
       </div>
     </div>`;

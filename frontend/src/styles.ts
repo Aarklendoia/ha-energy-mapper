@@ -349,39 +349,130 @@ export const panelStyles = css`
     font-size: var(--ha-font-size-xl, 20px);
   }
 
-  /* summary tiles */
-  .tiles {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: var(--ha-space-2, 8px);
-  }
-  .narrow .tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .tile {
-    padding: 12px 16px;
+  /* summary card and split bar (#48) */
+  .summary {
+    padding: 16px 20px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 16px;
   }
-  .tile .label {
+  .summary-head {
     display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 32px;
+  }
+  .summary-label {
+    margin: 0;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-m, 14px);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .summary-value {
+    font-size: var(--ha-font-size-4xl, 36px);
+    line-height: 1.2;
+  }
+  .summary-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 24px;
+    color: var(--secondary-text-color);
+  }
+  .summary-facts strong,
+  .split-legend strong {
+    color: var(--primary-text-color);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .summary-facts .dot {
+    margin-inline-end: 6px;
+    vertical-align: baseline;
+  }
+  .split-bar {
+    display: flex;
+    height: 28px;
+    border-radius: 6px;
+    overflow: hidden;
+    gap: 1px;
+  }
+  .split-bar .segment {
+    min-width: 2px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .split-bar.has-selection .segment:not(.selected) {
+    opacity: 0.3;
+  }
+  .split-legend {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: var(--ha-font-size-s, 13px);
+  }
+  .legend-item {
+    display: inline-flex;
     align-items: center;
     gap: 6px;
+    padding: 4px 8px;
+    margin: 0 -8px 0 0;
+    border: 1px solid transparent;
+    border-radius: var(--ha-border-radius-pill, 9999px);
+    background: none;
+    color: var(--primary-text-color);
+    font: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+  .legend-item:hover {
+    background: var(--secondary-background-color, rgba(127, 127, 127, 0.1));
+  }
+  .legend-item:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+  }
+  .legend-item.selected {
+    border-color: var(--primary-color);
+  }
+  .legend-values {
+    white-space: nowrap;
+  }
+  .legend-share {
     color: var(--secondary-text-color);
+  }
+  .narrow .summary {
+    padding: 16px;
+    gap: 12px;
+  }
+  .narrow .summary-value {
+    font-size: var(--ha-font-size-3xl, 30px);
+  }
+  .narrow .split-bar {
+    height: 22px;
+  }
+  .narrow .split-legend {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 8px;
     font-size: var(--ha-font-size-s, 12px);
-    font-weight: var(--ha-font-weight-medium, 500);
   }
-  .tile .value {
-    font-size: var(--ha-font-size-xl, 20px);
-    font-weight: var(--ha-font-weight-medium, 500);
+  .narrow .legend-item {
+    width: 100%;
+    margin: 0;
+    padding: 4px 6px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: 6px;
+    border-radius: 8px;
   }
-  .tile .sub {
-    color: var(--secondary-text-color);
-    font-size: var(--ha-font-size-s, 12px);
+  .narrow .legend-values {
+    grid-column: 2;
   }
-  .tile.main .value {
-    color: var(--primary-color);
+  .narrow .legend-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .dot {
     width: 10px;
@@ -588,12 +679,6 @@ export const panelStyles = css`
     width: 72px;
     flex: none;
   }
-  .narrow .tile {
-    padding: 8px 12px;
-  }
-  .narrow .tile .value {
-    font-size: var(--ha-font-size-l, 16px);
-  }
   .more {
     display: flex;
     justify-content: center;
@@ -606,9 +691,29 @@ export const panelStyles = css`
     text-align: center;
   }
   .findings {
+    padding: 12px 20px;
+    border: 1px solid var(--warning-color, #ffa600);
+    background: rgba(var(--rgb-warning-color, 255, 166, 0), 0.1);
+  }
+  .findings summary {
+    cursor: pointer;
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .findings summary:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+  }
+  .findings ul {
+    margin: 8px 0 0;
+    padding-inline-start: 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
+    font-size: var(--ha-font-size-s, 13px);
+  }
+  .findings strong {
+    display: block;
+    font-weight: var(--ha-font-weight-medium, 500);
   }
 
   /* review of the signatures */
