@@ -175,6 +175,19 @@ legend, its tooltip, the peaks, the signature table and the review use it; the r
 stays as secondary text or tooltip, for debugging. Two alike names in the legend get a
 number ("(2)"), since the legend toggles series by name.
 
+**Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds three tabs
+in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow keys, Home
+and End move between them; on a `narrow` screen they share the width): **Today** (the day
+picker, findings, summary tiles, chart, peaks, switched loads and the quality line),
+**Appliances** (the signature registry and the switched loads; redone by #54) and **To
+review** (administrators whose add-on has a review; a badge counts the proposed signatures).
+The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
+pushed, like the day); `?review=1`, the link of the Repairs notice, opens *To review* and is
+replaced by `tab=review`. A non-administrator asking for `tab=review` gets *Today*. On
+*Today*, administrators see a banner "N appliances waiting for a name → Start reviewing"
+while signatures are proposed; it opens *To review*. An example of a signature in *To review*
+switches back to *Today*, on its day, zoomed on it.
+
 **Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
 toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the
 panel), the name column of the tables wraps and a table still too wide scrolls inside its
@@ -713,7 +726,7 @@ add-on knows the appliance before the decision names it.
 **Repairs: one notice only.** After each synchronisation (every 5 minutes) and after each
 decision, the integration reads `GET /api/review` and keeps a single non-fixable issue
 `signatures_to_review` (warning, "to review: N") whose description and *Learn more* link open
-the panel at `/energy-mapper?review=1`; the panel scrolls to its *To review* section. It is
+the panel at `/energy-mapper?review=1`; the panel opens its *To review* tab. It is
 deleted when nothing is proposed, when the option *Notify in Repairs* is off, or when the entry
 is removed. An add-on before 0.6.0 answers 404: no notice, no section.
 

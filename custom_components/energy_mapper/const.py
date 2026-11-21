@@ -16,7 +16,7 @@ OPT_SETTINGS: Final = "settings"
 OPT_REVIEW_REPAIR: Final = "review_repair"
 # the Repairs issue "signatures to review" (#10)
 ISSUE_REVIEW: Final = "signatures_to_review"
-# where the panel shows its "To review" section
+# opens the "To review" tab of the panel
 PANEL_REVIEW_PATH: Final = "/energy-mapper?review=1"
 
 DEFAULT_URL: Final = "http://local-energy-mapper:8099"

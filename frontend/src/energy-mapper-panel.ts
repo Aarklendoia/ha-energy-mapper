@@ -2,7 +2,14 @@
 // panel_custom). It runs inside the Home Assistant frontend: hass, narrow,
 // route and panel are set by it.
 
-import { mdiArrowExpandHorizontal, mdiChevronLeft, mdiChevronRight, mdiMenu, mdiRefresh } from "@mdi/js";
+import {
+  mdiArrowExpandHorizontal,
+  mdiChevronLeft,
+  mdiChevronRight,
+  mdiFormatListChecks,
+  mdiMenu,
+  mdiRefresh,
+} from "@mdi/js";
 import { html, LitElement, nothing, type PropertyValues, type TemplateResult } from "lit";
 import { html as staticHtml, unsafeStatic } from "lit/static-html.js";
 
@@ -51,7 +58,6 @@ import {
   exampleWindow,
   formatHours,
   formForSuggestion,
-  hasReview,
   initialForm,
   type LinkMode,
   linkDomains,
@@ -63,6 +69,7 @@ import {
   validateMessage,
 } from "./review.ts";
 import { panelStyles } from "./styles.ts";
+import { availableTabs, searchWithTab, shownTab, type Tab, tabForKey, tabFromSearch, toReviewCount } from "./tabs.ts";
 import { BASE_INDEX, chartTheme, type ChartTheme, ESTIMATED_INDEX, SERIES_INDEXES, SUBMETERED_INDEX } from "./theme.ts";
 import type {
   Days,
@@ -113,6 +120,7 @@ export class EnergyMapperPanel extends LitElement {
     _reviewBusy: { state: true },
     _reviewError: { state: true },
     _showIgnored: { state: true },
+    _tab: { state: true },
   };
 
   static override styles = panelStyles;
@@ -143,6 +151,8 @@ export class EnergyMapperPanel extends LitElement {
   declare _reviewBusy: string | null;
   declare _reviewError: string | null;
   declare _showIgnored: boolean;
+  /** the tab asked for (URL ``?tab=``); the one shown may differ (#47) */
+  declare _tab: Tab;
 
   private started = false;
   private requestId = 0;
@@ -173,6 +183,8 @@ export class EnergyMapperPanel extends LitElement {
     this._reviewBusy = null;
     this._reviewError = null;
     this._showIgnored = false;
+    this._tab = tabFromSearch(location.search);
+    if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
       if (!defined(tag)) customElements.whenDefined(tag).then(() => this.requestUpdate());
@@ -306,16 +318,48 @@ export class EnergyMapperPanel extends LitElement {
     } catch {
       this._review = null;
     }
-    if (this.reviewLinked && this._review) {
-      // opened from the Repairs notice: show the section
-      this.reviewLinked = false;
-      void this.updateComplete.then(() =>
-        this.renderRoot.querySelector("#review")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-      );
+  }
+
+  // -- tabs (#47) ------------------------------------------------------------
+  /** The tabs of this user; To review needs an add-on with a review (0.6.0+). */
+  private get tabs(): Tab[] {
+    return availableTabs(this.isAdmin, this._review !== null);
+  }
+
+  private get shownTab(): Tab {
+    return shownTab(this._tab, this.tabs);
+  }
+
+  private writeTab(tab: Tab): void {
+    try {
+      const url = new URL(location.href);
+      url.search = searchWithTab(url.search, tab);
+      history.replaceState(history.state, "", url);
+    } catch {
+      // not in a browser page that allows it
     }
   }
 
-  private reviewLinked = new URLSearchParams(location.search).has("review");
+  /** Show a tab; ``focus``: move the keyboard focus to it, ``toTop``: when
+   * scrolled down, show the new tab from its top. */
+  private async selectTab(tab: Tab, focus = false, toTop = true): Promise<void> {
+    const header = this.renderRoot.querySelector(".header");
+    const content = this.renderRoot.querySelector(".content");
+    const scrolled =
+      toTop && header && content && content.getBoundingClientRect().top < header.getBoundingClientRect().bottom - 1;
+    this._tab = tab;
+    this.writeTab(tab);
+    await this.updateComplete;
+    if (scrolled) this.renderRoot.firstElementChild?.scrollIntoView({ block: "start" });
+    if (focus) this.renderRoot.querySelector<HTMLElement>(`#tab-${tab}`)?.focus();
+  }
+
+  private tabKeydown = (ev: KeyboardEvent) => {
+    const next = tabForKey(this.tabs, this.shownTab, ev.key);
+    if (!next) return;
+    ev.preventDefault();
+    void this.selectTab(next, true);
+  };
 
   private async decide(sig: ReviewSignature, action: "wait" | "ignore" | "restore"): Promise<void> {
     this._reviewBusy = sig.id;
@@ -384,6 +428,7 @@ export class EnergyMapperPanel extends LitElement {
 
   /** Show one use of a signature on the chart: its day, zoomed on it. */
   private async showExample(example: SignatureExample): Promise<void> {
+    if (this.shownTab !== "today") await this.selectTab("today", false, false);
     if (example.day !== this._day) await this.selectDay(example.day);
     await this.updateComplete;
     const report = this._report;
@@ -576,10 +621,57 @@ export class EnergyMapperPanel extends LitElement {
             <div class="main-title">${t("title")}</div>
             ${this.iconButton(mdiRefresh, t("refresh"), () => void this.load(), this._loading || this._analyzing)}
           </div>
+          ${this.hasTabs ? this.renderTabs(t) : nothing}
         </div>
-        <div class="content">${this.renderContent(t)}</div>
+        ${this.hasTabs
+          ? html`<div class="content" role="tabpanel" id="tabpanel" aria-labelledby="tab-${this.shownTab}">
+              ${this.renderContent(t)}
+            </div>`
+          : html`<div class="content">${this.renderContent(t)}</div>`}
       </div>
     `;
+  }
+
+  /** The tabs are shown once the add-on answers. */
+  private get hasTabs(): boolean {
+    return Boolean(this._status?.configured && this._status.available);
+  }
+
+  private renderTabs(t: Translate): TemplateResult {
+    const shown = this.shownTab;
+    const count = toReviewCount(this._review);
+    const labels: Record<Tab, string> = { today: t("tab_today"), appliances: t("tab_appliances"), review: t("tab_review") };
+    return html`<div class="tabs" role="tablist" aria-label=${t("tabs")}>
+      ${this.tabs.map(
+        (tab) => html`<button
+          type="button"
+          role="tab"
+          class="tab"
+          id="tab-${tab}"
+          aria-selected=${tab === shown ? "true" : "false"}
+          aria-controls="tabpanel"
+          tabindex=${tab === shown ? "0" : "-1"}
+          @click=${() => void this.selectTab(tab)}
+          @keydown=${this.tabKeydown}
+        >
+          <span class="tab-label">${labels[tab]}</span>
+          ${tab === "review" && count > 0 ? html`<span class="tab-badge">${formatNumber(count, this.info)}</span>` : nothing}
+        </button>`,
+      )}
+    </div>`;
+  }
+
+  /** Admin banner of Today: the signatures waiting for a name (#47). */
+  private renderReviewBanner(t: Translate): TemplateResult | typeof nothing {
+    const count = toReviewCount(this._review);
+    if (!this.isAdmin || count === 0 || !this.tabs.includes("review")) return nothing;
+    return html`<button type="button" class="review-banner" @click=${() => void this.selectTab("review", true)}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d=${mdiFormatListChecks}></path></svg>
+      <span class="review-banner-text">
+        ${count === 1 ? t("review_banner_one") : t("review_banner", { count: formatNumber(count, this.info) })}
+      </span>
+      <span class="review-banner-action">${t("review_start")}</span>
+    </button>`;
   }
 
   private renderContent(t: Translate): TemplateResult {
@@ -592,18 +684,35 @@ export class EnergyMapperPanel extends LitElement {
       return this.alert("error", status.error ?? "", status.state === "loaded" || status.state === "setup_retry" ? t("unavailable") : t("not_loaded"));
     }
     const entries = dayEntries(this._days);
+    const tab = this.shownTab;
     return html`
-      ${this.renderDayBar(entries, t)}
+      ${tab === "today" ? this.renderDayBar(entries, t) : nothing}
       ${this._error ? this.alert("error", this._error, t("error")) : nothing}
       ${this._notice ? this.alert("success", this._notice) : nothing}
+      ${tab === "today" ? this.renderToday(entries, t) : tab === "appliances" ? this.renderAppliances(t) : this.renderReview(t)}
+    `;
+  }
+
+  /** Today: the selected day, for the whole household. */
+  private renderToday(entries: DayEntry[], t: Translate): TemplateResult {
+    return html`
+      ${this.renderReviewBanner(t)}
       ${entries.length === 0 ? this.renderNoReport(t) : nothing}
       ${entries.length > 0 && this._day && !entries.some((e) => e.day === this._day)
         ? this.renderNoReportDay(this._day, entries, t)
         : nothing}
-      ${this.renderReview(t)}
       ${this._report && this._report.day === this._day ? this.renderReport(this._report, t) : nothing}
-      ${this.renderRegistry(t)}
     `;
+  }
+
+  /** Appliances: the signatures and the switched loads (redone by #54). */
+  private renderAppliances(t: Translate): TemplateResult {
+    const registry = this.renderRegistry(t);
+    const loads = this.renderSwitchedLoads(t);
+    if (registry === nothing && loads === nothing) {
+      return html`<div class="card"><div class="message">${t("registry_none")}</div></div>`;
+    }
+    return html`${registry} ${loads}`;
   }
 
   private renderNoReport(t: Translate): TemplateResult {
@@ -1037,7 +1146,6 @@ export class EnergyMapperPanel extends LitElement {
     const listing = this._review;
     if (!listing || !this.isAdmin) return nothing;
     const groups = reviewGroups(listing);
-    if (!hasReview(groups) && !this._reviewError) return nothing;
     const info = this.info;
     const c = listing.criteria;
     return html`<div class="card review" id="review">
