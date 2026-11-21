@@ -178,7 +178,8 @@ number ("(2)"), since the legend toggles series by name.
 **Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds three tabs
 in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow keys, Home
 and End move between them; on a `narrow` screen they share the width): **Today** (the day
-picker, summary card, chart, what used energy, peaks, findings and the quality line),
+picker, summary card, the day card (timeline or stacked chart), what used energy, peaks,
+findings and the quality line),
 **Appliances** (the signature registry and the switched loads; redone by #54) and **To
 review** (administrators whose add-on has a review; a badge counts the proposed signatures).
 The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
@@ -200,11 +201,44 @@ Empty categories are left out; reports without `estimated` (add-on < 0.8.1) coun
 sub-metered energy as measured. Base load, measured and estimated have the colours of their
 chart series; named and still to name use graph colours 2 and 26. Selecting a legend item
 (a button, `aria-pressed`) or a segment selects that category, again to clear it: the
-selection is panel state (`selectedCategory`, for the timeline of #49) and the chart dims
-the other series. On a `narrow` screen the legend has two columns.
+selection is panel state (`selectedCategory`): the timeline highlights its rows and the
+chart dims the other series. On a `narrow` screen the legend has two columns.
+
+**The day, appliance by appliance** (`frontend/src/timeline.ts`, unit tested, #49). Under
+the summary, a full-width card whose default view is a **timeline**, drawn with plain
+markup and CSS (not ECharts): rows are real buttons (keyboard, focus ring, `aria-pressed`),
+names stay text that wraps or ellipsises with the HA font, the theme variables apply
+directly in light and dark, and the layout reflows on phones without recomputing a canvas.
+On top, a thin **house strip** on the same axis: the highest house power of each slice of
+the visible window (one slice per curve point, at most 144, `houseBuckets`), in SVG bars,
+with the notable peaks shaded in the error colour; its maximum at the row end. Then one row
+per appliance of the day (`timelineRows`): the rows of *What used energy*, same set, order,
+colours and names, without the base load and the unexplained rest (they run all day). Each
+row holds its running periods as blocks on the shared axis and its kWh at the end:
+signatures run in their `activations` (a cycling session is one striped block; the report
+has no individual cycles), or where the curve has their power when the report has no
+activations for them; switched loads and the measured/estimated sub-meters run where the
+per-minute curve has some of their power (`seriesPeriods`, the same periods the list counts;
+the add-on is not changed). `visibleBlocks` clips the periods to the window, merges those
+closer than about 2 px (1/600 of the window) and keeps a minimum width so a one-minute run
+stays visible. Unnamed signatures have dashed blocks and their provisional name in italics.
+A day whose curve is pruned still shows the signature rows (from the activations), without
+the strip. The axis (`axisTicks`) uses a round step from the start of the day (5 min to 12
+h) so that at most 9 labels fit (5 on `narrow`); the end of the day reads 24:00 in 24-hour
+locales. Under the strip, the **notable peaks** are chips (power, time of the maximum, the
+two largest parts): a chip, or a shaded peak on the strip, restricts the window to the peak
+± 30 min (`peakZoom`, the chart's peak zoom); the chip of the shown peak is pressed and a
+"Whole day" chip resets. Selecting a peak in *Peaks*, or an example in *To review*, zooms
+whichever view is shown. A row label or its track selects the appliance (`selectedAppliance`,
+as in the list); the selected appliance, or the rows of the selected category of the split
+bar (`selectedCategory`), are highlighted and the others dimmed (selecting the base load or
+the unexplained rest, which have no row, dims nothing). "Show all" in the card header clears
+the selection. A "Timeline" / "Stacked curve" toggle (chips, `aria-pressed`) switches to the
+stacked ECharts chart below, which keeps its own zoom; the timeline window resets with the
+day. On a `narrow` screen the name and the kWh go above the track, which takes the width.
 
 **What used energy** (`usageRows`, `usageDetail`, `seriesPeriods` in `frontend/src/data.ts`,
-unit tested, #50). Under the chart, on the left, one row per chart series with some energy,
+unit tested, #50). Under the day card, on the left, one row per chart series with some energy,
 by decreasing energy, the unexplained rest last: colour dot (the colour of the series), name,
 a short detail, a bar proportional to the largest row, and kWh. Base load ("221 W always
 on"), measured by plugs and sensors and estimated are one row each ("measured · 05:57 –
@@ -215,15 +249,15 @@ span ("1 run · 18:44 – 19:40", "in cycles · 06:31 – 07:26"; without `activ
 counts and the curve). A signature without a name (no label, not merged) is "to name": its
 provisional name in italics and a dashed dot. A row is a button (`aria-pressed`): it selects
 that appliance, again to clear it; the selection is panel state (`selectedAppliance`, the
-chart series id, for the timeline of #49), the chart dims the other series and "Show all"
-clears it. Selecting an appliance clears the category of the split bar and the other way
+chart series id), the timeline highlights its row and the chart dims the other series, and
+"Show all" clears it. Selecting an appliance clears the category of the split bar and the other way
 round; a selected category highlights its rows. For administrators with a review, an
 unnamed signature has a *Review* icon button: it opens *To review* scrolled to that signature
 and focuses it. On a `narrow` screen the bar goes under the name.
 
 On the right (stacked below on narrow widths), **Peaks**, compact: per peak, the power, the
 time window and "notable", then what ran with the names of the list and their power, and
-the unexplained power; selecting a peak zooms the chart on it. Below, the findings,
+the unexplained power; selecting a peak zooms the timeline (or the chart) on it. Below, the findings,
 collapsed under "N things to check" (`<details>`). The switched loads card is on
 *Appliances* only.
 
@@ -234,7 +268,7 @@ card (`.table-wrap`), the signatures become a list when Home Assistant reports `
 and the chart takes the width of its card. Manual test, in the dev harness
 (`frontend/dev/index.html`) with the browser's device toolbar at 360, 390 and 768 px, light
 and dark, `en` and `fr`, admin and `admin=0`, and the `empty`/`unavailable` scenarios:
-expand the lists, click a peak, open a *Validate…* form, then check in the console that
+expand the lists, click a peak (chip and list), select a timeline row, open a *Validate…* form, then check in the console that
 `document.documentElement.scrollWidth <= innerWidth`. Names and entity ids much longer
 than the sample's (edit `dev/sample/*.json` locally) must wrap, not widen the page.
 

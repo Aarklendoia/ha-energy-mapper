@@ -10,7 +10,7 @@ import {
   mdiMenu,
   mdiRefresh,
 } from "@mdi/js";
-import { html, LitElement, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import { html as staticHtml, unsafeStatic } from "lit/static-html.js";
 
 import "./chart.ts";
@@ -27,7 +27,6 @@ import {
   type DayStats,
   hourProfile,
   neighbourDay,
-  peakWindow,
   registryIdOf,
   type StackSeries,
   stackSeries,
@@ -78,6 +77,17 @@ import {
   validateMessage,
 } from "./review.ts";
 import { panelStyles } from "./styles.ts";
+import {
+  axisTicks,
+  bucketCount,
+  houseBuckets,
+  isWholeDay,
+  notablePeaks,
+  peakZoom,
+  type TimelineRow,
+  timelineRows,
+  visibleBlocks,
+} from "./timeline.ts";
 import { availableTabs, searchWithTab, shownTab, type Tab, tabForKey, tabFromSearch, toReviewCount } from "./tabs.ts";
 import {
   BASE_INDEX,
@@ -112,6 +122,16 @@ interface WsError {
 
 const defined = (tag: string) => customElements.get(tag) !== undefined;
 
+interface TimelineSelection {
+  any: boolean;
+  dim: boolean;
+  on: (row: TimelineRow) => boolean;
+}
+
+/** One bar of the house strip (in the strip's viewBox units). */
+const svgBar = (x: number, y: number, h: number) =>
+  svg`<rect x=${x + 0.1} y=${y} width="0.8" height=${h}></rect>`;
+
 export class EnergyMapperPanel extends LitElement {
   static override properties = {
     hass: { attribute: false },
@@ -138,6 +158,8 @@ export class EnergyMapperPanel extends LitElement {
     _reviewError: { state: true },
     _showIgnored: { state: true },
     _tab: { state: true },
+    _dayView: { state: true },
+    _window: { state: true },
     _category: { state: true },
     _appliance: { state: true },
     _reviewTarget: { state: true },
@@ -179,6 +201,10 @@ export class EnergyMapperPanel extends LitElement {
   declare _appliance: string | null;
   /** the signature opened from "What used energy" in To review (#50) */
   declare _reviewTarget: string | null;
+  /** the view of the day card (#49): the timeline or the stacked chart */
+  declare _dayView: "timeline" | "stacked";
+  /** the window (s) shown by the timeline, null: the whole day */
+  declare _window: [number, number] | null;
 
   private started = false;
   private requestId = 0;
@@ -214,6 +240,8 @@ export class EnergyMapperPanel extends LitElement {
     this._category = null;
     this._appliance = null;
     this._reviewTarget = null;
+    this._dayView = "timeline";
+    this._window = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -465,11 +493,8 @@ export class EnergyMapperPanel extends LitElement {
     if (!report || report.day !== example.day || !report.curve.length) return;
     // the chart is created by this update: let it render first
     requestAnimationFrame(() => {
-      const chart = this.chartElement();
-      if (!chart) return;
       const [a, b] = exampleWindow(example, report.start, report.end);
-      chart.zoom(a, b);
-      chart.scrollIntoView({ behavior: "smooth", block: "center" });
+      this.zoomTo(a / 1000, b / 1000);
     });
   }
 
@@ -492,6 +517,7 @@ export class EnergyMapperPanel extends LitElement {
 
   private async selectDay(day: string): Promise<void> {
     const id = ++this.requestId;
+    if (day !== this._day) this._window = null;
     this._day = day;
     this._error = null;
     this._notice = null;
@@ -867,7 +893,7 @@ export class EnergyMapperPanel extends LitElement {
   private renderReport(report: Report, t: Translate): TemplateResult {
     const model = this._themeKey ? this.chartModel(report) : null;
     return html`
-      ${this.renderSummary(report, t)} ${this.renderChart(report, model, t)}
+      ${this.renderSummary(report, t)} ${this.renderDayCard(report, model, t)}
       <div class="today-columns">
         ${this.renderUsage(report, model, t)}
         <div class="today-side">${this.renderPeaks(report, model, t)} ${this.renderFindings(report.findings ?? [], t)}</div>
@@ -1024,24 +1050,209 @@ export class EnergyMapperPanel extends LitElement {
     return this.renderRoot.querySelector("energy-mapper-chart");
   }
 
-  private renderChart(report: Report, model: ChartModel | null, t: Translate): TemplateResult {
+  /** The day card (#49): the timeline of the appliances (default) or the
+   * stacked chart of the per-minute breakdown. */
+  private renderDayCard(report: Report, model: ChartModel | null, t: Translate): TemplateResult {
     const hasCurve = report.curve.length > 0;
-    return html`<div class="card chart-card">
+    const rows = timelineRows(report, this._registry, this.namer);
+    const timeline = this._dayView === "timeline";
+    const selection = this.timelineSelection(rows);
+    const view = (key: "timeline" | "stacked", label: string) =>
+      html`<button
+        class="chip link view ${this._dayView === key ? "selected" : ""}"
+        aria-pressed=${this._dayView === key ? "true" : "false"}
+        @click=${() => this.setDayView(key)}
+      >
+        ${label}
+      </button>`;
+    let content: TemplateResult;
+    if (timeline) {
+      content =
+        rows.length || hasCurve
+          ? this.renderTimeline(report, rows, model, selection, t)
+          : html`<div class="message">${t("timeline_none")}</div>`;
+    } else {
+      content = hasCurve
+        ? html`<energy-mapper-chart
+            .model=${model}
+            .highlight=${this.highlight(model)}
+            .narrow=${this.narrow}
+          ></energy-mapper-chart>`
+        : html`<div class="message">${report.curve_pruned ? t("curve_pruned") : t("no_curve")}</div>`;
+    }
+    return html`<section class="card day-card" aria-labelledby="day-title">
       <div class="card-header">
-        ${t("chart_title")}
+        <h2 id="day-title">${t("timeline_title")}</h2>
         <div class="spacer"></div>
-        ${hasCurve ? this.iconButton(mdiArrowExpandHorizontal, t("reset_zoom"), () => this.chartElement()?.resetZoom()) : nothing}
+        ${selection.any ? this.textButton(t("usage_show_all"), () => this.clearSelection()) : nothing}
+        <div class="view-toggle" role="group" aria-label=${t("view_label")}>
+          ${view("timeline", t("view_timeline"))} ${view("stacked", t("view_stacked"))}
+        </div>
+        ${!timeline && hasCurve ? this.iconButton(mdiArrowExpandHorizontal, t("reset_zoom"), () => this.resetZoom()) : nothing}
       </div>
-      <div class="card-content">
-        ${hasCurve
-          ? html`<energy-mapper-chart
-              .model=${model}
-              .highlight=${this.highlight(model)}
-              .narrow=${this.narrow}
-            ></energy-mapper-chart>`
-          : html`<div class="message">${report.curve_pruned ? t("curve_pruned") : t("no_curve")}</div>`}
+      <div class="card-content">${content}</div>
+    </section>`;
+  }
+
+  private setDayView(view: "timeline" | "stacked"): void {
+    this._dayView = view;
+    this._window = null;
+  }
+
+  /** The rows of the timeline to highlight: the selected appliance, or the
+   * rows of the selected category of the split bar. ``any``: something is
+   * selected; ``dim``: some row is highlighted (base load and unexplained
+   * have no row: selecting them dims nothing). */
+  private timelineSelection(rows: TimelineRow[]): TimelineSelection {
+    const appliance = this._appliance;
+    const category = this._category;
+    const named = namedSignatureIds(this._registry);
+    const on = (row: TimelineRow) =>
+      row.id === appliance || (category !== null && seriesCategory(row, named) === category);
+    return { any: appliance !== null || category !== null, dim: rows.some(on), on };
+  }
+
+  private renderTimeline(
+    report: Report,
+    rows: TimelineRow[],
+    model: ChartModel | null,
+    selection: TimelineSelection,
+    t: Translate,
+  ): TemplateResult {
+    const info = this.info;
+    const window: [number, number] = isWholeDay(this._window, report) ? [report.start, report.end] : this._window!;
+    const [a, b] = window;
+    const span = b - a;
+    const zoomed = !isWholeDay(this._window, report);
+    const curve = report.curve;
+    const pct = (v: number) => `${(v * 100).toFixed(3)}%`;
+    // the house strip: the highest power of each slice of the window
+    const n = bucketCount(curve, window);
+    const buckets = curve.length ? houseBuckets(curve, window, n) : [];
+    const max = Math.max(0, ...buckets.map((v) => v ?? 0));
+    const peaks = notablePeaks(report);
+    const marks = peaks.filter((p) => p.end + 60 > a && p.start < b);
+    const ticks = axisTicks(window, report.start, this.narrow ? 5 : 9);
+    const dayStartLabel = formatTime(report.start, info);
+    const tickLabel = (v: number) => {
+      const label = formatTime(v, info);
+      // the end of the day reads 24:00, not 00:00 again
+      return v >= report.end && label === dayStartLabel && /^0?0[:.h]00$/.test(label) ? label.replace(/^0?0/, "24") : label;
+    };
+    // runs closer than about 2 px merge into one block
+    const gap = span / 600;
+    const spans = (row: TimelineRow) =>
+      row.periods
+        .slice(0, 12)
+        .map((p) => timeSpan([p.start, p.end], info))
+        .join(", ") + (row.periods.length > 12 ? "…" : "");
+    const strip = curve.length
+      ? html`<div class="tl-row tl-house">
+          <span class="tl-name secondary">${t("chart_house")}</span>
+          <div class="tl-strip" aria-hidden="true">
+            <svg viewBox="0 0 ${n} 100" preserveAspectRatio="none">
+              ${buckets.map((v, i) =>
+                v === null || max <= 0
+                  ? nothing
+                  : svgBar(i, 100 - Math.max((v / max) * 100, 1.5), Math.max((v / max) * 100, 1.5)),
+              )}
+            </svg>
+            ${marks.map((p) => {
+              const left = Math.max(p.start, a);
+              const right = Math.min(p.end + 60, b);
+              return html`<span
+                class="tl-mark"
+                style="left:${pct((left - a) / span)};width:${pct(Math.max((right - left) / span, 0.004))}"
+                title=${`${formatPower(p.house_w, info)} · ${timeSpan([p.start, p.end], info)}`}
+                @click=${() => this.zoomOnPeak(report, p)}
+              ></span>`;
+            })}
+          </div>
+          <span class="tl-energy secondary">${max > 0 ? formatPower(max, info) : ""}</span>
+        </div>`
+      : nothing;
+    return html`<div class="timeline ${selection.dim ? "has-selection" : ""}">
+        ${strip}
+        <ul class="tl-rows" aria-label=${t("timeline_hint")}>
+          ${rows.map((row) => {
+            const color = model?.colors.get(row.id) ?? "var(--disabled-color, #bdbdbd)";
+            const name = model?.names.get(row.id) ?? this.seriesName(row, t);
+            const on = selection.on(row);
+            const detail = usageDetail(row, t, info);
+            const blocks = visibleBlocks(row.periods, window, gap);
+            return html`<li class="tl-row ${on ? "selected" : ""} ${row.unnamed ? "unnamed" : ""}" style="--c:${color}">
+              <button
+                class="tl-name"
+                title=${detail}
+                aria-pressed=${this._appliance === row.id ? "true" : "false"}
+                @click=${() => this.selectAppliance(row.id)}
+              >
+                ${name}
+              </button>
+              <div
+                class="tl-track"
+                role="img"
+                aria-label=${t("timeline_runs", { name, spans: spans(row) || "—" })}
+                @click=${() => this.selectAppliance(row.id)}
+              >
+                ${blocks.map(
+                  (k) =>
+                    html`<span
+                      class="tl-block ${k.cycling ? "cycling" : ""}"
+                      style="left:${pct(k.left)};width:${pct(k.width)}"
+                      title=${[
+                        name,
+                        timeSpan([k.start, k.end], info),
+                        k.cycling ? t("timeline_cycling") : "",
+                        k.power_w ? formatPower(k.power_w, info) : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    ></span>`,
+                )}
+              </div>
+              <span class="tl-energy">${formatEnergy(row.energy_kwh, info)}</span>
+            </li>`;
+          })}
+        </ul>
+        ${rows.length ? nothing : html`<div class="message">${t("timeline_none")}</div>`}
+        ${!curve.length && report.curve_pruned ? html`<div class="secondary tl-pruned">${t("curve_pruned")}</div>` : nothing}
+        <div class="tl-row tl-axis-row" aria-hidden="true">
+          <span class="tl-name"></span>
+          <div class="tl-axis">
+            ${ticks.map((v) => {
+              const x = (v - a) / span;
+              const edge = x <= 0.001 ? "start" : x >= 0.999 ? "end" : "";
+              return html`<span class="tl-tick ${edge}" style="left:${pct(x)}">${tickLabel(v)}</span>`;
+            })}
+          </div>
+          <span class="tl-energy"></span>
+        </div>
       </div>
-    </div>`;
+      ${peaks.length || zoomed
+        ? html`<div class="tl-peaks">
+            ${peaks.length ? html`<span class="secondary">${t("timeline_peaks")}</span>` : nothing}
+            ${peaks.map((p) => {
+              const [za, zb] = peakZoom(p, report);
+              const current = zoomed && za === a && zb === b;
+              const what = [...p.parts]
+                .sort((x, y) => y.power_w - x.power_w)
+                .slice(0, 2)
+                .map((part) => this.partLabel(part, t))
+                .join(" + ");
+              return html`<button
+                class="chip link peak-chip ${current ? "selected" : ""}"
+                aria-pressed=${current ? "true" : "false"}
+                aria-label=${t("timeline_zoom_peak", { time: formatTime(p.max_ts, info) })}
+                title=${t("timeline_zoom_peak", { time: formatTime(p.max_ts, info) })}
+                @click=${() => (current ? this.resetZoom() : this.zoomOnPeak(report, p))}
+              >
+                <strong>${formatPower(p.house_w, info)}</strong> ${formatTime(p.max_ts, info)}${what ? ` · ${what}` : ""}
+              </button>`;
+            })}
+            ${zoomed ? html`<button class="chip link" @click=${() => this.resetZoom()}>${t("reset_zoom")}</button>` : nothing}
+          </div>`
+        : nothing}`;
   }
 
   private partLabel(part: PeakPart, t: Translate): string {
@@ -1062,11 +1273,26 @@ export class EnergyMapperPanel extends LitElement {
   }
 
   private zoomOnPeak(report: Report, peak: Peak): void {
+    const [a, b] = peakZoom(peak, report);
+    this.zoomTo(a, b);
+  }
+
+  /** Show [a, b] (s) in the day card: the timeline's window, or the chart's zoom. */
+  private zoomTo(a: number, b: number): void {
+    if (this._dayView === "timeline") {
+      this._window = [a, b];
+      this.renderRoot.querySelector(".day-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
     const chart = this.chartElement();
     if (!chart) return;
-    const [a, b] = peakWindow(peak, report.start, report.end);
-    chart.zoom(a, b);
+    chart.zoom(a * 1000, b * 1000);
     chart.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  private resetZoom(): void {
+    this._window = null;
+    this.chartElement()?.resetZoom();
   }
 
   private renderPeaks(report: Report, model: ChartModel | null, t: Translate): TemplateResult {
