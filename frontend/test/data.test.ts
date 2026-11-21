@@ -9,7 +9,9 @@ import {
   type DayStats,
   hourProfile,
   neighbourDay,
+  peakPartName,
   peakWindow,
+  registryName,
   seriesValue,
   signatureNames,
   stackSeries,
@@ -134,6 +136,42 @@ test("signature names: registry label, else registry id, else daily id", () => {
   assert.equal(names.get("cyc-1500w"), "cyc-1500w");
   assert.equal(signatureNames(report(), null).get("short-2050w"), "short-2000w");
   assert.equal(stackSeries(report(), registry).find((s) => s.id === "sig:short-2000w")!.name, "Kettle");
+});
+
+test("signature names with a namer: provisional name of the unnamed ones", () => {
+  const namer = (s: { power_w?: number | null; kind?: string | null; hours?: number[] | null }) =>
+    `${s.kind}:${s.power_w}:${s.hours ? "h" : "-"}`;
+  const r = report();
+  r.signatures.push({ id: "?", kind: "steady", band: "", power_w: 0, count: 1, duration_s: 0, energy_kwh: 0, registry_id: null });
+  const reg: Registry = {
+    ...registry,
+    signatures: [...registry.signatures, { ...registry.signatures[0], id: "cyc-1500w", kind: "cycling", label: null, power_w: 1500, hours: [1] }],
+  };
+  const names = signatureNames(r, reg, namer);
+  assert.equal(names.get("short-2050w"), "Kettle");
+  assert.equal(names.get("?"), "?");
+  // no registry match: built from the daily signature (no hours)
+  assert.equal(signatureNames(r, registry, namer).get("cyc-1500w"), "cycling:1500:-");
+  const r2 = report();
+  r2.signatures[2].registry_id = "cyc-1500w";
+  assert.equal(signatureNames(r2, reg, namer).get("cyc-1500w"), "cycling:1500:h");
+  const stack = stackSeries(r2, reg, namer);
+  assert.equal(stack.find((s) => s.id === "sig:cyc-1500w")!.ref, "cyc-1500w");
+  assert.equal(stack.find((s) => s.id === "sig:short-2000w")!.ref, undefined);
+  assert.equal(registryName(reg.signatures[1], namer), "cycling:1500:h");
+  assert.equal(registryName(reg.signatures[1]), "cyc-1500w");
+  assert.equal(registryName(reg.signatures[0], namer), "Kettle");
+});
+
+test("peak part names", () => {
+  const namer = (s: { power_w?: number | null }) => `p${s.power_w}`;
+  const r = report();
+  const part = (name: string, registry_id: string | null) => ({ kind: "signature", name, power_w: 1, registry_id });
+  assert.equal(peakPartName(part("short-2050w", "short-2000w"), r, registry, namer), "Kettle");
+  assert.equal(peakPartName(part("cyc-1500w", null), r, registry, namer), "p1500");
+  assert.equal(peakPartName(part("cyc-1500w", null), r, registry), "cyc-1500w");
+  assert.equal(peakPartName(part("?", null), r, registry, namer), "?");
+  assert.equal(peakPartName(part("gone", "gone-1"), r, null, namer), "gone-1");
 });
 
 test("summary totals", () => {

@@ -272,9 +272,12 @@ and number and time formats, and adapts to narrow screens (mobile app).
   *Inverted* when the appliance runs while its switch is off.
 - **Signatures**: the appliances recognised across days, most frequent first: steady or
   cycling (with on-time and period), typical power and duration, uses per week, last seen, the
-  usual hours of the day, and *Seen this day*. The id (`short-2000w`, `medium-…`, `long-…`,
-  `cyc-1500w`) gives the duration band (under 10 min, 10 to 60 min, over 1 h, cycling) and the
-  power when it was first seen; it stays the same from one night to the next.
+  usual hours of the day, and *Seen this day*. A signature you have not named yet shows a
+  provisional name built from what it is, such as *2.6 kW appliance, ~50 min, in the
+  evening* or *900 W appliance in cycles, at night*, everywhere in the panel. Its id
+  (`short-2000w`, `medium-…`, `long-…`, `cyc-1500w`), shown below it, gives the duration band
+  (under 10 min, 10 to 60 min, over 1 h, cycling) and the power when it was first seen; it
+  stays the same from one night to the next.
 
 Days older than the report retention keep their totals, peaks and signatures, without the
 curve.
@@ -730,10 +733,12 @@ français) et ses formats de nombres et d'heures, et s'adapte aux écrans étroi
   *Inversé* quand l'appareil fonctionne interrupteur éteint.
 - **Signatures** : les appareils reconnus au fil des jours, les plus fréquents d'abord :
   continu ou cyclique (avec durée de marche et période), puissance et durée typiques,
-  utilisations par semaine, dernière fois vue, heures habituelles, et *Vue ce jour*.
-  L'identifiant (`short-2000w`, `medium-…`, `long-…`, `cyc-1500w`) donne la tranche de durée
-  (moins de 10 min, 10 à 60 min, plus d'1 h, cyclique) et la puissance lors de sa création ;
-  il reste le même d'une nuit à l'autre.
+  utilisations par semaine, dernière fois vue, heures habituelles, et *Vue ce jour*. Une
+  signature pas encore nommée porte partout dans le panneau un nom provisoire tiré de ce
+  qu'elle est, comme *Appareil de 2,6 kW, ~50 min, le soir* ou *Appareil de 900 W en
+  cycles, la nuit*. Son identifiant (`short-2000w`, `medium-…`, `long-…`, `cyc-1500w`),
+  affiché dessous, donne la tranche de durée (moins de 10 min, 10 à 60 min, plus d'1 h,
+  cyclique) et la puissance lors de sa création ; il reste le même d'une nuit à l'autre.
 
 Les jours plus anciens que la conservation des rapports gardent leurs totaux, pics et
 signatures, sans la courbe.

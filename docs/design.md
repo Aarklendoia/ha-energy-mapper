@@ -163,6 +163,18 @@ sequenceDiagram
   I->>A: GET /api/report/DAY (4 at a time, totals cached)
 ```
 
+**Names of the signatures in the panel** (`frontend/src/names.ts`, unit tested, #52). A
+signature with a label shows it. One without gets a provisional name built from the
+signature itself, in the user's language: the power rounded ("940 W", "2.6 kW"), the usual
+duration rounded ("~50 min", "~1 h 30") or "in cycles" for a cycling one, and when it runs,
+from the registry's 24-hour histogram: the part of the day holding most of the uses
+(morning 6–11 h, midday 11–14 h, afternoon 14–18 h, evening 18–22 h, night 22–6 h), two
+parts ("at midday and in the evening"), or "all day" when they are spread. A missing field
+leaves its part out (a daily signature not matched to the registry has no hours). The chart
+legend, its tooltip, the peaks, the signature table and the review use it; the registry id
+stays as secondary text or tooltip, for debugging. Two alike names in the legend get a
+number ("(2)"), since the legend toggles series by name.
+
 ## 4. The engine
 
 `nilm_core.analyze()` turns raw histories into a daily report. Across days,
