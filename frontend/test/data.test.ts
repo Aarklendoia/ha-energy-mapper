@@ -21,7 +21,14 @@ import {
   statsDays,
   summary,
   unexplainedShare,
+  seriesPeriods,
+  timeSpan,
+  usageDetail,
+  usageRows,
+  type UsageRow,
 } from "../src/data.ts";
+import { localeInfo } from "../src/format.ts";
+import { translator } from "../src/i18n.ts";
 import type { Peak, Registry, Report } from "../src/types.ts";
 
 function report(): Report {
@@ -340,4 +347,159 @@ test("time of the highest power: curve maximum, else the highest peak", () => {
   assert.equal(maxPowerTime(r), 5100);
   r.peaks = [];
   assert.equal(maxPowerTime(r), null);
+});
+
+// -- "What used energy" (#50) -------------------------------------------------
+
+const en = localeInfo({ language: "en", number_format: "language", time_format: "24", time_zone: "server" }, "en", "UTC");
+const fr = localeInfo({ language: "fr", number_format: "language", time_format: "24", time_zone: "server" }, "fr", "UTC");
+const tEn = translator("en");
+const tFr = translator("fr");
+
+/** A day of 6 curve points one minute apart, from 08:00 UTC. */
+function usageReport(): Report {
+  const r = report();
+  const t0 = Date.UTC(2027, 2, 9, 8, 0) / 1000;
+  const heater = [2400, 2400, 0, 0, 2400, 0];
+  const kettle = [0, 900, 900, 0, 0, 0];
+  r.curve = heater.map((w, i) => ({
+    t: t0 + i * 60,
+    house: 3000,
+    grid: 3000,
+    pv: 0,
+    submetered: i < 3 ? 500 : 0,
+    base: 170,
+    other: 30,
+    known: { "Water heater": w },
+    signatures: { "short-2000w": kettle[i] },
+  }));
+  r.known_loads = [
+    { name: "Water heater", entity_id: "switch.heater", power_w: 2400, transitions: 4, matched: 4, inverted: false, on_s: 180 },
+  ];
+  r.activations = [
+    { start: t0 + 60, end: t0 + 120, power_w: 2000, cycling: false, signature: "short-2000w", registry_id: "short-2000w" },
+    { start: t0 + 150, end: t0 + 180, power_w: 2050, cycling: false, signature: "short-2050w", registry_id: "short-2000w" },
+    { start: t0 + 3600, end: t0 + 7200, power_w: 1500, cycling: true, signature: "cyc-1500w", registry_id: null },
+  ];
+  return r;
+}
+
+test("usage rows: by energy, the unexplained rest last, with the chart series ids", () => {
+  const rows = usageRows(usageReport(), registry);
+  assert.deepEqual(
+    rows.map((r) => r.id),
+    ["base", "known:Water heater", "submetered", "sig:short-2000w", "sig:cyc-1500w", "other"],
+  );
+  assert.equal(rows[0].ratio, 1);
+  assert.equal(rows[1].ratio, 2.4 / 4);
+  const base = rows[0];
+  assert.equal(base.power_w, 170);
+  assert.equal(base.span, null);
+});
+
+test("usage rows: empty series are left out", () => {
+  const r = usageReport();
+  r.energy_kwh.other = 0;
+  r.energy_kwh.known = { "Water heater": 0 };
+  const ids = usageRows(r, registry).map((x) => x.id);
+  assert.ok(!ids.includes("other"));
+  assert.ok(!ids.includes("known:Water heater"));
+});
+
+test("usage rows: signatures count their activations and span them", () => {
+  const r = usageReport();
+  const rows = usageRows(r, registry);
+  const t0 = r.curve[0].t;
+  const kettle = rows.find((x) => x.id === "sig:short-2000w")!;
+  // two daily clusters matched to the same registry signature
+  assert.equal(kettle.runs, 2);
+  assert.deepEqual(kettle.span, [t0 + 60, t0 + 180]);
+  assert.equal(kettle.unnamed, false);
+  assert.equal(kettle.registry_id, "short-2000w");
+  const cyc = rows.find((x) => x.id === "sig:cyc-1500w")!;
+  assert.equal(cyc.cycling, true);
+  assert.equal(cyc.unnamed, true);
+  // no registry match: nothing to review
+  assert.equal(cyc.registry_id, null);
+});
+
+test("usage rows: without activations, the daily counts and the curve", () => {
+  const r = usageReport();
+  delete r.activations;
+  const rows = usageRows(r, registry);
+  const t0 = r.curve[0].t;
+  const kettle = rows.find((x) => x.id === "sig:short-2000w")!;
+  assert.equal(kettle.runs, 3);
+  assert.deepEqual(kettle.span, [t0 + 60, t0 + 180]);
+  assert.equal(rows.find((x) => x.id === "sig:cyc-1500w")!.cycling, true);
+});
+
+test("usage rows: a merged signature is named", () => {
+  const r = usageReport();
+  const merged: Registry = {
+    ...registry,
+    signatures: [...registry.signatures, { ...registry.signatures[0], id: "cyc-1500w", label: null, appliance: "heater" }],
+  };
+  r.signatures[2].registry_id = "cyc-1500w";
+  assert.equal(usageRows(r, merged).find((x) => x.id === "sig:cyc-1500w")!.unnamed, false);
+});
+
+test("usage rows: switched loads count their on periods in the curve", () => {
+  const r = usageReport();
+  const heater = usageRows(r, registry).find((x) => x.id === "known:Water heater")!;
+  assert.equal(heater.runs, 2);
+  assert.equal(heater.on_s, 180);
+  const t0 = r.curve[0].t;
+  assert.deepEqual(heater.span, [t0, t0 + 300]);
+});
+
+test("series periods: a gap in the curve ends a period", () => {
+  const r = usageReport();
+  r.curve.splice(1, 1); // the minute 08:01 is missing
+  r.curve.forEach((p) => (p.known["Water heater"] = 2400));
+  const series = stackSeries(r, null).find((s) => s.id === "known:Water heater")!;
+  const t0 = r.curve[0].t;
+  assert.deepEqual(seriesPeriods(r.curve, series), [
+    [t0, t0 + 60],
+    [t0 + 120, t0 + 360],
+  ]);
+});
+
+const row = (over: Partial<UsageRow>): UsageRow => ({
+  id: "x",
+  kind: "signature",
+  name: "x",
+  energy_kwh: 1,
+  ratio: 1,
+  unnamed: false,
+  registry_id: null,
+  runs: null,
+  cycling: false,
+  span: null,
+  on_s: null,
+  power_w: null,
+  ...over,
+});
+
+test("usage detail texts", () => {
+  const span: [number, number] = [Date.UTC(2027, 2, 9, 19, 2) / 1000, Date.UTC(2027, 2, 9, 19, 53) / 1000];
+  assert.equal(usageDetail(row({ runs: 1, span }), tEn, en), "1 run · 19:02 – 19:53");
+  assert.equal(usageDetail(row({ runs: 4, span }), tFr, fr), "4 fois · 19:02 – 19:53");
+  assert.equal(
+    usageDetail(row({ runs: 2, span, unnamed: true, cycling: true }), tEn, en),
+    "to name · in cycles · 19:02 – 19:53",
+  );
+  assert.equal(usageDetail(row({ kind: "known", runs: 2, on_s: 8700, span }), tEn, en), "2 runs · on for 2 h 25");
+  assert.equal(usageDetail(row({ kind: "known", runs: 1, span }), tFr, fr), "1 fois · 19:02 – 19:53");
+  assert.equal(usageDetail(row({ kind: "submetered", span }), tFr, fr), "mesuré · 19:02 – 19:53");
+  assert.equal(usageDetail(row({ kind: "estimated" }), tEn, en), "estimated");
+  assert.equal(usageDetail(row({ kind: "base", power_w: 221 }), tFr, fr), "221 W en permanence");
+  assert.equal(usageDetail(row({ kind: "base" }), tEn, en), "");
+  assert.equal(usageDetail(row({ kind: "other" }), tEn, en), "");
+});
+
+test("time span: one time for the same minute", () => {
+  const t = Date.UTC(2027, 2, 9, 7, 10) / 1000;
+  assert.equal(timeSpan([t, t + 20], en), "07:10");
+  assert.equal(timeSpan([t, t + 600], en), "07:10 – 07:20");
 });

@@ -98,6 +98,20 @@ export interface DailySignature {
   registry_id?: string | null;
 }
 
+/** One run of an appliance found in the curve (a daily signature). */
+export interface Activation {
+  start: number;
+  end: number;
+  power_w: number;
+  cycling: boolean;
+  duty?: number | null;
+  on_s?: number | null;
+  period_s?: number | null;
+  /** the daily signature id */
+  signature: string;
+  registry_id?: string | null;
+}
+
 export interface KnownLoad {
   name: string;
   entity_id: string;
@@ -126,6 +140,7 @@ export interface Report {
   curve_pruned?: boolean;
   peaks: Peak[];
   signatures: DailySignature[];
+  activations?: Activation[];
   known_loads: KnownLoad[];
   findings?: Finding[];
   config?: { pv_entity?: string | null; grid_entity?: string | null };

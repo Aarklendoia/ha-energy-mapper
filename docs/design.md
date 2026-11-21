@@ -178,7 +178,7 @@ number ("(2)"), since the legend toggles series by name.
 **Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds three tabs
 in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow keys, Home
 and End move between them; on a `narrow` screen they share the width): **Today** (the day
-picker, summary card, chart, peaks, switched loads, findings and the quality line),
+picker, summary card, chart, what used energy, peaks, findings and the quality line),
 **Appliances** (the signature registry and the switched loads; redone by #54) and **To
 review** (administrators whose add-on has a review; a badge counts the proposed signatures).
 The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
@@ -201,8 +201,31 @@ sub-metered energy as measured. Base load, measured and estimated have the colou
 chart series; named and still to name use graph colours 2 and 26. Selecting a legend item
 (a button, `aria-pressed`) or a segment selects that category, again to clear it: the
 selection is panel state (`selectedCategory`, for the timeline of #49) and the chart dims
-the other series. On a `narrow` screen the legend has two columns. The findings come below
-the peaks, collapsed under "N things to check" (`<details>`).
+the other series. On a `narrow` screen the legend has two columns.
+
+**What used energy** (`usageRows`, `usageDetail`, `seriesPeriods` in `frontend/src/data.ts`,
+unit tested, #50). Under the chart, on the left, one row per chart series with some energy,
+by decreasing energy, the unexplained rest last: colour dot (the colour of the series), name,
+a short detail, a bar proportional to the largest row, and kWh. Base load ("221 W always
+on"), measured by plugs and sensors and estimated are one row each ("measured · 05:57 –
+21:51": the span where the curve has some of it; the report has no per-sub-meter energy, so
+the plugs and sensors stay one row); switched loads give their on periods in the curve and
+their time on ("2 runs · on for 2 h 25"); signatures their activations of the day and their
+span ("1 run · 18:44 – 19:40", "in cycles · 06:31 – 07:26"; without `activations` the daily
+counts and the curve). A signature without a name (no label, not merged) is "to name": its
+provisional name in italics and a dashed dot. A row is a button (`aria-pressed`): it selects
+that appliance, again to clear it; the selection is panel state (`selectedAppliance`, the
+chart series id, for the timeline of #49), the chart dims the other series and "Show all"
+clears it. Selecting an appliance clears the category of the split bar and the other way
+round; a selected category highlights its rows. For administrators with a review, an
+unnamed signature has a *Review* icon button: it opens *To review* scrolled to that signature
+and focuses it. On a `narrow` screen the bar goes under the name.
+
+On the right (stacked below on narrow widths), **Peaks**, compact: per peak, the power, the
+time window and "notable", then what ran with the names of the list and their power, and
+the unexplained power; selecting a peak zooms the chart on it. Below, the findings,
+collapsed under "N things to check" (`<details>`). The switched loads card is on
+*Appliances* only.
 
 **Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
 toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the

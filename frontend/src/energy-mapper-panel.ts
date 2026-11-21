@@ -33,7 +33,12 @@ import {
   stackSeries,
   statsDays,
   summary,
-  unexplainedShare,
+  namedSignatureIds,
+  seriesCategory,
+  timeSpan,
+  usageDetail,
+  usageRows,
+  type UsageRow,
   type Namer,
   peakPartName,
   registryName,
@@ -134,6 +139,8 @@ export class EnergyMapperPanel extends LitElement {
     _showIgnored: { state: true },
     _tab: { state: true },
     _category: { state: true },
+    _appliance: { state: true },
+    _reviewTarget: { state: true },
   };
 
   static override styles = panelStyles;
@@ -168,6 +175,10 @@ export class EnergyMapperPanel extends LitElement {
   declare _tab: Tab;
   /** the category of the split bar selected on the Today tab (#48), null: all */
   declare _category: SplitKey | null;
+  /** the appliance selected in "What used energy" (#50): a chart series id, null: none */
+  declare _appliance: string | null;
+  /** the signature opened from "What used energy" in To review (#50) */
+  declare _reviewTarget: string | null;
 
   private started = false;
   private requestId = 0;
@@ -201,6 +212,8 @@ export class EnergyMapperPanel extends LitElement {
     this._showIgnored = false;
     this._tab = tabFromSearch(location.search);
     this._category = null;
+    this._appliance = null;
+    this._reviewTarget = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -572,7 +585,7 @@ export class EnergyMapperPanel extends LitElement {
     return model;
   }
 
-  private seriesName(s: StackSeries, t: Translate): string {
+  private seriesName(s: Pick<StackSeries, "kind" | "name">, t: Translate): string {
     if (s.kind === "base" || s.kind === "submetered" || s.kind === "estimated" || s.kind === "other") return t(s.kind);
     if (s.kind === "signature" && s.name === "?") return t("unclassified");
     return s.name;
@@ -855,8 +868,11 @@ export class EnergyMapperPanel extends LitElement {
     const model = this._themeKey ? this.chartModel(report) : null;
     return html`
       ${this.renderSummary(report, t)} ${this.renderChart(report, model, t)}
-      <div class="columns">${this.renderPeaks(report, model, t)} ${this.renderSwitchedLoads(t)}</div>
-      ${this.renderFindings(report.findings ?? [], t)} ${this.renderQuality(report, t)}
+      <div class="today-columns">
+        ${this.renderUsage(report, model, t)}
+        <div class="today-side">${this.renderPeaks(report, model, t)} ${this.renderFindings(report.findings ?? [], t)}</div>
+      </div>
+      ${this.renderQuality(report, t)}
     `;
   }
 
@@ -886,13 +902,33 @@ export class EnergyMapperPanel extends LitElement {
 
   private selectCategory(key: SplitKey): void {
     this._category = this._category === key ? null : key;
+    this._appliance = null;
   }
 
-  /** Ids of the chart series of the selected category (same array while unchanged). */
+  /** The appliance selected in "What used energy" (the id of its chart
+   * series: "known:<name>", "sig:<registry id>", "base"...), for the timeline
+   * to highlight (#49); null when none is. */
+  get selectedAppliance(): string | null {
+    return this._appliance;
+  }
+
+  private selectAppliance(id: string): void {
+    this._appliance = this._appliance === id ? null : id;
+    this._category = null;
+  }
+
+  private clearSelection(): void {
+    this._appliance = null;
+    this._category = null;
+  }
+
+  /** Ids of the chart series of the selected appliance or category (same array while unchanged). */
   private highlight(model: ChartModel | null): string[] | null {
-    if (!model || !this._category) return null;
-    const ids = categorySeries(model.stack, this._category, this._registry);
-    const key = JSON.stringify([this._category, ids]);
+    if (!model) return null;
+    const appliance = this._appliance && model.stack.some((s) => s.id === this._appliance) ? this._appliance : null;
+    if (!appliance && !this._category) return null;
+    const ids = appliance ? [appliance] : categorySeries(model.stack, this._category!, this._registry);
+    const key = JSON.stringify([appliance, this._category, ids]);
     if (this.highlightCache?.key !== key) this.highlightCache = { key, ids };
     return this.highlightCache.ids;
   }
@@ -1037,8 +1073,8 @@ export class EnergyMapperPanel extends LitElement {
     const info = this.info;
     const peaks = report.peaks ?? [];
     const canZoom = report.curve.length > 0;
-    return html`<div class="card">
-      <div class="card-header">${t("peaks")}</div>
+    return html`<section class="card" aria-labelledby="peaks-title">
+      <div class="card-header"><h2 id="peaks-title">${t("peaks")}</h2></div>
       ${report.peak_threshold_w != null
         ? html`<div class="card-hint">${t("peak_threshold", { power: formatPower(report.peak_threshold_w, info) })}</div>`
         : nothing}
@@ -1046,47 +1082,110 @@ export class EnergyMapperPanel extends LitElement {
         ? html`<div class="message">${t("peaks_none")}</div>`
         : html`<ul class="peaks">
             ${peaks.map((p) => {
-              const share = unexplainedShare(p);
-              const [from, to] = [formatTime(p.start, info), formatTime(p.end, info)];
-              const range = from === to ? from : `${from} – ${to}`;
+              const when = [timeSpan([p.start, p.end], info), p.notable ? t("peak_notable") : ""].filter(Boolean).join(" · ");
+              const ran = p.parts.map((part) => {
+                const c = this.partColor(part, model, report);
+                return html`<span class="peak-part" title=${part.kind === "signature" ? part.registry_id || part.name : ""}
+                  >${c ? html`<span class="dot" style="background:${c}"></span>` : nothing}${this.partLabel(part, t)}
+                  <span class="secondary">${formatPower(part.power_w, info)}</span></span
+                >`;
+              });
+              if (p.unexplained_w > 0) {
+                ran.push(
+                  html`<span class="peak-part secondary">${t("peak_unexplained", { power: formatPower(p.unexplained_w, info) })}</span>`,
+                );
+              }
+              if (!ran.length) ran.push(html`<span class="peak-part secondary">${t("nothing_identified")}</span>`);
               return html`<li>
                 <button
-                  class="peak"
+                  class="peak ${p.notable ? "notable" : ""}"
                   title=${canZoom ? t("show_on_chart") : ""}
                   @click=${() => canZoom && this.zoomOnPeak(report, p)}
                 >
                   <div class="peak-head">
                     <span class="peak-power">${formatPower(p.house_w, info)}</span>
-                    <span class="peak-time">${range}</span>
-                    ${p.notable ? html`<span class="badge">${t("notable")}</span>` : nothing}
+                    <span class="peak-time">${when}</span>
                   </div>
-                  <div class="chips">
-                    ${p.parts.length === 0
-                      ? html`<span class="chip">${t("nothing_identified")}</span>`
-                      : p.parts.map((part) => {
-                          const c = this.partColor(part, model, report);
-                          const ref = part.kind === "signature" ? part.registry_id || part.name : "";
-                          return html`<span class="chip" title=${ref}>
-                            ${c ? html`<span class="dot" style="background:${c}"></span>` : nothing}
-                            ${this.partLabel(part, t)}
-                            <span class="chip-value">${formatPower(part.power_w, info)}</span>
-                          </span>`;
-                        })}
-                    ${p.unexplained_w > 0
-                      ? html`<span class="chip unexplained">
-                          ${t("unexplained_part", {
-                            power: formatPower(p.unexplained_w, info),
-                            share: formatPercent(share, info),
-                          })}
-                        </span>`
-                      : nothing}
-                  </div>
-                  <div class="share" aria-hidden="true"><div style="width:${(share * 100).toFixed(1)}%"></div></div>
+                  <div class="peak-parts">${ran}</div>
                 </button>
               </li>`;
             })}
           </ul>`}
-    </div>`;
+    </section>`;
+  }
+
+  /** "What used energy" (#50): one row per appliance of the day, by energy;
+   * a row selects its series in the chart. */
+  private renderUsage(report: Report, model: ChartModel | null, t: Translate): TemplateResult {
+    const info = this.info;
+    const rows = usageRows(report, this._registry, this.namer);
+    const named = namedSignatureIds(this._registry);
+    const selected = rows.some((r) => r.id === this._appliance) ? this._appliance : null;
+    const category = this._category;
+    const reviewable = (r: UsageRow) =>
+      this.tabs.includes("review") && r.unnamed && r.registry_id !== null && r.registry_id !== "?";
+    // the rows without a review button keep the bars aligned
+    const space = rows.some(reviewable) ? html`<span class="usage-review-space"></span>` : nothing;
+    return html`<section class="card usage" aria-labelledby="usage-title">
+      <div class="card-header">
+        <h2 id="usage-title">${t("usage_title")}</h2>
+        <div class="spacer"></div>
+        ${selected || category ? this.textButton(t("usage_show_all"), () => this.clearSelection()) : nothing}
+      </div>
+      ${rows.length
+        ? html`<ul class="usage-list ${selected || category ? "has-selection" : ""}" aria-label=${t("usage_hint")}>
+            ${rows.map((r) => {
+              const color = model?.colors.get(r.id) ?? "var(--disabled-color, #bdbdbd)";
+              const name = model?.names.get(r.id) ?? this.seriesName(r, t);
+              const on = selected === r.id || (category !== null && seriesCategory(r, named) === category);
+              const detail = usageDetail(r, t, info);
+              return html`<li class="usage-item ${on ? "selected" : ""}">
+                <button
+                  class="usage-row"
+                  aria-pressed=${selected === r.id ? "true" : "false"}
+                  @click=${() => this.selectAppliance(r.id)}
+                >
+                  <span
+                    class="dot ${r.unnamed ? "unnamed" : ""}"
+                    style=${r.unnamed ? `border-color:${color}` : `background:${color}`}
+                  ></span>
+                  <span class="usage-text">
+                    <span class="usage-name ${r.unnamed ? "unnamed" : ""}">${name}</span>
+                    ${detail ? html`<span class="usage-detail">${detail}</span>` : nothing}
+                  </span>
+                  <span class="usage-bar" aria-hidden="true"
+                    ><span style="width:${(r.ratio * 100).toFixed(1)}%;background:${color}"></span
+                  ></span>
+                  <span class="usage-energy">${formatEnergy(r.energy_kwh, info)}</span>
+                </button>
+                ${reviewable(r)
+                  ? html`<button
+                      class="usage-review"
+                      title=${t("usage_review_label", { name })}
+                      aria-label=${t("usage_review_label", { name })}
+                      @click=${() => void this.openReview(r.registry_id!)}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d=${mdiFormatListChecks}></path></svg>
+                    </button>`
+                  : space}
+              </li>`;
+            })}
+          </ul>`
+        : html`<div class="message">${t("no_curve")}</div>`}
+    </section>`;
+  }
+
+  /** To review, scrolled to one signature (when it is listed there). */
+  private async openReview(registryId: string): Promise<void> {
+    this._reviewTarget = registryId;
+    await this.selectTab("review", false, false);
+    const item = this.renderRoot.querySelector<HTMLElement>(`[data-signature="${CSS.escape(registryId)}"]`);
+    if (item) {
+      item.scrollIntoView({ block: "center" });
+      item.focus({ preventScroll: true });
+    } else {
+      this.renderRoot.firstElementChild?.scrollIntoView({ block: "start" });
+    }
   }
 
   private renderSwitchedLoads(t: Translate): TemplateResult | typeof nothing {
@@ -1320,7 +1419,11 @@ export class EnergyMapperPanel extends LitElement {
     const form = this._reviewForm?.id === s.id ? this._reviewForm : null;
     const profile = hourProfile(s.hours);
     const days = new Set(dayEntries(this._days).map((e) => e.day));
-    return html`<li>
+    return html`<li
+      data-signature=${s.id}
+      tabindex="-1"
+      class=${this._reviewTarget === s.id ? "targeted" : ""}
+    >
       <div class="review-head">
         <div class="review-main">
           <div class="sig-name">${registryName(s, this.namer)}</div>
@@ -1443,7 +1546,7 @@ export class EnergyMapperPanel extends LitElement {
   private renderCompact(s: ReviewSignature, t: Translate, note: string): TemplateResult {
     const facts = this.reviewFacts(s, t).slice(0, 3);
     if (note) facts.push(note);
-    return html`<li>
+    return html`<li data-signature=${s.id} tabindex="-1" class=${this._reviewTarget === s.id ? "targeted" : ""}>
       <div class="review-main">
         <span class="sig-name" title=${s.id}>${registryName(s, this.namer)}</span>
         <span class="secondary">${facts.join(" · ")}</span>

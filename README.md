@@ -266,8 +266,13 @@ address, so a view can be bookmarked.
 - **Consumption breakdown**: the same split per minute, stacked, with the house and solar
   lines, the notable threshold (dashed) and the peaks shaded. Zoom with the slider or the
   mouse wheel; each appliance keeps its colour from one day to the next.
+- **What used energy**: one row per appliance of the day, by energy, with its colour, a
+  short detail (runs and time span, *in cycles*, time on for switched loads) and kWh; base
+  load, plugs and sensors, estimated and unexplained are rows too. Appliances still to name
+  are in italics with a dashed dot. Select a row to highlight that appliance in the chart;
+  administrators can open the review of an unnamed one.
 - **Peaks**: the day's top episodes (up to 5) with what was running at the maximum and the
-  unexplained share. A peak is **notable** when it reaches the notable threshold (80 % of the
+  unexplained power. A peak is **notable** when it reaches the notable threshold (80 % of the
   highest power of the last 30 days, or your fixed threshold). Select a peak to zoom on it.
 - **Switched loads**: the power learned from the curve, the number of days seen, and
   *Inverted* when the appliance runs while its switch is off.
@@ -732,8 +737,14 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   les courbes de la maison et du solaire, le seuil notable (en pointillés) et les pics
   surlignés. Zoomez avec le curseur ou la molette ; chaque appareil garde sa couleur d'un
   jour à l'autre.
+- **Ce qui a consommé** : une ligne par appareil de la journée, par énergie, avec sa
+  couleur, un court détail (nombre de fois et plage horaire, *en cycles*, durée allumée pour
+  les appareils pilotés) et les kWh ; la consommation de fond, les prises et capteurs,
+  l'estimé et le non expliqué sont aussi des lignes. Les appareils à nommer sont en italique
+  avec un point en pointillés. Sélectionnez une ligne pour mettre l'appareil en évidence dans
+  le graphique ; les administrateurs peuvent ouvrir l'examen d'un appareil sans nom.
 - **Pics** : les épisodes les plus hauts de la journée (jusqu'à 5) avec ce qui tournait au
-  maximum et la part non expliquée. Un pic est **notable** quand il atteint le seuil notable
+  maximum et la puissance non expliquée. Un pic est **notable** quand il atteint le seuil notable
   (80 % de la puissance la plus haute des 30 derniers jours, ou votre seuil fixe).
   Sélectionnez un pic pour zoomer dessus.
 - **Appareils pilotés** : la puissance apprise sur la courbe, le nombre de jours vus, et
