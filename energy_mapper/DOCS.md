@@ -127,6 +127,11 @@ Each report is a JSON document with:
   (`registry_id` on the signature parts). `notable` is `true` when the
   episode reaches `peak_threshold_w`;
 - `quality`: number of samples, longest gap, computing time;
+- `ground_truth` (add-on 0.11.0+, only while an appliance learns from a
+  sensor): per taught appliance, `key`, `entity_id`, its `runs` that day
+  (`start`, `end`, `energy_kwh`, `power_w`, `max_w`, `kind`, `duty`, and
+  `on_s`/`period_s` for a cycling run, `phases` for a multi-phase one),
+  `covered` (the periods the sensor reported), `covered_s` and `energy_kwh`;
 - `config`: the sensors used, derived from the Energy dashboard;
 - `findings`: what is worth checking (sensor without power sensor,
   unavailable device, estimated device far from what was measured...):
@@ -231,6 +236,8 @@ announces itself to Home Assistant through Supervisor discovery.
 | `GET /api/review` | The signatures to review, waiting and ignored, with their entity suggestions (below) |
 | `POST /api/review` | `{"id", "action": "validate", "wait", "ignore" or "restore", "appliance"?}`: records a decision: `{"signature": {...}}` with its `review_state`; 404 `not_found`, 400 `invalid_review` |
 | `POST /api/signatures` | `{"kind": "steady" or "cycling", "band": "short", "medium" or "long", "power_w", "label"}`: the signature of an appliance not seen yet: `{"signature": {...}, "created": true}`; an existing unnamed signature at that power is returned as is (`created: false`); 409 `conflict` when it already belongs to another appliance |
+| `GET /api/teaching` | The learning status of the appliances taught by a sensor (see [Learning from a measured device](#learning-from-a-measured-device)) |
+| `POST /api/teaching` | `{"appliance": <key>}`: the signature learned for it, `{"signature", "created", "learned"}` |
 
 `GET /api/signatures` answers:
 
@@ -387,6 +394,65 @@ applies it:
 An appliance with several sources is the result of a merge: the integration
 adds their energy. A source belongs to one appliance only; the keys are
 unique; at most 200 appliances of 20 sources.
+
+An appliance may also have a `teacher`, `{"entity_id": "sensor.oven_plug_power",
+"since": <unix time>}` (add-on 0.11.0+, #14): a power sensor that measures it
+for a while, a temporary smart plug. While it teaches, the sensor is never
+subtracted, whatever else declares it (a sub-meter source of the appliance, a
+device of the Energy dashboard, the settings): the appliance stays in the
+whole-house curve exactly as it will once the plug is gone. Each analysed day
+keeps the sensor's runs in `ground_truth` (see [Reports](#reports)). A sensor
+teaches one appliance only.
+
+### Learning from a measured device
+
+`GET /api/teaching` gives, for each appliance with a teacher, what was learned
+from the stored days taught by that sensor:
+
+```json
+{"teachers": [{"key": "submeter:sensor.oven_plug_power", "name": "Oven",
+  "entity_id": "sensor.oven_plug_power", "since": 1800000000, "days": 6,
+  "first_day": "2027-03-04", "last_day": "2027-03-09", "uses": 5, "energy_kwh": 7.9,
+  "learned": {"kind": "steady", "band": "medium", "power_w": 2400, "duration_s": 2700,
+              "uses": 5, "runs": 5, "recognisable": true, "phases": [], ...},
+  "signature": {"id": "medium-2400w", "in_registry": true, "linked": false, ...},
+  "conflict": null,
+  "evaluation": {"uses": 5, "found": 5, "missed": 0, "detections": 5, "correct": 5,
+                 "false": 0, "precision": 1.0, "recall": 1.0, "f1": 1.0,
+                 "truth_kwh": 7.9, "detected_kwh": 7.6, "energy_ratio": 0.962},
+  "per_day": [{"day": "2027-03-04", ...}]}]}
+```
+
+- **Runs**: the sensor's readings hold until the next one (`unavailable` is no
+  data). The appliance runs from 20 W; pauses under 10 minutes stay in one
+  run; runs under a minute or never reaching 50 W are standby noise. A run is
+  `multiphase` with heating (800 W or more, at least 5 min), at least 10 min
+  between 50 and 800 W (a pump, a motor) and the length of a cycle (30 min to
+  4 h); `cycling` when its high level is crossed 6 times or more with a duty
+  of at most 85 %; `steady` otherwise.
+- **Learned signature**: the most frequent kind; its median power while on and
+  duration band (steady), on-time, period and duty (cycling), or the template
+  of its most frequent programme (multi-phase). `recognisable` is false below
+  the step threshold: the curve cannot show it.
+- **Signature**: the registry signature it is: the one its uses are matched to
+  (same group, power within 12 %), or for a multi-phase one the nearest
+  template within the cycle distance. `in_registry: false` when there is none
+  yet (it is then evaluated as the expected signature it would be);
+  `conflict` names another appliance that already owns it.
+- **Evaluation**: the curve-based detections of that signature on the taught
+  days (its activations, and for a multi-phase one the candidate cycles within
+  the template distance) against the runs. A detection and a run match when
+  they overlap by at least half of the shorter; detections outside the
+  periods the sensor reported are left out. `precision` = correct / detections,
+  `recall` = found / uses.
+
+`POST /api/teaching` with `{"appliance": <key>}` returns the signature to link
+to the appliance, `{"signature", "created", "learned"}`: the registry's own,
+or a new expected signature named after the appliance (with the learned
+template for a multi-phase one, so the analysis recognises its cycles at
+once). Errors: `404 not_found` (no appliance with a teacher),
+`422 not_learned` (no use seen yet), `422 not_recognisable` (below the step
+threshold), `409 conflict` (another appliance owns it; `id`).
 
 ### Review
 

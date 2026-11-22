@@ -52,6 +52,8 @@ SWITCH_DOMAINS: Final = [
 # a sensor of this device class (an operation state) is linked like a switch,
 # with the on-states learned by the entity suggestions (#41)
 STATE_SENSOR_CLASS: Final = "enum"
+# units of a power sensor that can teach an appliance (#14)
+POWER_UNITS: Final = ("W", "kW")
 REVIEW_KEYS: Final = (
     "review_min_uses",
     "review_min_days",

@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from appliances import analysis_options, apply_to_registry
+from appliances import analysis_options, apply_to_registry, teachers
 from const import VERSION
 from energy_config import DerivedConfig, derive, tracking_gaps
 from ha_client import HAError
@@ -53,6 +53,9 @@ from suggest import (
     public_candidates,
     unrecorded,
 )
+from teaching import GROUND_TRUTH_KEY, day_truth
+from teaching import apply as apply_teaching
+from teaching import status as teaching_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -398,6 +401,7 @@ class Analyzer:
             )
         entities = list(derived.config.entities())
         entities += [t.energy_entity for t in derived.tracked if t.role == "switched"]
+        entities += derived.teachers  # the ground truth of the taught appliances (#14)
         # switched loads: the power learned on previous days is used when a
         # day has no transition to measure it
         memory = {x["entity_id"]: x for x in (self.store.load_registry() or {}).get("switched_loads", [])}
@@ -447,6 +451,9 @@ class Analyzer:
             histories, cfg, start, end, local_hour=lambda ts: dt.datetime.fromtimestamp(ts, tz).hour
         )
         findings = ctx.derived.findings + tracking_gaps(report, ctx.derived.tracked, histories)
+        truth = self._ground_truth(cfg, histories, start, end, set(ctx.derived.teachers))
+        if truth:
+            report[GROUND_TRUTH_KEY] = truth
         report.update(
             {
                 "day": day.isoformat(),
@@ -469,6 +476,58 @@ class Analyzer:
             len(report["known_loads"]),
         )
         return report
+
+    def _ground_truth(self, cfg, histories, start: float, end: float, read: set[str]) -> list[dict]:
+        """The runs of each teaching sensor on the day (#14)."""
+        out = []
+        for appliance, teacher in teachers(self.appliances):
+            entity = teacher["entity_id"]
+            if entity not in read:
+                continue  # declared after this analysis was prepared
+            scale = cfg.scales.get(entity, 1.0)
+            points = [
+                (ts, None if v is None else v * scale) for ts, v in parse_numeric(histories.get(entity, []))
+            ]
+            out.append(day_truth(appliance["key"], entity, points, start, end))
+        return out
+
+    # -- learning from a measured device (#14) ----------------------------------
+    @property
+    def step_threshold_w(self) -> float:
+        try:
+            return float(self.options.get("step_threshold_w") or 300.0)
+        except (TypeError, ValueError):
+            return 300.0
+
+    def teaching(self) -> dict:
+        """The learning status of each appliance with a teacher."""
+        summaries = self.store.summaries_all()
+        registry = self.store.load_registry() or empty_registry(self.registry_config)
+        now = self.clock()
+        return {
+            "teachers": [
+                teaching_status(a, summaries, registry, now, self.step_threshold_w, self.registry_config)
+                for a, _ in teachers(self.appliances)
+            ]
+        }
+
+    def apply_teaching(self, key: str) -> dict | None:
+        """The signature learned for the appliance ``key`` (created in the
+        registry when needed): ``{"signature", "created", "learned"}``, None
+        when the appliance has no teacher. Raises ``teaching.TeachingError``."""
+        appliance = next((a for a, _ in teachers(self.appliances) if a["key"] == key), None)
+        if appliance is None:
+            return None
+        summaries = self.store.summaries_all()
+        with self._registry_lock:
+            registry = self.store.load_registry() or empty_registry(self.registry_config)
+            sig, created, learned = apply_teaching(
+                appliance, summaries, registry, self.clock(), self.step_threshold_w, self.registry_config
+            )
+            if created:
+                self.store.save_registry(registry)
+        _LOGGER.info("signature %s learned for %s (%s)", sig["id"], key, "new" if created else "existing")
+        return {"signature": sig, "created": created, "learned": learned}
 
     def analyze_day(self, day: dt.date) -> dict:
         """Analyse one past day now (overwrites its report)."""

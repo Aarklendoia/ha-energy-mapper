@@ -101,8 +101,8 @@ thermostat), which are grouped into one session with their duty cycle.
   **aarch64** (Raspberry Pi 4/5 included: a day is analysed in a few seconds at most).
   Home Assistant Container and Core are not supported yet: a standalone image is planned in
   [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
-- **Home Assistant 2025.10 or later** for the integration, add-on **0.9.0 or later** for the
-  day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
+- **Home Assistant 2025.10 or later** for the integration, add-on **0.11.0 or later** to
+  learn an appliance from a smart plug, 0.9.0 for the day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
   management, 0.4.0 for the appliance statistics; developed and tested on 2026.10 and
   2026.11; the panel uses Home Assistant's own date picker when available, and a plain date
   field otherwise).
@@ -354,6 +354,20 @@ you validate**. From the integration page you can:
 The appliances are kept in Home Assistant (and its backups) and sent to the add-on after each
 change; a reinstalled integration takes back those the add-on holds.
 
+**Learn from a plug** ([#14](https://github.com/sylvaing/ha-energy-mapper/issues/14)): a
+smart plug (or any power sensor) put on an appliance for a few days can teach it its
+signature, so that it keeps being tracked from the whole-house curve once the plug goes
+elsewhere. On the appliance's card of the panel's *Appliances* tab (administrators), *Learn
+from a plug*, pick the sensor that measures only this appliance and confirm. While it learns,
+Energy Mapper does not subtract that sensor (the appliance stays in the curve, as it will
+without the plug) and keeps, for each analysed day, when the plug says the appliance really
+ran. The card shows the days and uses seen, the signature learned (steady, in cycles, or the
+phases of a dishwasher-like cycle), and how well the curve finds it: the uses found (recall)
+and the share of right detections (precision). *Finish* (after a confirmation) links the
+learned signature to the appliance and removes the plug from its sources: unplug it, the
+appliance is now tracked from the curve. *Stop learning* drops what was learned. An appliance
+below the step threshold (300 W by default) cannot be learned this way.
+
 | Sensor | Value |
 |---|---|
 | *Appliance* Energy yesterday | kWh of the last analysed day (attribute `day`) |
@@ -432,8 +446,7 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
   signatures in the panel (name one, or link it to an existing switch or power sensor), with
   the entity each one probably is, one entry per appliance and per-appliance entities and
   hourly energy statistics, "take
-  over tracking" in the Energy dashboard (done),
-  learning from measured devices, a nightly self-test with a success rate, variable loads, and
+  over tracking" in the Energy dashboard, learning from measured devices (done), a nightly self-test with a success rate, variable loads, and
   a benchmark on public NILM datasets ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): real-time
   detection, per-phase analysis, recognition of multi-phase appliance cycles.
@@ -595,8 +608,9 @@ regroupés en une seule session avec leur rapport cyclique.
   **aarch64** (Raspberry Pi 4/5 compris : une journée s'analyse en quelques secondes au plus).
   Home Assistant Container et Core ne sont pas encore pris en charge : une image autonome est
   prévue dans [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
-- **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.9.0 ou plus
-  récent** pour la grille jour par jour de l'examen (0.8.0 pour les suggestions d'attribut et
+- **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.11.0 ou plus
+  récent** pour apprendre un appareil d'une prise connectée, 0.9.0 pour la grille jour par
+  jour de l'examen (0.8.0 pour les suggestions d'attribut et
   les fusions, 0.7.0 pour les suggestions
   d'entité, 0.6.0 pour l'examen des signatures, 0.5.0 pour la
   gestion des appareils, 0.4.0 pour leurs statistiques ; développée et testée sur
@@ -873,6 +887,21 @@ pour les **appareils pilotés** (dès que leur puissance a été apprise) et, de
 Les appareils sont gardés dans Home Assistant (et ses sauvegardes) et envoyés à l'add-on
 après chaque changement ; une intégration réinstallée reprend ceux que l'add-on connaît.
 
+**Apprendre d'une prise** ([#14](https://github.com/sylvaing/ha-energy-mapper/issues/14)) :
+une prise connectée (ou tout capteur de puissance) posée sur un appareil pendant quelques
+jours peut lui apprendre sa signature, pour qu'il reste suivi dans la courbe de la maison une
+fois la prise partie ailleurs. Sur la carte de l'appareil, dans l'onglet *Appareils* du
+panneau (administrateurs), *Apprendre d'une prise*, choisissez le capteur qui ne mesure que cet
+appareil et confirmez. Pendant l'apprentissage, Energy Mapper ne soustrait pas ce capteur
+(l'appareil reste dans la courbe, comme il le sera sans la prise) et garde, pour chaque jour
+analysé, les moments où la prise dit que l'appareil a vraiment fonctionné. La carte montre les
+jours et les utilisations vus, la signature apprise (stable, en cycles, ou les phases d'un
+cycle de lave-vaisselle) et la façon dont la courbe la retrouve : les utilisations retrouvées
+(rappel) et la part de détections justes (précision). *Terminer* (après confirmation) relie la
+signature apprise à l'appareil et retire la prise de ses sources : débranchez-la, l'appareil
+est désormais suivi dans la courbe. *Arrêter l'apprentissage* oublie ce qui a été appris. Un
+appareil sous le seuil de marche (300 W par défaut) ne peut pas être appris ainsi.
+
 | Capteur | Valeur |
 |---|---|
 | *Appareil* Énergie hier | kWh du dernier jour analysé (attribut `day`) |
@@ -956,8 +985,8 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
   revue des signatures dans le panneau (en nommer une, ou la relier à un interrupteur ou un
   capteur de puissance existant), avec l'entité qu'elle est probablement, une entrée par
   appareil, entités par appareil, statistiques d'énergie heure par heure et « prendre en
-  charge le suivi » dans le tableau Énergie (faits), apprentissage à partir des appareils
-  mesurés, auto-contrôle de nuit avec un taux de réussite, charges variables, et évaluation
+  charge le suivi » dans le tableau Énergie, apprentissage à partir des appareils mesurés
+  (faits), auto-contrôle de nuit avec un taux de réussite, charges variables, et évaluation
   sur des jeux de données NILM publics ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : détection en
   temps réel, analyse par phase, reconnaissance des cycles des appareils à plusieurs phases.

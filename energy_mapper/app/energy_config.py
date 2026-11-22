@@ -80,7 +80,7 @@ class TrackedDevice:
     name: str
     energy_entity: str
     power_entity: str | None
-    # submeter | switched | estimated | energy_only | unavailable | nested | energy_mapper
+    # submeter | switched | estimated | energy_only | unavailable | nested | energy_mapper | teacher
     role: str
     source_entity: str | None = None
 
@@ -99,6 +99,8 @@ class DerivedConfig:
     config: AnalysisConfig | None  # None: no grid meter could be found
     tracked: list[TrackedDevice] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+    # power sensors teaching an appliance (#14): read, never subtracted
+    teachers: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         c = self.config
@@ -269,7 +271,8 @@ def derive(
     excluded_switched_loads: switches never measured as switched loads;
     excluded_submeters: automatic sub-meters not subtracted (ignored when
     ``submeters`` gives the list); extra_submeters: (entity, name) always
-    subtracted).
+    subtracted; teachers: power sensors teaching an appliance (#14), never
+    subtracted and read for the ground truth).
     ``statistics`` maps Energy Mapper's own statistic ids to their appliance
     (an appliance whose estimate was replaced by its Energy Mapper statistic
     in the Energy dashboard stays measured)."""
@@ -333,6 +336,8 @@ def derive(
     excluded = set(options.get("excluded_switched_loads") or [])
     # automatic sub-meters the user excluded: their power stays in the residual
     excluded_meters = set(options.get("excluded_submeters") or [])
+    # sensors teaching an appliance (#14): their power stays in the residual
+    teachers = list(dict.fromkeys(options.get("teachers") or []))
     devices = (prefs or {}).get("device_consumption") or []
     parents = {d.get("stat_consumption") for d in devices}
     for d in devices:
@@ -379,6 +384,9 @@ def derive(
                 )
             )
             continue
+        if power in teachers:
+            out.tracked.append(TrackedDevice(name, energy, power, "teacher", src))
+            continue
         if power in excluded_meters:
             out.tracked.append(TrackedDevice(name, energy, power, "excluded", src))
             continue
@@ -409,6 +417,7 @@ def derive(
     for entity, label in options.get("extra_submeters") or []:
         if all(m.entity_id != entity for m in submeters):
             submeters.append(SubmeterConfig(entity, label))
+    submeters = [m for m in submeters if m.entity_id not in teachers]
     for item in options.get("switched_loads") or []:
         entity = item["entity_id"]
         switched = [s for s in switched if s.entity_id != entity]
@@ -416,7 +425,16 @@ def derive(
             SwitchedLoadConfig(entity, item.get("name") or entity, tuple(item.get("on_states") or ("on",)))
         )
 
-    entities = [grid, *extra_grids, export, pv, *extra_pv, battery, *(s.entity_id for s in submeters)]
+    entities = [
+        grid,
+        *extra_grids,
+        export,
+        pv,
+        *extra_pv,
+        battery,
+        *(s.entity_id for s in submeters),
+        *teachers,
+    ]
     cfg = AnalysisConfig(
         grid_entity=grid,
         extra_grid_entities=extra_grids,
@@ -435,6 +453,7 @@ def derive(
     if options.get("peak_threshold_w"):
         cfg.peak_threshold_w = float(options["peak_threshold_w"])
     out.config = cfg
+    out.teachers = teachers
     return out
 
 

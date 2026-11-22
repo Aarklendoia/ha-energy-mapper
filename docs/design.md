@@ -293,7 +293,8 @@ where the appliance's subentry is reconfigured (rename, link, merge); non-admini
 the cards without it. Below the cards, the signature registry (table, or a list on `narrow`
 screens) and the switched loads are collapsed under "All signatures (N)" (`<details>`),
 open when the integration is older than 0.7.0 (no cards). The grid has as many columns as fit
-240 px; on a phone the cards take the width.
+240 px; on a phone the cards take the width. A card also shows the learning from a measured device and, for
+administrators, its actions (§ 8.6).
 
 **Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
 toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the
@@ -529,9 +530,55 @@ under 1 s for the registry's clustering of 200 days (345 candidates) on amd64.
 **Left for later**: subsequence matching (a candidate that holds two appliances run back to
 back, or a cycle followed by a TV), a local base (a fridge or a TV next to a cycle is counted in
 it), merging the templates of one appliance's programmes, a phase timeline in the panel, an
-evaluation on real ground truth (Home Connect appliances, smart plugs, #14) with the CPU and
-memory cost on aarch64, and comparing with the other leads of #26 (hidden semi-Markov models,
+evaluation on real ground truth (Home Connect appliances; smart plugs can now measure it, § 4.10
+and § 8.6) with the CPU and memory cost on aarch64, and comparing with the other leads of #26 (hidden semi-Markov models,
 deep-learning NILM).
+
+### 4.10 Ground truth from a measured device (`groundtruth.py`, #14)
+
+A power sensor that measures one appliance (a smart plug, an appliance's own meter) tells
+exactly when it ran. `nilm_core/groundtruth.py` turns it into a ground truth, learns a
+signature from it and evaluates the curve-based recognition against it. Pure (no clock, no
+I/O): the add-on uses it to learn an appliance from a temporary plug (§ 8.6), and the nightly
+self-test (#15) will use the same functions on a measured device it hides from the analysis.
+
+1. **Runs** (`runs_of`). The readings are piecewise constant: a Home Assistant state holds
+   until the next one (no hold limit, unlike the sub-meters of § 4.1: a plug at 0 W records
+   nothing for hours), and `unavailable`/`unknown` mean no data. The appliance runs from
+   `on_w` (20 W); pauses shorter than `max_gap_s` (10 min) stay inside one run (a
+   dishwasher's pauses, a thermostat); runs shorter than a minute or never reaching
+   `min_use_w` (50 W) are standby noise. The periods with data (`covered`) are returned too.
+2. **Kind of a run**, in the engine's terms. `multiphase` when it has heating (from
+   `CycleConfig.heat_w`, at least `heat_min_s`), at least `min_low_s` between `low_w` and
+   `heat_w` (a pump, a motor) and the length of a cycle (`min_cycle_s` to `max_cycle_s`);
+   its phases come from `cycles.segment` on its per-minute power, so they compare with the
+   engine's candidates. `cycling` when its high level (half its 90th percentile) is crossed
+   at least 6 times with a duty of at most 85 % (a thermostat): median on-time and period.
+   `steady` otherwise; its power is the time-weighted median while at the high level.
+   Raw readings, not per-minute means, decide: an oven's thermostat (2.4 kW / 0 W) has no
+   time between 50 and 800 W, a dishwasher's circulation pump has a lot.
+3. **Learned signature** (`learn`): the most frequent kind (ties: multi-phase, cycling,
+   steady); steady: the most frequent duration band, the median power and duration of its
+   runs; cycling: band `session`, the medians of power, on-time, period and duty;
+   multi-phase: the runs' phase sequences are clustered like the registry's candidates
+   (`cycles.cluster`, `match_distance`), the largest cluster is the programme and
+   `cycles.template_of` its template; its power is the heating power. `recognisable` is
+   false below the step threshold (a multi-phase one needs a heating phase).
+4. **Evaluation** (`evaluate`, `merge_evaluations`, `detections`). A detection and a true
+   run match when they overlap by at least `min_overlap` (half) of the shorter one;
+   detections outside the covered periods are left out (nothing can say whether they are
+   right). Several detections of one run all count as correct and the run as found once.
+   `precision` = correct / detections, `recall` = found / runs, `f1`, and the energy ratio
+   detected / true. `detections(summary, id, match, template)` lists what a stored day
+   recognised as one signature: its activations whose registry id (`Matcher.match`) is it
+   and, with a template, the candidate cycles within the match distance (what the analysis
+   recognises once the template is validated).
+
+Synthetic results (`tests/test_teaching.py`): an oven (2.35–2.45 kW, 35–50 min, three days
+out of four) next to a fridge, kettles and a water heater, 8 days: learned `steady`/`medium`
+within 60 W, recall and precision ≥ 0.9, energy ratio within 15 %; a dishwasher on 6 days:
+learned `multiphase` with its five phases, recall ≥ 0.75 before and recall and precision
+≥ 0.75 after its template is applied.
 
 ## 5. Using the Energy dashboard
 
@@ -561,6 +608,7 @@ read.
 | `estimated` (excluded) | Estimated from a switch listed in `excluded_switched_loads` | Subtracted like any estimate (§ 8.2) |
 | `excluded` | Sub-meter or estimate whose power sensor is listed in `excluded_submeters` | Not subtracted: its power stays in the residual (§ 9) |
 | `nested` | `included_in_stat` points to another tracked device | Not subtracted (never twice) |
+| `teacher` | Its power sensor teaches an appliance (§ 8.6) | Not subtracted, read for the ground truth |
 | `energy_only` | No power sensor found | Not used; finding `no_power_sensor` |
 | `unavailable` | Energy sensor unavailable | Not used; finding `unavailable` |
 | `energy_mapper` | One of Energy Mapper's own statistics (`energy_mapper:…`, § 8.1), e.g. an estimate replaced by the appliance's statistic | Never subtracted, never `unavailable`. A switched load's statistic keeps its relay measured as a switched load, with its learned polarity; a labelled signature's needs nothing. An id the add-on cannot map: finding `unknown_statistic`, not used |
@@ -654,6 +702,7 @@ summary with `curve: []` and `curve_pruned: true`.
 | `cycles` | Candidate multi-phase cycles (add-on 0.10.0+): `{start, end, power_w (heating), energy_kwh, phases: [{kind: heat\|motor, offset_s, duration_s, power_w}], members, template, distance}` |
 | `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
 | `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}` |
+| `ground_truth` | Only while an appliance learns from a sensor (add-on 0.11.0+, § 8.6): `[{key, entity_id, runs: [{start, end, energy_kwh, power_w, max_w, kind, duty, on_s?, period_s?, phases?}], covered: [[start, end]], covered_s, energy_kwh}]` |
 | `config` | Sensors used: `grid_entity`, `extra_grid_entities`, `grid_export_entity`, `pv_entity`, `extra_pv_entities`, `battery_entity`, `tracked` (`{name, energy_entity, power_entity, role, source_entity}`), `findings` |
 | `findings` | `{kind, entity_id, detail, params}` (derive findings and tracking gaps); `params` (add-on 0.11.0+) per kind in § 5 *Findings*, `detail` the English fallback |
 
@@ -678,6 +727,8 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 | `GET /api/review` | `200 {"criteria": {min_uses, min_days, wait_days, wait_factor}, "now", "counts": {proposed, waiting, ignored, validated}, "signatures": [...], "suggest": {computed_at, days, candidates, attribute_candidates, min_score, unrecorded_domains, unrecorded_entities}}`: the registry signatures `proposed` (most weighted energy first), `waiting` and `ignored`, each with its `review_state` (§ 8.3) and, when some entity matches, its `suggestions` (§ 8.4) |
 | `POST /api/review` | `{"id", "action": "validate" \| "wait" \| "ignore" \| "restore", "appliance"?}`: `200 {"signature"}` with its `review_state`; `404 not_found`; `400 invalid_review` (`validate` needs `appliance`) |
 | `POST /api/signatures` | `{"kind", "band", "power_w", "label"}`: the signature of an appliance not seen yet: `200 {"signature", "created"}` (an existing unnamed signature at that power is returned, `created: false`); `409 {"error": "conflict", "message", "id"}` when that signature belongs to another appliance; `400 invalid_signature` |
+| `GET /api/teaching` | `200 {"teachers": [...]}`: per appliance with a teacher, `{key, name, entity_id, since, days, first_day, last_day, uses, energy_kwh, learned, signature: {id, kind, band, power_w, label, in_registry, linked}, conflict: {id, appliance} \| null, evaluation, per_day}` (§ 8.6) |
+| `POST /api/teaching` | `{"appliance": <key>}`: `200 {"signature", "created", "learned"}`; `404 not_found` (no appliance with a teacher), `422 not_learned` / `not_recognisable`, `409 conflict` (`id`), `400 invalid_teaching` |
 
 Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 `405 {"error": "method_not_allowed"}`. The registry signature fields are documented in the
@@ -691,8 +742,8 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 ## 8. Integration: websocket API, appliances and statistics
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
-administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over` and `undo_take_over`, each command relays one add-on request and
-returns its JSON unchanged.
+administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over`, `undo_take_over`, `teaching`, `teach` and
+`stop_teaching`, each command relays one add-on request and returns its JSON unchanged.
 
 | Command | Parameters | Result |
 |---|---|---|
@@ -711,6 +762,9 @@ returns its JSON unchanged.
 | `energy_mapper/tracking` | – | `{"devices": [{"stat_consumption", "name", "included_in_stat"}], "appliances": [{"key", "statistic_id", "in_dashboard", "taken_over": {"stat_consumption", "name"} \| null, "suggested": [{"stat_consumption", "reason"}]}]}` (§ 8.5); answered by the integration alone; admin only. Integration 0.8.0+ |
 | `energy_mapper/take_over` | `appliance` (key), `stat_consumption` | Replaces that individual device of the Energy dashboard by the appliance's statistic (§ 8.5): `{"key", "statistic_id", "replaced"}`; admin only |
 | `energy_mapper/undo_take_over` | `appliance` (key) | Puts the replaced device back: `{"key", "restored"}`; admin only |
+| `energy_mapper/teaching` | – | `GET /api/teaching` and `"supported"` (false for an add-on before 0.11.0: `{"supported": false, "teachers": []}`), for every user (§ 8.6). Integration 0.9.0+ |
+| `energy_mapper/teach` | `appliance` (key), `entity_id` (a power sensor) | Starts learning the appliance from that sensor: `{"key", "teacher"}`; admin only |
+| `energy_mapper/stop_teaching` | `appliance` (key), `use` (bool, default false) | Ends the learning; with `use`, links the learned signature: `{"key", "sources", "signature", "created"}`; admin only |
 
 The review commands take `signature_id` (`id` is the websocket message's own id).
 Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized`,
@@ -719,6 +773,10 @@ default), or the add-on's own code and message (`invalid_day`, `not_found`, `no_
 `no_data`, `partial_day`, `ha_error`, `internal`), else `http_<status>` / `invalid_response`;
 `validate` and `merge_signature` also answer `already_linked` (the signature or the entity is
 already a source of an appliance) and `not_found` (no such signature or appliance);
+`teach` answers `invalid_format` (not a power sensor), `not_found`, `already_linked` (the sensor is a
+source or the teacher of another appliance) and `not_supported` (add-on before 0.11.0);
+`stop_teaching` answers `not_found` (not learning) or the add-on's `not_learned`,
+`not_recognisable` and `conflict`;
 `take_over` and `undo_take_over` answer `not_found` (no such appliance, device or record),
 `already_tracked` (the appliance's statistic is already in the Energy dashboard),
 `no_statistic` (an appliance without a statistic of its own, or not imported yet) and
@@ -1242,6 +1300,73 @@ feedback with the appliance's own estimate, and the signature it hid is in the c
 a relay's estimate gives way to the statistic, which keeps the relay measured with its
 learned polarity, and the nested devices stay `nested`. Covered by `tests/test_energy_config.py`.
 
+### 8.6 Learning an appliance from a measured device (#14)
+
+A smart plug moved from appliance to appliance can teach each one its signature for good: while
+it measures an appliance its power series is the ground truth of that appliance; once it is
+gone, the appliance keeps being tracked from the whole-house curve with the learned signature.
+
+**Who owns what.** The decision (which sensor teaches which appliance, since when) is the
+user's, in the appliance's config subentry: `teacher: {entity_id, since}`, pushed with the
+appliances (§ 8.2); a sensor teaches one appliance only. What is learned is the add-on's,
+computed when asked from the stored days (`teaching.py`), so nothing new has to be kept in
+sync: the ground truth of a day lives in its report (`ground_truth`) and follows the
+retention of the summaries.
+
+**Analysis** (`service.py`, `energy_config.derive`). A teaching sensor is **never
+subtracted** while it teaches, whatever declares it (a sub-meter source of the appliance, a
+device of the Energy dashboard, which gets the role `teacher`, or the settings): the
+appliance stays in the residual exactly as it will be once the plug is gone, so what is
+measured is what the user will get. The sensor is read with the other histories (its unit
+scaled to W); after the analysis, each taught appliance's runs of the day (§ 4.10) are stored
+in the report. A day analysed again (`POST /api/analyze`) while the sensor teaches gets a
+ground truth too, from whatever history the recorder still holds.
+
+**Status** (`GET /api/teaching`, `teaching.status`). The days whose ground truth has that
+appliance and that sensor (and some covered time) are the learning days. From their runs,
+`groundtruth.learn` gives the signature; `teaching.resolve` finds the registry signature it is
+(steady or cycling: `nearest_signature`, the clustering's rule; multi-phase: the nearest
+template within `cycle_distance`, an expected one without a template by its power). When the
+registry has none yet, it is evaluated as the expected signature it would be, added to a copy
+of the registry. A signature that belongs to another appliance (`appliance` set to another
+key, or a label without appliance) is reported as `conflict`. The evaluation runs
+`groundtruth.detections` and `evaluate` on each learning day, then merges them.
+
+**Finishing** (`POST /api/teaching`, `teaching.apply`; `energy_mapper/stop_teaching` with
+`use`). The add-on returns the registry signature, or creates an **expected signature** from
+the learned one (§ 8.2): labelled with the appliance and its key, the learned duration, on-time,
+period and duty, and for a multi-phase one the learned template and cycle energy, plus
+`taught: {entity_id, at}`. A multi-phase one is then in `cycle_templates` at once (labelled),
+so the next analyses recognise its cycles without waiting for three candidates; the nightly
+update replaces the template by the cluster's when one forms. Refused when nothing was learned
+(`not_learned`), below the step threshold (`not_recognisable`) or owned by another appliance
+(`conflict`). The integration then, under the synchronisation lock, adds the signature source
+(refused if another appliance has it), removes the teaching sensor's sub-meter source (the
+plug goes away), clears the teacher and marks the appliance for a re-import, so the stored
+days (analysed with the plug not subtracted) give its hourly statistic the signature's energy;
+it pushes the appliances and records `validate` with the appliance's key. *Stop learning*
+(without `use`) only clears the teacher: the sensor is subtracted again if it is still a
+source.
+
+**Panel** (Appliances tab, `frontend/src/teaching.ts`, unit tested). Administrators get *Learn
+from a plug* next to *Settings* on a card that is not learning (an add-on before 0.11.0: not
+offered): a picker of the power sensors (`device_class: power` or a W/kW unit) not used by
+another appliance, the appliance's own sub-meter sensors first and preselected, and a text
+saying that the sensor stops being subtracted, *Start learning* / *Cancel*. A learning card
+shows to every user "Learning from *sensor* · since *day*", the days and uses seen, the
+learned signature (its provisional name, § 3, and the phases of a multi-phase one), what keeps
+it from being finished (too low for the curve, owned by another appliance) and "Found from the
+curve: 4 of 5 uses (recall 80 %), precision 100 %". Administrators get *Stop learning* and
+*Finish* (disabled until a recognisable signature without conflict is learned), each with its
+confirmation inside the card. Nothing changes before the confirmation.
+
+**For the nightly self-test (#15).** It can reuse, unchanged: `groundtruth.runs_of` (the
+truth of a hidden measured device), `detections` (what a day's analysis recognised as a
+signature), `evaluate` / `merge_evaluations` (per day and over the window), `learn` (the
+signature to look for), and from the add-on `teaching.day_truth` (the stored form, with the
+key of the appliance), `truth_days`, `resolve` and `evaluate_days` (the evaluation of one
+signature over stored days).
+
 ## 9. Settings and precedence
 
 The settings have three possible sources, resolved **key by key**:
@@ -1374,10 +1499,17 @@ cannot be read).
 - The options flow cannot express "no sub-meters": an empty field falls back to the automatic
   value (#33). Excluding a switch is possible.
 
+- Learning from a measured device (§ 8.6) learns one signature per appliance: the most frequent
+  kind, duration band or programme. An appliance whose uses split into several signatures (two
+  programmes, short and long uses) keeps the others to review or merge. Days analysed before
+  the learning started (with the plug subtracted) are not used until they are analysed again.
+  A sensor that keeps measuring the appliance after *Finish* and is still a device of the
+  Energy dashboard is subtracted again, and the signature then disappears from the curve.
+
 ## 12. Roadmap pointers
 
 | Milestone | Issues |
 |---|---|
-| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13, done), learn from measured devices (#14), nightly self-test (#15), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
+| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13, done), learn from measured devices (#14, done), nightly self-test (#15), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
 | [v2 – Live](https://github.com/sylvaing/ha-energy-mapper/milestone/3) | Real-time detection (#17), per-phase analysis (#18), multi-phase appliance cycles (#26) |
 | [v3 – Publish](https://github.com/sylvaing/ha-energy-mapper/milestone/4) | Standalone Docker image for Container/Core (#19), release process and store listings (#20) |

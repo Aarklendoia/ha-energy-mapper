@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -698,7 +699,7 @@ class ApplianceSubentryFlow(ConfigSubentryFlow):
 
     def _relink(self, source: Source) -> SubentryFlowResult:
         current = self._current()
-        data = Appliance(current.key, current.name, current.statistic_id, (source,)).subentry_data()
+        data = replace(current, sources=(source,)).subentry_data()
         return self.async_update_and_abort(self._get_entry(), self._get_reconfigure_subentry(), data=data)
 
     async def async_step_link_relay(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:

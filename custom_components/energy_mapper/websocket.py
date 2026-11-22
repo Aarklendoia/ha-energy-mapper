@@ -56,6 +56,9 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_tracking,
         ws_take_over,
         ws_undo_take_over,
+        ws_teaching,
+        ws_teach,
+        ws_stop_teaching,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -256,6 +259,7 @@ def ws_appliances(
                     "statistic_id": a.statistic_id if a.estimated else None,
                     "power_w": a.power_w,
                     "sources": [s.as_dict() for s in a.sources],
+                    "teacher": a.teacher.as_dict() if a.teacher else None,
                 }
                 for a in appliances
             ],
@@ -485,3 +489,65 @@ async def ws_undo_take_over(
     await _energy(
         hass, connection, msg, lambda coordinator: coordinator.async_undo_take_over(msg["appliance"])
     )
+
+
+# ---------------------------------------------------------------------------
+# learning from a measured device (#14): the status for every user, the
+# actions for administrators
+# ---------------------------------------------------------------------------
+@websocket_api.websocket_command({vol.Required("type"): "energy_mapper/teaching"})
+@websocket_api.async_response
+async def ws_teaching(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The learning status of the appliances taught by a measured device
+    (``GET /api/teaching``), and whether the add-on supports it."""
+    await _review(hass, connection, msg, lambda coordinator: coordinator.async_teaching())
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "energy_mapper/teach",
+        vol.Required("appliance"): APPLIANCE_KEY,
+        vol.Required("entity_id"): cv.entity_id,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_teach(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Learn an appliance from a power sensor that measures it."""
+
+    async def teach(coordinator: EnergyMapperCoordinator) -> dict[str, Any]:
+        appliance = await coordinator.async_teach(msg["appliance"], msg["entity_id"])
+        return {"key": appliance.key, "teacher": appliance.teacher.as_dict() if appliance.teacher else None}
+
+    await _review(hass, connection, msg, teach)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "energy_mapper/stop_teaching",
+        vol.Required("appliance"): APPLIANCE_KEY,
+        # link the learned signature to the appliance (the panel asked to confirm)
+        vol.Optional("use", default=False): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_stop_teaching(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """End the learning of an appliance, using the learned signature or not."""
+
+    async def stop(coordinator: EnergyMapperCoordinator) -> dict[str, Any]:
+        appliance, answer = await coordinator.async_stop_teaching(msg["appliance"], msg["use"])
+        return {
+            "key": appliance.key,
+            "sources": [s.as_dict() for s in appliance.sources],
+            "signature": (answer or {}).get("signature"),
+            "created": bool((answer or {}).get("created")),
+        }
+
+    await _review(hass, connection, msg, stop)

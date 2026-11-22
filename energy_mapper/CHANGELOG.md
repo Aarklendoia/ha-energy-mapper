@@ -7,6 +7,25 @@
   `grid`, `solar` or `device`, the `declared_kwh` and `measured_kwh` of a
   tracking gap), so the panel (integration 0.9.0) writes it in the user's
   language. `detail` stays, in English, as the fallback for older panels.
+- Learn an appliance from a measured device (#14): an appliance pushed with a
+  `teacher` (`{"entity_id": <power sensor>, "since"}`, a temporary smart plug)
+  is learned from it. The sensor is never subtracted while it teaches (the
+  appliance stays in the whole-house curve, as after the plug is gone; an
+  Energy dashboard device gets the role `teacher`), and each analysed day keeps
+  its runs in a new report field `ground_truth`: start, end, energy, power,
+  kind (`steady`, `cycling` or `multiphase`, with the phases) and the periods
+  the sensor reported.
+- From these runs the add-on learns one signature of the existing kinds
+  (steady power and duration band, cycling on-time and period, or the phase
+  template of the most frequent programme), finds the registry signature it is
+  and measures the recognition from the curve against the plug over the
+  learning days: precision, recall, F1 and energy ratio, per day and in all.
+  New `GET /api/teaching` (status) and `POST /api/teaching` (the signature to
+  link, created as an expected signature when the registry has none; a
+  multi-phase one with the learned template, so its cycles are recognised at
+  once).
+- The ground truth and the evaluation are a pure module of the engine
+  (`nilm_core/groundtruth.py`), for the nightly self-test (#15) too.
 
 ## 0.10.0
 
