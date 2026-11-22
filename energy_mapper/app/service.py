@@ -10,14 +10,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import selftest
-from appliances import analysis_options, apply_to_registry, teachers
+from appliances import analysis_options, apply_to_registry, examples_of, teachers
 from const import VERSION
 from energy_config import DerivedConfig, derive, tracking_gaps
+from examples import status as examples_status
 from ha_client import HAError
 from nilm_core import analyze, parse_numeric
 from nilm_core.correlation import CorrelationConfig
 from nilm_core.correlation import suggest as correlate
 from nilm_core.registry import (
+    Matcher,
     RegistryConfig,
     cycle_templates,
     day_max_w,
@@ -642,6 +644,21 @@ class Analyzer:
                 self.store.save_registry(registry)
         _LOGGER.info("signature %s learned for %s (%s)", sig["id"], key, "new" if created else "existing")
         return {"signature": sig, "created": created, "learned": learned}
+
+    # -- labelled examples (#17) ------------------------------------------------
+    def examples(self) -> dict:
+        """``GET /api/examples``: what the analysed days say about the
+        labelled examples of each appliance (``examples.py``)."""
+        summaries = self.store.summaries_all()
+        registry = self.store.load_registry() or empty_registry(self.registry_config)
+        matcher = Matcher(registry)
+        return {
+            "last_day": next(reversed(summaries), None) if summaries else None,
+            "appliances": [
+                examples_status(a, summaries, registry, self.step_threshold_w, matcher)
+                for a, _ in examples_of(self.appliances)
+            ],
+        }
 
     def analyze_day(self, day: dt.date) -> dict:
         """Analyse one past day now (overwrites its report)."""

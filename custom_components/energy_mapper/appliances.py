@@ -18,12 +18,22 @@ measures it (a temporary smart plug). The add-on does not subtract it and
 learns the appliance's signature from it; when the learning is finished the
 signature becomes a source and the teacher goes away.
 
+An appliance may also keep **labelled examples** (#17): at most
+``MAX_EXAMPLES`` uses the user pointed at in the panel's live view
+(``{"t_on", "t_off" (null until the stop is known), "power_w", "source":
+"live" | "guided", "created", "signature_id"?, "live"? ({"id", "session"}
+of the live event while it is open)}``). They are stored in the subentry, so
+they are in every Home Assistant backup, and pushed to the add-on with the
+appliance, whose nightly analysis finds them again.
+
 Identity (stable across renames, link changes and merges): the ``key`` is
 the device identifier, the subentry's ``unique_id`` and the base of the
 entity unique ids; ``statistic_id`` is the id of the hourly energy
 statistic. Both are given at creation from the first source
 (``load:<entity_id>`` / ``signature:<registry id>``, as published since
-#12) and never change afterwards.
+#12), or from the name for an appliance created without a source yet
+(``appliance:<name>``, a new appliance labelled in the live view before its
+stop is known), and never change afterwards.
 """
 
 from __future__ import annotations
@@ -44,6 +54,15 @@ KIND_SUBMETER = "submeter"
 _PREFIX = {KIND_LOAD: "load", KIND_SIGNATURE: "signature", KIND_SUBMETER: "submeter"}
 # section of the add-on's hourly answer of each source type
 HOURLY_SECTION = {KIND_LOAD: "known", KIND_SIGNATURE: "signatures"}
+# key prefix of an appliance created without a source (#17)
+PREFIX_NAMED = "appliance"
+
+# labelled examples (#17), per appliance; the guided ones are kept first
+MAX_EXAMPLES = 20
+EXAMPLE_LIVE = "live"
+EXAMPLE_GUIDED = "guided"
+# the add-on's duration bands (nilm_core.signatures.DURATION_BANDS)
+_BANDS = ((600.0, "short"), (3600.0, "medium"))
 
 
 @dataclass(frozen=True)
@@ -139,6 +158,7 @@ class Appliance:
     subentry_id: str | None = None
     power_w: float | None = None  # typical power learned by the add-on
     teacher: Teacher | None = None
+    examples: tuple[dict[str, Any], ...] = ()  # labelled examples (#17)
 
     @property
     def estimated(self) -> tuple[Source, ...]:
@@ -156,7 +176,15 @@ class Appliance:
         }
         if self.teacher is not None:
             out["teacher"] = self.teacher.as_dict()
+        if self.examples:
+            out["examples"] = [dict(e) for e in self.examples]
         return out
+
+    @property
+    def awaits_signature(self) -> bool:
+        """Created from the live view to be recognised in the curve, before
+        its stop (so its signature) was known: no source, no teacher."""
+        return not self.sources and self.teacher is None
 
     def declaration(self) -> dict[str, Any]:
         """The appliance as pushed to the add-on (``PUT /api/appliances``)."""
@@ -176,6 +204,7 @@ class Appliance:
             subentry_id,
             power_w,
             Teacher.from_dict(data.get("teacher")),
+            tuple(dict(e) for e in data.get("examples") or [] if isinstance(e, Mapping)),
         )
 
 
@@ -195,14 +224,41 @@ def new_appliance(name: str, sources: Iterable[Source], taken_keys: Iterable[str
     suffix in the rare case they are taken, e.g. by an appliance re-linked
     away from that source)."""
     sources = tuple(sources)
-    first = sources[0]
-    base = f"{_PREFIX[first.type]}:{first.id}"
+    if sources:
+        base = f"{_PREFIX[sources[0].type]}:{sources[0].id}"
+    else:
+        base = f"{PREFIX_NAMED}:{slugify(name) or 'appliance'}"
     taken = set(taken_keys)
     key, n = base, 1
     while key in taken:
         n += 1
         key = f"{base}-{n}"
     return Appliance(key, name, key_statistic_id(key), sources)
+
+
+def add_example(
+    examples: Iterable[Mapping[str, Any]], new: Mapping[str, Any], limit: int = MAX_EXAMPLES
+) -> tuple[dict[str, Any], ...]:
+    """The examples with ``new`` (replacing one that starts within a second
+    of it: the same use labelled again, or completed), in time order, at
+    most ``limit``: the oldest live ones go first, the guided ones last."""
+    t_on = float(new["t_on"])
+    items = [dict(e) for e in examples if abs(float(e["t_on"]) - t_on) > 1.0]
+    items.append(dict(new))
+    items.sort(key=lambda e: float(e["t_on"]))
+    while len(items) > limit:
+        live = [e for e in items if e.get("source") != EXAMPLE_GUIDED]
+        items.remove((live or items)[0])
+    return tuple(items)
+
+
+def signature_group(t_on: float, t_off: float, cycling: bool = False) -> tuple[str, str]:
+    """(kind, band) of the signature of a use: a session of on/off cycles is
+    a cycling one, else steady in the duration band of the use."""
+    if cycling:
+        return "cycling", "session"
+    duration = t_off - t_on
+    return "steady", next((name for hi, name in _BANDS if duration < hi), "long")
 
 
 def appliance_of_key(key: str, name: str) -> Appliance | None:

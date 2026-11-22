@@ -247,6 +247,8 @@ announces itself to Home Assistant through Supervisor discovery.
 | `GET /api/self_test` | The success rate of each measured device hidden by the nightly self-test (see [Self-test](#self-test)) |
 | `GET /api/live?since=<seq>&wait=<s>` | The [live view](#live-view), a long-poll: a snapshot without `since`, else what changed after it |
 | `GET /api/live/stats` | The live view's state and timings (does not start it) |
+| `GET /api/live/event?id=<id>&session=<session>` | One event of the running live session, to label it: `{"session", "event"}`; 404 `not_found` (cancelled, or gone 15 minutes after it ended), 409 `session_ended` |
+| `GET /api/examples` | The [labelled examples](#labelled-examples) of each appliance, found again in the analysed days |
 
 `GET /api/signatures` answers:
 
@@ -413,6 +415,71 @@ device of the Energy dashboard, the settings): the appliance stays in the
 whole-house curve exactly as it will once the plug is gone. Each analysed day
 keeps the sensor's runs in `ground_truth` (see [Reports](#reports)). A sensor
 teaches one appliance only.
+
+An appliance may also have `examples` (add-on 0.12.0+, #17), at most 20: the
+uses labelled in the panel's *Live* tab, see [Labelled examples](#labelled-examples).
+They do not change the analysis options (labelling never restarts the live
+view).
+
+### Labelled examples
+
+When you label a step of the *Live* tab ("this is the toaster"), the
+integration keeps a **labelled example** in the appliance's subentry (so in
+every Home Assistant backup) and pushes it with the appliance:
+
+```json
+{"t_on": 1800000000.0, "t_off": 1800000130.0, "power_w": 850,
+ "source": "live", "created": 1800000200.0, "signature_id": "short-850w"}
+```
+
+`t_off` is `null` while the stop is not known (the integration completes it
+when the live event stops); `source` is `live` (a line of the feed) or
+`guided` (the "I switch an appliance on" mode); `signature_id` is the
+signature named at the time; `live` (`{"id", "session"}`) is the live event
+while the example is open.
+
+`GET /api/examples` says what the analysed days make of them, for each
+appliance with examples:
+
+```json
+{"last_day": "2027-03-09", "appliances": [
+  {"key": "appliance:toaster", "name": "Toaster", "measured": false,
+   "total": 3, "found": 2, "other": 0, "pending": 1,
+   "signature": null,
+   "link": {"id": "short-850w", "kind": "steady", "band": "short", "power_w": 850,
+            "count": 23, "label": null},
+   "replace": [], "conflict": null, "disagreement": [],
+   "examples": [
+     {"t_on": 1800000000.0, "t_off": 1800000130.0, "power_w": 850, "source": "live",
+      "status": "found", "reason": null, "signature_id": "short-850w",
+      "activation": {"day": "2027-03-09", "start": 1800000001, "end": 1800000128, "power_w": 846}},
+     {"t_on": 1800090000.0, "t_off": null, "power_w": 850, "source": "guided",
+      "status": "pending", "reason": "day_not_analysed", "signature_id": null, "activation": null}
+   ]}
+]}
+```
+
+1. **Find**: the activation of the day that overlaps the example by at least
+   half of the shorter of the two (the rule of the teaching evaluation, #14);
+   for an open example, the activation that starts within 30 s of `t_on`. Its
+   registry signature is the one the analysis recognises.
+2. **Link**: when the appliance has no signature the analysis has seen yet
+   (none, or only expected ones), the signature most examples were found as
+   is proposed in `link` (with its `count` of past uses), replacing the
+   expected ones in `replace`; the integration makes it a source of the
+   appliance and records the review's *validate* decision. When that
+   signature belongs to another appliance: `conflict` (`{"id", "appliance"}`).
+3. **Refine**: once linked, the signature gets the appliance's name as its
+   label (as any signature source).
+4. **Measure**: each example is `found` (recognised as one of the
+   appliance's signatures), `other` (as another signature, `owner` when it
+   belongs to another appliance; listed in `disagreement`) or `pending` with
+   a `reason`: `day_not_analysed` (today), `day_missing` (no stored summary:
+   the analysis failed or the day was pruned), `no_activation`, `too_small`
+   (below the step threshold), `not_in_registry`, or `measured` (the
+   appliance is measured by a switch or a power sensor: its uses are not in
+   the curve). `found` of `total` is the recognition shown on the
+   appliance's card.
 
 ### Learning from a measured device
 

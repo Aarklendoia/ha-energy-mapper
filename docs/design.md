@@ -809,6 +809,8 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 | `GET /api/self_test` | `200 {"enabled", "devices_per_night", "window_days", "min_uses", "last_day", "devices": [...]}`: per tested device `{entity_id, name, appliance, state, tests, nights, first_day, last_day, uses, found, detections, correct, recall, precision, truth_kwh, detected_kwh, energy_ratio, rate, trend, learned, signature, history}` (§ 8.7) |
 | `GET /api/live?since=<seq>&wait=<s>` | The live view's long-poll (§ 8.8): `200 {"seq", "session", "available": true, "reset", "history_s", "threshold_w", "time_zone", "curve", "events", "now"}`, or `200 {"seq", "available": false, "reason", "error"?, "retry_at"?}`; `400 invalid_query` |
 | `GET /api/live/stats` | `200` the live view's state, counters and timings (§ 8.8); does not start it |
+| `GET /api/live/event?id=<id>&session=<session>` | `200 {"session", "event"}`: one event of the running live session, to label it (§ 8.9); `404 not_found` (cancelled, or pruned 15 min after it ended), `409 session_ended` (another session, or none running), `400 invalid_query`. Does not start the view |
+| `GET /api/examples` | `200 {"last_day", "appliances": [...]}`: per appliance with labelled examples, what the analysed days found of them: `{key, name, measured, total, found, other, pending, signature, link, replace, conflict, disagreement, examples}` (§ 8.9) |
 
 Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 `405 {"error": "method_not_allowed"}`. The registry signature fields are documented in the
@@ -823,7 +825,7 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
 administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over`, `undo_take_over`, `teaching`, `teach`,
-`stop_teaching`, `self_test` and `live/subscribe`, each command relays one add-on request and returns its JSON unchanged.
+`stop_teaching`, `self_test`, `live/subscribe` and `live/label`, each command relays one add-on request and returns its JSON unchanged.
 
 | Command | Parameters | Result |
 |---|---|---|
@@ -833,7 +835,7 @@ administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_ove
 | `energy_mapper/analyze` | `day` | `POST /api/analyze?day=<day>` (timeout 600 s; admin only) |
 | `energy_mapper/day_stats` | `days`: list of at most 62 days | `{"days": {"YYYY-MM-DD": {"house_kwh", "max_house_w", "notable_peaks", "last_notable"}}}`; days without a report are left out. The integration reads the reports (4 at a time) and caches the totals (up to 400 days; an analysis invalidates its day). |
 | `energy_mapper/signatures` | – | `GET /api/signatures` |
-| `energy_mapper/appliances` | – | `{"entry_id", "appliances": [{"key", "name", "subentry_id", "statistic_id", "power_w", "sources"}]}`: the appliance subentries, sorted by name, for every user (the panel's *Appliances* tab, #54). Answered by the integration alone; `statistic_id` is null for an appliance without a statistic of its own (power sensor only). Integration 0.7.0+. |
+| `energy_mapper/appliances` | – | `{"entry_id", "appliances": [{"key", "name", "subentry_id", "statistic_id", "power_w", "sources", "teacher", "examples", "examples_status"}]}`: the appliance subentries, sorted by name, for every user (the panel's *Appliances* tab, #54). Answered by the integration alone; `statistic_id` is null for an appliance without a statistic of its own (power sensor only). `examples`: its labelled examples; `examples_status`: the last `GET /api/examples` item of the appliance, or null (§ 8.9, integration 0.10.0+). Integration 0.7.0+. |
 | `energy_mapper/settings` | – | `GET /api/settings` (settings are changed in the options flow) |
 | `energy_mapper/review` | – | `GET /api/review`, `"repair"` (the notice is on) and `"appliances"` (`[{key, name}]` of the subentries, sorted by name: what a signature can be merged into); admin only |
 | `energy_mapper/validate` | `signature_id`, `name`, `entity_id`?, `on_states`? (at most 20) | Creates the appliance (§ 8.3, § 8.4): `{"appliance": {"key", "name", "sources"}}`; admin only |
@@ -847,6 +849,7 @@ administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_ove
 | `energy_mapper/stop_teaching` | `appliance` (key), `use` (bool, default false) | Ends the learning; with `use`, links the learned signature: `{"key", "sources", "signature", "created"}`; admin only |
 | `energy_mapper/self_test` | – | `GET /api/self_test` and `"supported"` (false for an add-on before 0.11.0: `{"supported": false, "enabled": false, "devices": []}`), for every user (§ 8.7). Integration 0.9.0+ |
 | `energy_mapper/live/subscribe` | – | A **subscription** (§ 8.8), for every user, read-only: the result, then `snapshot`, `update` and `status` event messages until `unsubscribe_events`. Integration 0.10.0+ |
+| `energy_mapper/live/label` | `target`, the use (`event_id` + `session`, and/or `t_on`, `t_off`, `power_w`), `source`, and per target `signature_id`, `appliance`, `name`, `track`, `entity_id`, `on_states` | Labels a live event (§ 8.9): `{"effect", "appliance", "signature", "example", "open", "confirmed", "other_appliance"}`; admin only. Integration 0.10.0+ |
 
 The review commands take `signature_id` (`id` is the websocket message's own id).
 Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized`,
@@ -973,7 +976,7 @@ meter) and is not duplicated. Live power and on/off entities come with real-time
 
 **Source of truth: Home Assistant.** Each appliance is a config subentry (type `appliance`)
 of the Energy Mapper entry: `title` = name, `unique_id` = key, `data` =
-`{key, statistic_id, sources}`. Its device and entities belong to the subentry
+`{key, statistic_id, sources, teacher?, examples?}` (`examples`: the labelled examples, § 8.9). Its device and entities belong to the subentry
 (`config_subentry_id`), so the integration page lists the appliances, and Home Assistant
 removes the device and entities with the subentry. The add-on owns what is *learned*
 (signatures, powers, polarities); the user's *decisions* (names, links, merges, deletions,
@@ -1627,6 +1630,86 @@ kept across a `recv_text` timeout. Integration (`tests_integration/test_live.py`
 long-polling add-on): snapshot then updates, a non-admin subscriber joining gets the merged
 snapshot, a cancelled event leaves it, a reset, unsubscribing stops the poll, every status
 reason, an add-on too old, not loaded, unload.
+
+### 8.9 Labelled examples (#17)
+
+Phase 1 of #17, part 3: what a label in the live view (§ 8.8) does. A **labelled example** is
+one use of an appliance the user pointed at: `{"t_on", "t_off" (null until the stop is known),
+"power_w", "source": "live" | "guided", "created", "signature_id"? (the signature named at the
+time), "live"? ({"id", "session"} of the live event while it is open)}`. It is a tiny ground
+truth, like the runs of a teaching plug (§ 8.6), and it is used with the same tools.
+
+**Storage.** In the appliance's subentry (`data.examples`), so in every Home Assistant backup,
+deleted with the appliance; at most 20 per appliance (`appliances.add_example`: the same use
+labelled again, within a second, replaces it; over 20 the oldest `live` one goes first, the
+`guided` ones last); a merge keeps the examples of both appliances. Pushed with the appliance
+(`PUT /api/appliances`; the add-on validates them, `appliances._example`). They are not part of
+the analysis options (`derive_options`), so a label never restarts the live session.
+
+**Websocket `energy_mapper/live/label`** (admin only, `labels.py`). The use comes from the live
+event (`event_id` and `session`: `GET /api/live/event`, the add-on's `LiveService.event`
+accessor, under its lock) and/or explicit `t_on`, `t_off` (null: open), `power_w` (the guided
+mode); explicit fields win, and are enough when the event is gone (`not_found`,
+`session_ended`). An event's stop counts once it stopped (`running` false); its power is
+`power_w` (a session's median step); a session (`event.session`) makes a cycling signature. An
+event whose switch-on was not seen (`delta_w` < 0) or a cancelled one is refused
+(`invalid_event`). The target reuses the paths of the review and of the appliances:
+
+| `target` | Parameters | Effect | `effect` |
+|---|---|---|---|
+| `signature` | `signature_id`, `name`, `entity_id`?, `on_states`? | An unnamed registry signature is named: the review's *validate*, creating the appliance with the example (`async_validate`) | `signature_named` (`signature.past_uses`: its `count`) |
+| | | The signature already belongs to an appliance: the example is added to that one | `example_added`, `confirmed: true` |
+| `appliance` | `appliance` (key), `signature_id`? | Adds the example. With an unnamed signature: it joins the appliance's sources (`async_merge_signature`, #43, the review's *validate*; its stored days are imported again). One of the appliance's own: a confirmation. One of another appliance ("No, it is..."): only the example; `other_appliance` | `signature_merged` / `example_added` |
+| `new` | `name`, `track`: `curve` (default) | Whole use (start and stop) of at least 50 W: `POST /api/signatures` (`signature_group`: steady in the use's duration band, or cycling for a session) gives an unnamed signature at that power or a new expected one, then *validate* with the example. Open use: an appliance without source (key `appliance:<slug of the name>`) and the open example; its signature follows when the stop arrives or at night. A signature of another appliance at that power: `conflict` | `appliance_created` (`signature.created: true`, or no signature yet) / `signature_named` (an existing one) |
+| | `track`: `switch` / `sensor`, `entity_id`, `on_states`? | An appliance with that entity source (`entity_source`: a switch, an `enum` sensor, or a power sensor as a sub-meter) and the example; `already_linked` when another appliance has it | `appliance_created` |
+| | `track`: `teacher`, `entity_id` | An appliance taught by that power sensor (§ 8.6), without source yet | `appliance_created` |
+| `ignore` | `signature_id` | "Never propose this again": the review's *ignore* decision, no example | `signature_ignored` |
+
+The answer: `{"effect", "appliance": {"key", "name", "sources", "teacher", "examples": <count>}
+| null, "signature": {"id", "kind", "band", "power_w", "past_uses", "created"} | null,
+"example": <as stored> | null, "open": <stop not known yet>, "confirmed", "other_appliance":
+{"key", "name"} | null}`. Errors: `invalid_format`, `invalid_event`, `not_found` (signature,
+appliance or event), `session_ended`, `already_linked`, `conflict`, `addon_unavailable`.
+
+**Completion when the stop arrives.** `LiveHub` tells the coordinator the events of each answer
+(`on_events` → `async_live_events`). An open example whose `live` reference is an event that
+stopped is completed (`t_off`, `power_w`; `live` removed); a cancelled one is dropped. An
+appliance created without a source (`awaits_signature`) then gets the signature of the whole use
+(`async_track_in_curve`: `POST /api/signatures`, then `async_merge_signature`). Without a panel
+open (no live poll), the night completes it.
+
+**At night** (`examples.py` in the add-on, `GET /api/examples`, computed from the stored day
+summaries, so after each nightly analysis):
+
+1. *Find*: the activation of the example's day that overlaps it by at least half of the shorter
+   (`groundtruth.matches`, the evaluation rule of § 4.10), the largest overlap first; an open
+   example: the activation that starts within 30 s of `t_on`. Its registry signature:
+   `Matcher.match`.
+2. *Link*: an appliance with no signature the analysis has seen (none, or only expected ones,
+   `count` 0) and not measured by a switch or a sensor gets `link`: the signature most examples
+   were found as (ties: the most recent), with `replace` = its expected signature sources; one
+   that belongs to another appliance is a `conflict` instead (`teaching.owner_of`).
+3. *Refine*: the integration, after each synchronisation (`_async_apply_examples`, outside the
+   synchronisation lock), applies `link` through `async_merge_signature` (dropping `replace`,
+   completing the open examples with the activation's end and power), so the review records
+   *validate* and the push gives the signature the appliance's label (`apply_to_registry`): the
+   registry matches it first from then on.
+4. *Measure*: each example is `found` (one of the appliance's signatures, the linked one
+   included), `other` (another signature: `owner`, and `disagreement` lists them: contradicting
+   examples) or `pending` with a `reason` (`day_not_analysed`, `day_missing`, `no_activation`,
+   `too_small`, `not_in_registry`, `measured`). `found` of `total` is the recognition shown on
+   the appliance's card (`examples_status` in `energy_mapper/appliances`).
+
+**Tests.** Add-on (`tests/test_examples.py`): validation; find by overlap and by start;
+found, linked, an expected signature replaced, a conflict, contradicting examples, the majority,
+every pending reason, a measured appliance; end to end on synthetic days (examples a few seconds
+off, one open: all found, the toaster's signature linked with all its past uses, labelled after
+`apply_to_registry`, kept by the next night); the endpoints; the live event accessor
+(`tests/test_live_service.py`). Integration (`tests_integration/test_live_label.py`): every
+target and effect, the guided mode's explicit times, an open new appliance completed by its stop
+through `async_live_events` (and through `LiveHub`), a cancelled event, entity tracks and their
+refusals, errors and the admin check, the night's link applied from `GET /api/examples`, merges
+keeping the examples, the bound of 20.
 
 ## 9. Settings and precedence
 

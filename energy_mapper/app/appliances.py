@@ -28,6 +28,13 @@ a power sensor that measures it for a while (a temporary smart plug). The
 sensor is not subtracted (the appliance stays in the whole-house curve, as
 it will once the plug is gone), and each analysed day keeps the sensor's
 runs as the ground truth of the appliance (``teaching.py``).
+
+An appliance may also have **labelled examples** (``examples``, #17): at
+most ``MAX_EXAMPLES`` uses the user pointed at in the live view, ``{"t_on",
+"t_off" (null while the stop is not known), "power_w", "source": "live" |
+"guided", "created", "signature_id"? (the signature named at the time),
+"live"? ({"id", "session"}: the live event, while open)}``. The nightly
+analysis finds them again in the day summaries (``examples.py``).
 """
 
 from __future__ import annotations
@@ -45,6 +52,9 @@ MAX_SOURCES = 20
 MAX_TEXT = 100
 MAX_KEY = 200
 SOURCE_TYPES = ("switched_load", "signature", "submeter")
+MAX_EXAMPLES = 20
+EXAMPLE_SOURCES = ("live", "guided")
+MAX_EXAMPLE_S = 86400.0  # one use lasts at most a day
 
 
 class AppliancesError(ValueError):
@@ -123,7 +133,7 @@ def validate(data) -> list[dict]:
         where = f"appliances[{i}]"
         if not isinstance(item, dict):
             raise AppliancesError(f"{where}: expected an object")
-        unknown = set(item) - {"key", "name", "statistic_id", "sources", "teacher"}
+        unknown = set(item) - {"key", "name", "statistic_id", "sources", "teacher", "examples"}
         if unknown:
             raise AppliancesError(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
         key = _text(f"{where}.key", item.get("key"), MAX_KEY)
@@ -148,8 +158,59 @@ def validate(data) -> list[dict]:
             if ident in owners:
                 raise AppliancesError(f"{where}: {ident[1]} already teaches {owners[ident]!r}")
             owners[ident] = key
+        examples = item.get("examples")
+        if examples is not None:
+            if not isinstance(examples, list) or len(examples) > MAX_EXAMPLES:
+                raise AppliancesError(f"{where}.examples: expected a list of at most {MAX_EXAMPLES} items")
+            if examples:
+                appliance["examples"] = [
+                    _example(f"{where}.examples[{j}]", e) for j, e in enumerate(examples)
+                ]
         out.append(appliance)
     return out
+
+
+def _number(where: str, value, lo: float = -math.inf, hi: float = math.inf) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise AppliancesError(f"{where}: expected a number")
+    if not lo <= value <= hi:
+        raise AppliancesError(f"{where}: expected a value between {lo:g} and {hi:g}")
+    return float(value)
+
+
+def _example(where: str, item) -> dict:
+    """A labelled example (#17): one use of the appliance, from the live view."""
+    if not isinstance(item, dict):
+        raise AppliancesError(f"{where}: expected an object")
+    unknown = set(item) - {"t_on", "t_off", "power_w", "source", "created", "signature_id", "live"}
+    if unknown:
+        raise AppliancesError(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
+    out: dict = {"t_on": _number(f"{where}.t_on", item.get("t_on"), 0)}
+    t_off = item.get("t_off")
+    out["t_off"] = None
+    if t_off is not None:
+        out["t_off"] = _number(f"{where}.t_off", t_off, out["t_on"], out["t_on"] + MAX_EXAMPLE_S)
+    out["power_w"] = _number(f"{where}.power_w", item.get("power_w"), 1, 100000)
+    if item.get("source") not in EXAMPLE_SOURCES:
+        raise AppliancesError(f"{where}.source: expected one of {', '.join(EXAMPLE_SOURCES)}")
+    out["source"] = item["source"]
+    out["created"] = _number(f"{where}.created", item.get("created"), 0)
+    sid = item.get("signature_id")
+    if sid is not None:
+        if not isinstance(sid, str) or not SIGNATURE_ID_RE.match(sid):
+            raise AppliancesError(f"{where}.signature_id: expected a signature id, got {sid!r}")
+        out["signature_id"] = sid
+    live = item.get("live")
+    if live is not None:
+        if not isinstance(live, dict) or set(live) != {"id", "session"}:
+            raise AppliancesError(f'{where}.live: expected {{"id", "session"}}')
+        out["live"] = {k: int(_number(f"{where}.live.{k}", live[k], 0)) for k in ("id", "session")}
+    return out
+
+
+def examples_of(appliances: Iterable[Mapping]) -> list[tuple[Mapping, list[Mapping]]]:
+    """(appliance, examples) of the appliances with labelled examples."""
+    return [(a, a["examples"]) for a in appliances or () if a.get("examples")]
 
 
 def _teacher(where: str, item) -> dict:

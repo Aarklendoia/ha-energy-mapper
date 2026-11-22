@@ -369,6 +369,17 @@ def _matches(a: Interval, b: Interval, min_overlap: float) -> bool:
     return o > 0 and o >= min_overlap * shorter
 
 
+def overlap_s(a: Interval, b: Interval) -> float:
+    """Seconds shared by two intervals."""
+    return _overlap(a, b)
+
+
+def matches(a: Interval, b: Interval, min_overlap: float = 0.5) -> bool:
+    """The rule of :func:`evaluate`: they overlap by at least ``min_overlap``
+    of the shorter one (also used for the labelled examples, #17)."""
+    return _matches(a, b, min_overlap)
+
+
 def _inside(d: Interval, periods: Sequence[tuple[float, float]]) -> bool:
     """At least half of the detection is in the covered periods."""
     length = d.end - d.start

@@ -39,6 +39,28 @@
 - New option `live_view` (on by default): the kill switch of the live view.
 - The websocket client waits for a message with a timeout without losing a
   frame received in part.
+- Labelled examples (#17, part 3 of 4): an appliance pushed with `examples`
+  (at most 20: `{"t_on", "t_off" or null, "power_w", "source": "live" |
+  "guided", "created", "signature_id"?, "live"?}`) is a small ground truth.
+  `GET /api/examples` finds each example again in the analysed days (the
+  activation that overlaps it by half of the shorter, or that starts within
+  30 s of an open one), proposes the signature most examples were found as
+  for an appliance that has none seen yet (`link`, replacing its expected
+  ones), reports a signature of another appliance (`conflict`) and
+  contradicting examples (`disagreement`), and counts `found` of `total`,
+  with the reason of each pending example.
+- `GET /api/live/event?id=&session=`: one event of the running live session,
+  to label it (404 `not_found`, 409 `session_ended`).
+- Integration (0.10.0): websocket `energy_mapper/live/label` (administrators)
+  labels a live event or a measured use: names an unnamed signature (the
+  review's validate decision, creating the appliance), adds an example to an
+  appliance (merging an unnamed signature into it), creates a new appliance
+  tracked in the curve (its expected signature at once when the stop is
+  known, else when the stop arrives or at night), by a switch, a power sensor
+  or a teaching sensor, or never proposes a signature again. The examples are
+  stored in the appliances' subentries (so in every backup), follow merges,
+  and the night's `link` is applied automatically. `energy_mapper/appliances`
+  shows each appliance's examples and what the night found of them.
 
 ## 0.11.0
 

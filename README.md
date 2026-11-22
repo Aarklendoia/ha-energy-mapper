@@ -369,6 +369,16 @@ learned signature to the appliance and removes the plug from its sources: unplug
 appliance is now tracked from the curve. *Stop learning* drops what was learned. An appliance
 below the step threshold (300 W by default) cannot be learned this way.
 
+**Labelled examples** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), for the
+coming *Live* tab): when you say which appliance a step was ("this is the toaster"), the use
+(start, stop, power) is kept as a **labelled example** of that appliance, at most 20 per
+appliance, in its settings in Home Assistant (so in every backup). Naming a step that matches an
+unnamed signature is the review's *Validate*; a new appliance whose start and stop are known is
+recognised from its first night (its signature is created at once), one labelled before its stop
+when the stop comes or at night. Each night the add-on finds the examples again in the analysed
+day, links the appliance to the signature they were found as when it has none yet, and the card
+shows how many of your labelled uses the curve finds.
+
 **Self-test** ([#15](https://github.com/sylvaing/ha-energy-mapper/issues/15)): how well does
 the curve find an appliance it cannot see? Each night, after the analysis, the add-on takes one
 of your sub-meters (a device measured by its own power sensor), analyses the day once more
@@ -422,7 +432,8 @@ on/off states come with real-time detection
 - The live view (the coming *Live* tab, #17) follows the state changes of the meters and
   switched loads the analysis already reads, **only while the tab is open**, keeps 15 minutes
   in memory and stores nothing; it stops 2 minutes after the tab is closed. The add-on option
-  `live_view: false` turns it off entirely.
+  `live_view: false` turns it off entirely. The uses you label there are kept with the
+  appliance in Home Assistant (20 at most per appliance).
 - Its data (daily reports, day summaries, the signature registry, the settings) lives in the
   add-on's `/data` folder, is **included in Home Assistant backups**, and stays bounded (a few
   MB) whatever the age of the installation.
@@ -923,6 +934,17 @@ signature apprise à l'appareil et retire la prise de ses sources : débranchez-
 est désormais suivi dans la courbe. *Arrêter l'apprentissage* oublie ce qui a été appris. Un
 appareil sous le seuil de marche (300 W par défaut) ne peut pas être appris ainsi.
 
+**Exemples étiquetés** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), pour le
+futur onglet *En direct*) : quand vous dites quel appareil a fait une marche (« c'est le
+grille-pain »), l'utilisation (début, fin, puissance) est gardée comme **exemple étiqueté** de
+cet appareil, 20 au plus par appareil, dans ses réglages de Home Assistant (donc dans toute
+sauvegarde). Nommer une marche qui correspond à une signature sans nom revient à la *valider*
+dans la revue ; un nouvel appareil dont le début et la fin sont connus est reconnu dès sa
+première nuit (sa signature est créée tout de suite), un appareil étiqueté avant son arrêt quand
+l'arrêt arrive ou la nuit. Chaque nuit, l'add-on retrouve les exemples dans la journée analysée,
+relie l'appareil à la signature sous laquelle ils ont été retrouvés s'il n'en a pas encore, et
+la carte indique combien de vos utilisations étiquetées la courbe retrouve.
+
 **Auto-test** ([#15](https://github.com/sylvaing/ha-energy-mapper/issues/15)) : la courbe
 retrouve-t-elle un appareil qu'elle ne voit pas ? Chaque nuit, après l'analyse, l'add-on prend
 un de vos sous-compteurs (un appareil mesuré par son propre capteur de puissance), analyse la
@@ -981,7 +1003,9 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
 - La vue en direct (le futur onglet *En direct*, #17) suit les changements d'état des
   compteurs et interrupteurs que l'analyse lit déjà, **seulement quand l'onglet est ouvert**,
   garde 15 minutes en mémoire et n'enregistre rien ; elle s'arrête 2 minutes après la
-  fermeture de l'onglet. L'option `live_view: false` de l'add-on la coupe complètement.
+  fermeture de l'onglet. L'option `live_view: false` de l'add-on la coupe complètement. Les
+  utilisations que vous y étiquetez sont gardées avec l'appareil dans Home Assistant (20 au
+  plus par appareil).
 - Ses données (rapports quotidiens, résumés, registre des signatures, réglages) sont dans le
   dossier `/data` de l'add-on, **incluses dans les sauvegardes de Home Assistant**, et restent
   bornées (quelques Mo) quel que soit l'âge de l'installation.

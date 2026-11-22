@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
@@ -23,17 +23,20 @@ from homeassistant.util import dt as dt_util
 from .api import EnergyMapperApiError, EnergyMapperClient, EnergyMapperError
 from .appliances import (
     KIND_LOAD,
+    KIND_SIGNATURE,
     KIND_SUBMETER,
     SUBENTRY_TYPE,
     Appliance,
     Source,
     Teacher,
+    add_example,
     discovered,
     new_appliance,
     power_of,
     powers,
     relay,
     signature,
+    signature_group,
 )
 from .const import (
     DOMAIN,
@@ -174,6 +177,11 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (#13): {"statistic_id", "replaced", "children", "name", "at"}
         self.takeovers: dict[str, dict[str, Any]] = {}
         self._energy_lock = asyncio.Lock()
+        # appliance key -> its labelled examples found again by the add-on
+        # (GET /api/examples, #17); empty without examples or an older add-on
+        self.examples_status: dict[str, dict[str, Any]] = {}
+        # open examples being completed from the live view: (session, event id)
+        self._completing: set[tuple[int, int]] = set()
 
     # -- persistence ----------------------------------------------------------
     async def async_load(self) -> None:
@@ -225,14 +233,26 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def appliance(self, subentry_id: str) -> Appliance | None:
         return self.appliances_by_subentry().get(subentry_id)
 
+    def appliance_of_key(self, key: str) -> Appliance | None:
+        return next((a for a in self.appliances_by_subentry().values() if a.key == key), None)
+
     @callback
-    def async_add_appliance(self, name: str, sources: Iterable[Source]) -> Appliance:
+    def async_add_appliance(
+        self,
+        name: str,
+        sources: Iterable[Source],
+        examples: Iterable[Mapping[str, Any]] = (),
+        teacher: Teacher | None = None,
+    ) -> Appliance:
         """Create an appliance (a subentry), e.g. for a signature validated in
-        the panel (#10). Its entities and statistics follow at the next
+        the panel (#10) or labelled in the live view (#17, possibly without a
+        source yet). Its entities and statistics follow at the next
         synchronisation, scheduled here."""
         entry = self.config_entry
         taken = {s.unique_id for s in entry.subentries.values() if s.unique_id}
-        appliance = new_appliance(name, sources, taken)
+        appliance = replace(
+            new_appliance(name, sources, taken), examples=tuple(dict(e) for e in examples), teacher=teacher
+        )
         self.hass.config_entries.async_add_subentry(
             entry,
             ConfigSubentry(
@@ -328,7 +348,10 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if others:
                 await async_merge_statistics(self.hass, target, others)
             sources = target.sources + tuple(s for s in other.sources if not target.has(s))
-            merged = replace(target, sources=sources)
+            examples = target.examples
+            for example in other.examples:  # the labelled examples follow (#17)
+                examples = add_example(examples, example)
+            merged = replace(target, sources=sources, examples=examples)
             ends = [self.last_seen[k] for k in (target.key, other.key) if k in self.last_seen]
             if ends:
                 self.last_seen[target.key] = max(ends)
@@ -379,12 +402,58 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.review_count = None  # an add-on before 0.6.0
             self._async_update_issue()
 
+    def entity_source(self, entity_id: str, on_states: list[str] | None = None) -> Source:
+        """The source of an entity linked to an appliance: a switch or any
+        entity whose state tells when it runs (a switched load, with
+        ``on_states`` when given), or a power sensor (a sub-meter). A sensor of
+        the ``enum`` device class (an operation state) is a switched load."""
+        domain = entity_id.split(".", 1)[0]
+        if domain == "sensor":
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.attributes.get("device_class") == STATE_SENSOR_CLASS:
+                return relay(entity_id, on_states)
+            return Source(KIND_SUBMETER, entity_id)
+        if domain in SWITCH_DOMAINS:
+            return relay(entity_id, on_states)
+        raise ReviewError("invalid_format", f"{entity_id}: expected a switch or a power sensor")
+
+    def check_free(self, *sources: Source) -> None:
+        """Raise ``already_linked`` when an appliance already has one of them."""
+        current = self.appliances_by_subentry().values()
+        for wanted in dict.fromkeys(sources):
+            owner = next((a for a in current if a.has(wanted)), None)
+            if owner is not None:
+                raise ReviewError("already_linked", f"{wanted.id} is already linked to {owner.name}")
+
+    def check_teacher_free(self, entity_id: str) -> None:
+        """Raise ``already_linked`` when an appliance already uses the sensor."""
+        for other in self.appliances_by_subentry().values():
+            if (other.teacher and other.teacher.entity_id == entity_id) or any(
+                s.id == entity_id for s in other.sources
+            ):
+                raise ReviewError("already_linked", f"{entity_id} is already linked to {other.name}")
+
+    async def async_push(self) -> None:
+        """Push the appliances to the add-on (when they changed)."""
+        await self._async_push(self.appliances_by_subentry().values())
+
+    def check_power_sensor(self, entity_id: str) -> None:
+        state = self.hass.states.get(entity_id)
+        attrs = state.attributes if state is not None else {}
+        if (
+            entity_id.split(".", 1)[0] != "sensor"
+            or state is None
+            or (attrs.get("device_class") != "power" and attrs.get("unit_of_measurement") not in POWER_UNITS)
+        ):
+            raise ReviewError("invalid_format", f"{entity_id}: expected a power sensor")
+
     async def async_validate(
         self,
         sid: str,
         name: str,
         entity_id: str | None = None,
         on_states: list[str] | None = None,
+        examples: Iterable[Mapping[str, Any]] = (),
     ) -> Appliance:
         """Validate a signature of the review: a new appliance with this
         signature as its source, or linked to an entity instead: a switch or
@@ -401,24 +470,9 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sig = next((s for s in registry.get("signatures") or [] if s.get("id") == sid), None)
         if sig is None:
             raise ReviewError("not_found", f"no signature {sid}")
-        if entity_id is None:
-            source = signature(sig)
-        elif entity_id.split(".", 1)[0] == "sensor":
-            state = self.hass.states.get(entity_id)
-            if state is not None and state.attributes.get("device_class") == STATE_SENSOR_CLASS:
-                source = relay(entity_id, on_states)
-            else:
-                source = Source(KIND_SUBMETER, entity_id)
-        elif entity_id.split(".", 1)[0] in SWITCH_DOMAINS:
-            source = relay(entity_id, on_states)
-        else:
-            raise ReviewError("invalid_format", f"{entity_id}: expected a switch or a power sensor")
-        current = self.appliances_by_subentry().values()
-        for wanted in {source, signature(sig)}:
-            owner = next((a for a in current if a.has(wanted)), None)
-            if owner is not None:
-                raise ReviewError("already_linked", f"{wanted.id} is already linked to {owner.name}")
-        appliance = self.async_add_appliance(name, [source])
+        source = signature(sig) if entity_id is None else self.entity_source(entity_id, on_states)
+        self.check_free(source, signature(sig))
+        appliance = self.async_add_appliance(name, [source], examples)
         _LOGGER.info("Signature %s validated as %s (%s)", sid, name, appliance.key)
         # the add-on must know the appliance before the decision names it
         await self._async_push(self.appliances_by_subentry().values())
@@ -426,14 +480,22 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_update_review()
         return appliance
 
-    async def async_merge_signature(self, sid: str, key: str) -> Appliance:
+    async def async_merge_signature(
+        self,
+        sid: str,
+        key: str,
+        change: Callable[[Appliance], Appliance] | None = None,
+        drop: Iterable[str] = (),
+    ) -> Appliance:
         """Validate a signature of the review as a part of an existing
         appliance (#43): the signature becomes one more source of the
         appliance with this key, like a merge (#38): its energy is added to
         the appliance's from now on, and the stored days are imported again
         so that the appliance's hourly statistic includes it for them too.
         The appliance keeps its name, key and statistic; the add-on records
-        the decision with its key."""
+        the decision with its key. ``change`` also updates the appliance (its
+        labelled examples, #17) and the signature sources ``drop`` are
+        removed (expected signatures the examples replaced)."""
         registry = await self.client.signatures()
         sig = next((s for s in registry.get("signatures") or [] if s.get("id") == sid), None)
         if sig is None:
@@ -449,7 +511,10 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if owner is not None:
                 raise ReviewError("already_linked", f"{sid} is already linked to {owner.name}")
             target = current[target_id]
-            merged = replace(target, sources=(*target.sources, source))
+            kept = tuple(s for s in target.sources if not (s.type == KIND_SIGNATURE and s.id in set(drop)))
+            merged = replace(target, sources=(*kept, source))
+            if change is not None:
+                merged = change(merged)
             self._reimport.add(target.key)
             self.hass.config_entries.async_update_subentry(
                 entry, appliance_subentries(entry)[target_id], data=merged.subentry_data()
@@ -467,6 +532,154 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         answer = await self.client.review_decision(sid, action)
         await self.async_update_review()
         return answer
+
+    # -- labelled examples (#17) -------------------------------------------------
+    async def async_update_appliance(self, key: str, change: Callable[[Appliance], Appliance]) -> Appliance:
+        """Change one appliance (its subentry) and push the appliances."""
+        entry = self.config_entry
+        async with self._sync_lock:
+            target_id, target = self._target(key)
+            changed = change(target)
+            if changed != target:
+                self.hass.config_entries.async_update_subentry(
+                    entry, appliance_subentries(entry)[target_id], data=changed.subentry_data()
+                )
+        await self._async_push(self.appliances_by_subentry().values())
+        return changed
+
+    async def async_add_example(self, key: str, example: Mapping[str, Any]) -> Appliance:
+        """Keep one more labelled example of an appliance (at most 20)."""
+        return await self.async_update_appliance(
+            key, lambda a: replace(a, examples=add_example(a.examples, example))
+        )
+
+    async def async_track_in_curve(
+        self, key: str, example: Mapping[str, Any], cycling: bool = False
+    ) -> dict[str, Any] | None:
+        """An appliance created from the live view before its stop was known
+        (no source yet), now that a whole use is known: the signature of that
+        use (``POST /api/signatures``: an unnamed one of the registry at that
+        power, else a new expected one) becomes its source, and the review
+        records the decision. Returns ``{"signature", "created"}``, or None
+        when the use is too small to make a signature. Raises
+        ``ReviewError('conflict')`` when another appliance has that power."""
+        appliance = self.appliance_of_key(key)
+        t_off, power = example.get("t_off"), float(example.get("power_w") or 0.0)
+        if appliance is None or not appliance.awaits_signature or t_off is None or power < 50:
+            return None
+        kind, band = signature_group(float(example["t_on"]), float(t_off), cycling)
+        try:
+            answer = await self.client.expect_signature(kind, band, round(power), appliance.name)
+        except EnergyMapperApiError as err:
+            if err.code == "conflict":
+                raise ReviewError("conflict", err.message) from err
+            raise
+        sid = answer["signature"]["id"]
+        await self.async_merge_signature(
+            sid, key, lambda a: replace(a, examples=add_example(a.examples, {**example, "signature_id": sid}))
+        )
+        return answer
+
+    @callback
+    def async_live_events(self, session: int | None, events: Iterable[Mapping[str, Any]]) -> None:
+        """Events of the live view (``LiveHub``): an open labelled example is
+        completed when its event stops, dropped when it is cancelled."""
+        if session is None:
+            return
+        waiting = {
+            (int(e["live"]["session"]), int(e["live"]["id"])): a.key
+            for a in self.appliances.values()
+            for e in a.examples
+            if e.get("t_off") is None and isinstance(e.get("live"), Mapping)
+        }
+        if not waiting:
+            return
+        for event in events:
+            ref = (session, event.get("id"))
+            key = waiting.get(ref)  # type: ignore[arg-type]
+            if key is None or ref in self._completing:
+                continue
+            stopped = not event.get("running") and event.get("t_off") is not None
+            if event.get("state") == "cancelled" or stopped:
+                self._completing.add(ref)  # type: ignore[arg-type]
+                self.config_entry.async_create_background_task(
+                    self.hass, self._async_complete(key, ref, dict(event)), f"{DOMAIN} labelled example"
+                )
+
+    async def _async_complete(self, key: str, ref: tuple[int, int], event: dict[str, Any]) -> None:
+        session, event_id = ref
+        cancelled = event.get("state") == "cancelled"
+        done: dict[str, Any] = {}
+
+        def change(a: Appliance) -> Appliance:
+            examples = []
+            for e in a.examples:
+                if e.get("live") != {"id": event_id, "session": session} or e.get("t_off") is not None:
+                    examples.append(e)
+                elif not cancelled:
+                    e = {k: v for k, v in e.items() if k != "live"}
+                    e.update(t_off=round(float(event["t_off"]), 1), power_w=round(float(event["power_w"])))
+                    examples.append(e)
+                    done.update(e)
+            return replace(a, examples=tuple(examples))
+
+        try:
+            await self.async_update_appliance(key, change)
+            if done:
+                await self.async_track_in_curve(key, done, bool(event.get("session")))
+            _LOGGER.info("Labelled example of %s %s", key, "dropped" if cancelled else "completed")
+        except (EnergyMapperError, ReviewError) as err:
+            _LOGGER.warning("Cannot complete the labelled example of %s: %s", key, err)
+        finally:
+            self._completing.discard(ref)
+
+    async def _async_apply_examples(self) -> None:
+        """What the nightly analysis found of the labelled examples
+        (``GET /api/examples``): the signature they were found as becomes the
+        appliance's when it has none seen yet (the review's validate
+        decision; expected ones it replaces are dropped), and open examples
+        get the stop of the activation found."""
+        if not any(a.examples for a in self.appliances_by_subentry().values()):
+            self.examples_status = {}
+            return
+        try:
+            listing = await self.client.examples()
+        except EnergyMapperApiError as err:
+            if self._no_endpoint(err):
+                self.examples_status = {}
+                return
+            raise
+        self.examples_status = {i["key"]: i for i in listing.get("appliances") or [] if i.get("key")}
+        for item in list(self.examples_status.values()):
+            try:
+                await self._async_follow_examples(item)
+            except ReviewError as err:
+                _LOGGER.info("Labelled examples of %s not linked: %s", item["key"], err.message)
+
+    async def _async_follow_examples(self, item: Mapping[str, Any]) -> None:
+        key = item["key"]
+        found = {
+            float(e["t_on"]): e["activation"]
+            for e in item.get("examples") or []
+            if e.get("t_off") is None and e.get("activation") and e.get("status") in ("found", "other")
+        }
+
+        def complete(a: Appliance) -> Appliance:
+            examples = []
+            for e in a.examples:
+                act = found.get(float(e["t_on"])) if e.get("t_off") is None else None
+                if act:
+                    e = {k: v for k, v in e.items() if k != "live"}
+                    e.update(t_off=float(max(act["end"], e["t_on"])), power_w=act["power_w"] or e["power_w"])
+                examples.append(e)
+            return replace(a, examples=tuple(examples))
+
+        link = item.get("link")
+        if link and self.appliance_of_key(key) is not None:
+            await self.async_merge_signature(link["id"], key, complete, item.get("replace") or ())
+            _LOGGER.info("Signature %s linked to %s by its labelled examples", link["id"], key)
+        elif found and self.appliance_of_key(key) is not None:
+            await self.async_update_appliance(key, complete)
 
     # -- learning from a measured device (#14) ---------------------------------
     async def async_teaching(self) -> dict[str, Any]:
@@ -504,14 +717,7 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Learn the appliance ``key`` from a power sensor that measures it
         (a temporary smart plug): the add-on stops subtracting the sensor and
         keeps its runs as the appliance's ground truth."""
-        state = self.hass.states.get(entity_id)
-        attrs = state.attributes if state is not None else {}
-        if (
-            entity_id.split(".", 1)[0] != "sensor"
-            or state is None
-            or (attrs.get("device_class") != "power" and attrs.get("unit_of_measurement") not in POWER_UNITS)
-        ):
-            raise ReviewError("invalid_format", f"{entity_id}: expected a power sensor")
+        self.check_power_sensor(entity_id)
         if not (await self.async_teaching())["supported"]:
             raise ReviewError("not_supported", "the Energy Mapper add-on is too old to learn from a sensor")
         entry = self.config_entry
@@ -785,6 +991,13 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         break
         finally:
             self._sync_scheduled = False
+        # after the lock (a link takes it) and the flag (a link schedules a sync)
+        try:
+            await self._async_apply_examples()
+        except EnergyMapperError as err:
+            _LOGGER.warning("Cannot read the labelled examples from the Energy Mapper add-on: %s", err)
+        except Exception:
+            _LOGGER.exception("Unexpected error while applying the labelled examples")
 
     async def _async_fetch(self, payloads: dict[str, dict[str, Any]], days) -> None:
         """Hourly answers of ``days`` into ``payloads`` (days without a curve are left out)."""

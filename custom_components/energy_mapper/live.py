@@ -21,6 +21,9 @@ running) and keeps a merged copy of what it answered: the curve of the last
 
 When the last panel leaves, the poll stops; the add-on stops its detection
 2 minutes later.
+
+``on_events(session, events)`` is told the events of every answer (the
+coordinator completes the open labelled examples with them, #17).
 """
 
 from __future__ import annotations
@@ -61,10 +64,12 @@ class LiveHub:
         hass: HomeAssistant,
         client: EnergyMapperClient,
         addon_version: Callable[[], str | None] = lambda: None,
+        on_events: Callable[[int | None, list[dict[str, Any]]], None] | None = None,
     ) -> None:
         self.hass = hass
         self.client = client
         self._addon_version = addon_version
+        self._on_events = on_events
         self._subscribers: dict[int, Sender] = {}
         self._ids = itertools.count(1)
         self._task: asyncio.Task | None = None
@@ -173,6 +178,7 @@ class LiveHub:
             "now": body.get("now"),
         }
         self._broadcast(self._snapshot_message())
+        self._tell(body.get("session"), body.get("events") or [])
 
     @callback
     def _merge(self, body: dict[str, Any]) -> None:
@@ -195,6 +201,16 @@ class LiveHub:
         self._broadcast(
             {"type": "update", "seq": snap["seq"], "curve": curve, "events": events, "now": snap["now"]}
         )
+        self._tell(snap["session"], events)
+
+    @callback
+    def _tell(self, session: int | None, events: list[dict[str, Any]]) -> None:
+        if self._on_events is None or not events:
+            return
+        try:
+            self._on_events(session, events)
+        except Exception:  # the view goes on
+            _LOGGER.exception("live view: the events could not be handled")
 
     @staticmethod
     def _trim(snap: dict[str, Any]) -> None:
