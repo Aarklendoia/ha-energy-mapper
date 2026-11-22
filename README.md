@@ -414,7 +414,7 @@ on/off states come with real-time detection
   phase of a programme) and two appliances of the same power can share one.
 - Three-phase installations are analysed on the sum of the phases (per-phase analysis:
   [#18](https://github.com/sylvaing/ha-energy-mapper/issues/18)).
-- The texts of *Things to check* come from the add-on in English.
+- The texts of *Things to check* are in English with an add-on older than 0.11.0.
 - Entity suggestions compare the **state** of the entities and two attributes only
   (`hvac_action` of thermostats, `action` of humidifiers). A suggestion found by its long
   periods (containment) or by an attribute names an appliance or leads to a merge; it is not
@@ -938,7 +938,7 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
   (chaque phase d'un programme) et deux appareils de même puissance peuvent en partager une.
 - Les installations triphasées sont analysées sur la somme des phases (analyse par phase :
   [#18](https://github.com/sylvaing/ha-energy-mapper/issues/18)).
-- Les textes de *À vérifier* viennent de l'add-on, en anglais.
+- Les textes de *À vérifier* sont en anglais avec un add-on antérieur à 0.11.0.
 - Les suggestions d'entité ne comparent que l'**état** des entités et deux attributs
   (`hvac_action` des thermostats, `action` des humidificateurs). Une suggestion trouvée par ses
   longues périodes (inclusion) ou par un attribut nomme un appareil ou mène à une fusion ; elle

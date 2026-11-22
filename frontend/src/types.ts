@@ -136,7 +136,11 @@ export interface KnownLoad {
 export interface Finding {
   kind: string;
   entity_id: string;
+  /** English sentence, the fallback when the panel cannot build its own */
   detail: string;
+  /** What the sentence is made of (add-on 0.11.0+, #34): name, source,
+   * declared_kwh, measured_kwh... depending on the kind */
+  params?: Record<string, unknown>;
 }
 
 export interface Report {

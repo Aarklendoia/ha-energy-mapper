@@ -604,5 +604,112 @@ class GapTests(unittest.TestCase):
         self.assertEqual(tracking_gaps(report, d.tracked, hist), [])
 
 
+class FindingParamsTests(unittest.TestCase):
+    """Each finding carries a stable kind and the parameters the panel
+    translates (#34); ``detail`` stays the English fallback."""
+
+    def by_kind(self, findings):
+        out = {}
+        for f in findings:
+            out.setdefault(f.kind, []).append(f.to_dict())
+        return out
+
+    def test_no_grid(self):
+        (f,) = self.by_kind(derive(None, [], []).findings)["no_grid"]
+        self.assertEqual(f["params"], {})
+        self.assertEqual(f["entity_id"], "")
+        self.assertEqual(f["detail"], "no grid power sensor: choose one in the settings")
+
+    def test_energy_dashboard_findings(self):
+        h = meter_with_channels()
+        # grid meter without power sensor
+        h.add(energy("sensor.second_grid_energy"), "grid2")
+        h.sources.append({"type": "grid", "stat_energy_from": "sensor.second_grid_energy"})
+        # solar without power sensor
+        h.add(energy("sensor.roof_total_production"), "roof")
+        h.sources.append({"type": "solar", "stat_energy_from": "sensor.roof_total_production"})
+        # battery
+        h.add(energy("sensor.battery_discharge_energy"), "bat")
+        h.add(power("sensor.battery_power", "-500"), "bat")
+        h.sources.append({"type": "battery", "stat_energy_from": "sensor.battery_discharge_energy"})
+        # devices: one unavailable, one without power sensor
+        h.add(energy("sensor.dryer_energy", "unavailable"), "dryer")
+        h.add(energy("sensor.oven_energy"), "oven")
+        h.devices = [
+            {"stat_consumption": "sensor.dryer_energy", "name": "Dryer"},
+            {"stat_consumption": "sensor.oven_energy", "name": "Oven"},
+        ]
+        found = self.by_kind(derive(h.prefs(), h.states, h.registry).findings)
+
+        self.assertEqual(
+            found["grid_ignored"],
+            [
+                {
+                    "kind": "grid_ignored",
+                    "entity_id": "sensor.main_meter_channel_2_energy",
+                    "detail": "grid meter that has never counted",
+                    "params": {},
+                }
+            ],
+        )
+        self.assertEqual(
+            [(f["entity_id"], f["params"]) for f in found["no_power_sensor"]],
+            [
+                ("sensor.second_grid_energy", {"source": "grid"}),
+                ("sensor.roof_total_production", {"source": "solar"}),
+                ("sensor.oven_energy", {"source": "device", "name": "Oven"}),
+            ],
+        )
+        self.assertEqual(found["no_power_sensor"][2]["detail"], "Oven: no power sensor, not subtracted")
+        self.assertEqual(
+            [(f["entity_id"], f["params"]) for f in found["battery_sign"]], [("sensor.battery_power", {})]
+        )
+        self.assertEqual(
+            found["unavailable"],
+            [
+                {
+                    "kind": "unavailable",
+                    "entity_id": "sensor.dryer_energy",
+                    "detail": "Dryer: sensor unavailable",
+                    "params": {"name": "Dryer"},
+                }
+            ],
+        )
+
+    def test_unknown_statistic(self):
+        h = swapped_installation()
+        h.devices = [
+            {"stat_consumption": "energy_mapper:load_switch_removed_relay_energy", "name": "Old relay"},
+            {"stat_consumption": "energy_mapper:something_else"},
+        ]
+        found = self.by_kind(derive(h.prefs(), h.states, h.registry).findings)
+        self.assertEqual(
+            [(f["entity_id"], f["params"]) for f in found["unknown_statistic"]],
+            [
+                ("energy_mapper:load_switch_removed_relay_energy", {"name": "Old relay"}),
+                # no name: the statistic id
+                ("energy_mapper:something_else", {"name": "energy_mapper:something_else"}),
+            ],
+        )
+
+    def test_tracking_gap(self):
+        h = meter_with_channels()
+        h.add(energy("sensor.water_heater_energy", source_entity="switch.water_heater"), "est", "powercalc")
+        h.devices = [{"stat_consumption": "sensor.water_heater_energy", "name": "Water heater"}]
+        d = derive(h.prefs(), h.states, h.registry)
+        report = {"start": 0, "end": 86400, "energy_kwh": {"known": {"Water heater": 4.6}}}
+        hist = {"sensor.water_heater_energy": [(10, "6.200"), (40000, "6.205"), (86000, "6.2104")]}
+        (gap,) = tracking_gaps(report, d.tracked, hist)
+        self.assertEqual(
+            gap.to_dict(),
+            {
+                "kind": "tracking_gap",
+                "entity_id": "sensor.water_heater_energy",
+                "detail": "Water heater: declared 0.01 kWh, measured 4.60 kWh",
+                "params": {"name": "Water heater", "declared_kwh": 0.01, "measured_kwh": 4.6},
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
