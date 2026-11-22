@@ -1307,6 +1307,13 @@ export const panelStyles = css`
     font-size: var(--ha-font-size-l, 18px);
     font-weight: var(--ha-font-weight-medium, 500);
   }
+  .rq-facts .rq-phases {
+    grid-column: 1 / -1;
+  }
+  .rq-facts .rq-phases dd {
+    font-size: var(--ha-font-size-m, 14px);
+    overflow-wrap: anywhere;
+  }
   .rq-label {
     margin-bottom: 6px;
   }

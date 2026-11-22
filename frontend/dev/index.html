@@ -281,6 +281,40 @@
           // every other one without occurrences: the histogram of an add-on before 0.9.0
           if (i % 2 === 0) addOccurrences(reg.signatures[reg.signatures.length - 1], i + 3);
         }
+        // a multi-phase cycle (#26): a dishwasher-like template
+        const phases = [
+          { kind: "motor", offset_s: 0, duration_s: 480, power_w: 92 },
+          { kind: "heat", offset_s: 480, duration_s: 1200, power_w: 2080 },
+          { kind: "motor", offset_s: 1680, duration_s: 1800, power_w: 110 },
+          { kind: "heat", offset_s: 3480, duration_s: 600, power_w: 2050 },
+          { kind: "motor", offset_s: 4080, duration_s: 840, power_w: 125 },
+        ];
+        const mp = {
+          id: "cycle-2100w",
+          kind: "multiphase",
+          band: "cycle",
+          label: null,
+          power_w: 2080,
+          duration_s: 4920,
+          on_s: null,
+          period_s: null,
+          duty: null,
+          weight: 18,
+          count: 20,
+          days_seen: 20,
+          per_week: 3.5,
+          first_seen: days[0],
+          last_seen: "2027-03-09",
+          hours: Array.from({ length: 24 }, (_, h) => (h === 20 ? 3 : 0)),
+          energy_kwh: 22.4,
+          weighted_energy_kwh: 20.1,
+          examples: [],
+          appliance: null,
+          phases,
+          cycle_kwh: 1.12,
+        };
+        addOccurrences(mp, 99);
+        reg.signatures.push(mp);
         return reg;
       }
 

@@ -13,6 +13,24 @@
 - Integration 0.8.0 uses them: the options show which sub-meters and switched
   loads come from the Energy dashboard and which are user changes, and
   removing an automatic one from a list excludes it.
+- Multi-phase appliances, first version (#26): dishwashers, washing machines
+  and tumble dryers. Around each heating-like activation (steady, at least
+  1 kW, 5 min to 2 h), the minutes where the load stays at least 50 W above
+  the base (a local threshold far below the step threshold) are grouped into
+  a candidate cycle and split into phases (heating, motor). Reports list them
+  in a new `cycles` field.
+- Signature registry: recurring candidate cycles (at least 3, clustered on a
+  distance between their phase sequences) become signatures of kind
+  `multiphase` (band `cycle`, id `cycle-<heating power>w`) with their
+  template in `phases` and the typical energy of one cycle in `cycle_kwh`.
+  They are proposed in the review like the other signatures.
+- Once such a signature belongs to an appliance (named, or validated in the
+  review), the nightly analysis recognises its cycles: each one becomes one
+  activation (`multiphase: true`, its phases, its exact per-minute power)
+  that replaces the activations inside it (its heating phases), so its
+  energy, low-power phases included, is counted once. Before that, nothing
+  changes in the attribution.
+- An appliance can declare a `multiphase` signature as a source.
 
 ## 0.9.0
 

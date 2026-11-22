@@ -23,7 +23,7 @@ def duration_band(seconds: float) -> str:
 @dataclass
 class Signature:
     id: str
-    kind: str  # "cycling" | "steady"
+    kind: str  # "cycling" | "steady" | "multiphase"
     band: str
     power_w: float
     count: int
@@ -34,9 +34,10 @@ class Signature:
     period_s: float | None = None
     duty: float | None = None
     examples: list[float] = field(default_factory=list)  # activation start times
+    phases: list | None = None  # multiphase: the phases of its most energetic cycle
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "id": self.id,
             "kind": self.kind,
             "band": self.band,
@@ -50,6 +51,9 @@ class Signature:
             "duty": self.duty,
             "examples": self.examples,
         }
+        if self.phases is not None:
+            out["phases"] = self.phases
+        return out
 
 
 def signature_id(kind: str, band: str, power_w: float) -> str:
@@ -64,7 +68,12 @@ def cluster(activations: list[Activation], power_tol: float = 0.12, local_hour=N
     """Greedy one-dimensional clustering on power, per kind and duration band."""
     local_hour = local_hour or (lambda ts: time.localtime(ts).tm_hour)
     groups: dict[tuple[str, str], list[Activation]] = {}
+    cycles: dict[str, list[Activation]] = {}
     for a in activations:
+        if getattr(a, "multiphase", False):
+            # recognised cycles (#26): grouped by their template (registry id)
+            cycles.setdefault(a.signature or "?", []).append(a)
+            continue
         kind = "cycling" if a.cycling else "steady"
         band = "session" if a.cycling else duration_band(a.duration_s)
         groups.setdefault((kind, band), []).append(a)
@@ -108,5 +117,21 @@ def cluster(activations: list[Activation], power_tol: float = 0.12, local_hour=N
                 sig.duty = round(statistics.median(x.duty for x in c), 2)
             sig.examples = [x.start for x in sorted(c, key=lambda x: -x.energy_kwh)[:3]]
             out.append(sig)
+    for sid, c in sorted(cycles.items()):
+        top = max(c, key=lambda x: x.energy_kwh)
+        sig = Signature(
+            id=sid,
+            kind="multiphase",
+            band="cycle",
+            power_w=statistics.median(max((p.power_w for p in x.phases), default=x.power_w) for x in c),
+            count=len(c),
+            duration_s=statistics.median(x.duration_s for x in c),
+            energy_kwh=sum(x.energy_kwh for x in c),
+            phases=[p.to_dict() for p in top.phases],
+        )
+        for x in c:
+            sig.hours[local_hour(x.start)] += 1
+        sig.examples = [x.start for x in sorted(c, key=lambda x: -x.energy_kwh)[:3]]
+        out.append(sig)
     out.sort(key=lambda s: -s.energy_kwh)
     return out

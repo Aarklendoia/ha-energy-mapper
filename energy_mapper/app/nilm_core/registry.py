@@ -33,6 +33,15 @@ raster of the panel (#65). They come from the stored activations; those of
 days no longer stored are kept from the previous registry (and those of a
 signature merged into a neighbour go to the neighbour), pruned to the window.
 
+Multi-phase appliances (#26) are learned here too: the candidate cycles of
+the stored days (``cycles`` of the day summaries) are clustered on their
+phase sequences (:mod:`.cycles`), and each recurring cluster (at least
+``min_cycles``) is a signature of kind ``multiphase`` (band ``cycle``, id
+``cycle-<heating power>w``) with its template in ``phases``. Its identity
+follows the previous signature whose template is within ``cycle_distance``.
+Recognised cycles (activations with ``multiphase``) are not clustered with
+the steady ones.
+
 Everything here is pure (no I/O, no clock): the caller passes the day
 summaries, the previous registry and ``now``.
 """
@@ -47,6 +56,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
+from . import cycles as mp
 from .signatures import duration_band, signature_id
 
 REGISTRY_VERSION = 1
@@ -74,6 +84,8 @@ class RegistryConfig:
     max_iterations: int = 8
     occurrence_days: int = 60  # rolling window of the occurrences (the day raster)
     max_occurrences: int = 600  # per signature, the most recent ones
+    cycle_distance: float = mp.CycleConfig.match_distance  # multiphase: template distance
+    min_cycles: int = 3  # multiphase: candidate cycles of a new signature
 
 
 def decay(age_s: float, half_life_days: float) -> float:
@@ -121,8 +133,13 @@ def _group_of(kind: str, band: str) -> tuple[str, str]:
     return (kind, "session" if kind == "cycling" else band)
 
 
+MULTIPHASE = ("multiphase", "cycle")
+
+
 def activation_group(activation: Mapping) -> tuple[str, str]:
     """(kind, band) of a stored activation, as used by the clustering."""
+    if activation.get("multiphase"):
+        return MULTIPHASE
     if activation.get("cycling"):
         return "cycling", "session"
     return "steady", duration_band(float(activation["end"]) - float(activation["start"]))
@@ -309,6 +326,8 @@ def update(
                 )
             except (KeyError, TypeError, ValueError):
                 continue
+            if x.get("multiphase"):
+                continue  # a recognised cycle: its signature is learned from the candidates
             if a.power > 0 and a.end > a.start:
                 groups.setdefault(a.group, []).append(a)
 
@@ -317,7 +336,8 @@ def update(
     out: list[dict] = []
     used_ids = set(prev_sigs)
     tol = config.power_tol
-    for g in sorted(set(groups) | {_group_of(s["kind"], s["band"]) for s in prev_sigs.values()}):
+    previous_groups = {_group_of(s["kind"], s["band"]) for s in prev_sigs.values()}
+    for g in sorted((set(groups) | previous_groups) - {MULTIPHASE}):
         clusters = _cluster_group(groups.get(g, []), tol, config.max_iterations)
         clusters.sort(key=lambda m: -sum(a.weight for a in m))
         centers = [weighted_median((a.power, a.weight) for a in m) for m in clusters]
@@ -364,6 +384,7 @@ def update(
                 not absorbed and (sig["weight"] >= config.forget_weight or is_ignored(sig))
             ):
                 out.append(sig)
+    out += _multiphase(summaries, days, prev_sigs, used_ids, now, days_w, carry, occ, config, local_hour)
     out = _cap_faded_ignored(out, config.forget_weight)
     out.sort(key=lambda s: (-s["weight"], s["id"]))
 
@@ -540,6 +561,133 @@ def _stats(sid, group, members, old, now, days_w, config, local_hour) -> dict:
     return sig
 
 
+def _multiphase(
+    summaries, days, prev_sigs, used_ids, now, days_w, carry, occ, config, local_hour
+) -> list[dict]:
+    """The ``multiphase`` signatures, from the candidate cycles of the days."""
+    hl = config.half_life_days
+    samples: list[mp.Sample] = []
+    for d in days:
+        for x in summaries[d].get("cycles") or []:
+            try:
+                phases = [mp.Phase.from_dict(p) for p in x.get("phases") or []]
+                sample = mp.Sample(
+                    day=d,
+                    start=float(x["start"]),
+                    end=float(x["end"]),
+                    energy_kwh=float(x.get("energy_kwh") or 0.0),
+                    phases=phases,
+                    weight=decay(now - float(x["start"]), hl),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if phases and sample.end > sample.start:
+                samples.append(sample)
+    clusters = mp.cluster(samples, config.cycle_distance)
+    clusters.sort(key=lambda m: (-sum(s.weight for s in m), m[0].start))
+    templates = [mp.template_of(m) for m in clusters]
+    olds = [s for s in prev_sigs.values() if _group_of(s["kind"], s["band"]) == MULTIPHASE]
+
+    def closeness(i: int, old: Mapping) -> float | None:
+        """Distance of cluster ``i`` to a previous signature (None: too far)."""
+        try:
+            phases = [mp.Phase.from_dict(p) for p in old.get("phases") or []]
+        except (KeyError, TypeError, ValueError):
+            phases = []
+        if phases:
+            d = mp.distance(templates[i], phases)
+            return d if d <= config.cycle_distance else None
+        # expected before it is seen (no template yet): by its power
+        power = float(old.get("power_w") or 0.0)
+        center = weighted_median((s.power, s.weight) for s in clusters[i])
+        if power > 0 and center and abs(center - power) <= config.power_tol * power:
+            return abs(center - power) / power
+        return None
+
+    pairs = sorted(
+        (not s.get("label"), d, i, s["id"])
+        for i in range(len(clusters))
+        for s in olds
+        if (d := closeness(i, s)) is not None
+    )
+    ids: dict[int, str] = {}
+    for _, _, i, sid in pairs:
+        if i not in ids and sid not in ids.values():
+            ids[i] = sid
+    out: list[dict] = []
+    made: dict[int, dict] = {}
+    for i, members in enumerate(clusters):
+        if i not in ids and len(members) < config.min_cycles:
+            continue  # not recurring (yet)
+        sid = ids.get(i) or _new_id(MULTIPHASE, [_SampleAct(s) for s in members], used_ids)
+        used_ids.add(sid)
+        old = prev_sigs.get(sid)
+        sig = _multiphase_stats(sid, members, templates[i], old, now, days_w, config, local_hour)
+        sig["occurrences"] = occ.of(members, old)
+        made[i] = sig
+        if sig["weight"] >= config.forget_weight or is_ignored(sig) or sig.get("label"):
+            out.append(sig)
+    for s in olds:
+        if s["id"] in ids.values():
+            continue
+        near = [(d, i) for i in made if (d := closeness(i, s)) is not None]
+        if near:
+            target = made[min(near)[1]]
+            target["occurrences"] = occ.union(target["occurrences"], occ.old(s))
+        sig = _carried(s, carry, days_w)
+        sig["occurrences"] = occ.window(s)
+        if sig.get("label") or (not near and (sig["weight"] >= config.forget_weight or is_ignored(sig))):
+            out.append(sig)
+    return out
+
+
+class _SampleAct:
+    """A candidate cycle seen as an activation by :func:`_new_id`."""
+
+    def __init__(self, sample: mp.Sample):
+        self.power = sample.power
+        self.weight = sample.weight
+
+
+def _multiphase_stats(sid, members, template, old, now, days_w, config, local_hour) -> dict:
+    weight = sum(s.weight for s in members)
+    hours = [0.0] * 24
+    for s in members:
+        hours[local_hour(s.start) % 24] += s.weight
+    seen = sorted({s.day for s in members})
+    first = min(seen[0], old["first_seen"]) if old and old.get("first_seen") else seen[0]
+    recent = sorted(members, key=lambda s: -s.start)[: config.examples]
+    sig = {
+        "id": sid,
+        "kind": MULTIPHASE[0],
+        "band": MULTIPHASE[1],
+        "label": (old or {}).get("label"),
+        "power_w": _r(weighted_median((s.power, s.weight) for s in members)),
+        "duration_s": _r(weighted_median((s.duration, s.weight) for s in members)),
+        "on_s": None,
+        "period_s": None,
+        "duty": None,
+        "weight": round(weight, 6),
+        "count": len(members),
+        "days_seen": len(seen),
+        "per_week": round(weight / days_w * 7, 2) if days_w else None,
+        "first_seen": first,
+        "last_seen": seen[-1],
+        "hours": [round(h, 2) for h in hours],
+        "energy_kwh": round(sum(s.energy_kwh for s in members), 3),
+        "weighted_energy_kwh": round(sum(s.energy_kwh * s.weight for s in members), 3),
+        "examples": [
+            {"day": s.day, "start": s.start, "end": s.end, "power_w": round(s.power)} for s in recent
+        ],
+        "created_at": (old or {}).get("created_at") or now,
+        "phases": [p.to_dict() for p in template],
+        "cycle_kwh": _r(weighted_median((s.energy_kwh, s.weight) for s in members), 3),
+    }
+    if old and old.get("review"):
+        sig["review"] = old["review"]
+    return sig
+
+
 def _carried(old, carry, days_w) -> dict:
     """A previous signature without stored activations any more."""
     sig = dict(old)
@@ -629,6 +777,10 @@ class Matcher:
         registry = registry or {}
         self.tol = float(registry.get("power_tol") or RegistryConfig.power_tol)
         self.centers: dict[tuple[str, str], list[tuple[float, str]]] = {}
+        # recognised cycles carry the id of their template
+        self.multiphase = {
+            s["id"] for s in registry.get("signatures") or [] if _group_of(s["kind"], s["band"]) == MULTIPHASE
+        }
         for s in registry.get("signatures") or []:
             self.centers.setdefault(_group_of(s["kind"], s["band"]), []).append(
                 (float(s["power_w"]), s["id"])
@@ -637,12 +789,31 @@ class Matcher:
             c.sort()
 
     def match(self, activation: Mapping) -> str | None:
+        if activation.get("multiphase"):
+            sid = activation.get("signature")
+            return sid if sid in self.multiphase else None
         try:
             group = activation_group(activation)
             power = float(activation["power_w"])
         except (KeyError, TypeError, ValueError):
             return None
         return _nearest(self.centers.get(group, []), power, self.tol)
+
+
+def cycle_templates(registry: Mapping | None, validated_only: bool = True) -> dict[str, list[dict]]:
+    """``{id: phases}`` of the multiphase signatures the daily analysis
+    recognises cycles of (``AnalysisConfig.cycle_templates``): by default
+    only those the user validated (named by an appliance, or linked in the
+    review), so that the energy of the steady signatures a cycle absorbs
+    (its heating phase) only moves once the user agreed."""
+    out = {}
+    for s in (registry or {}).get("signatures") or []:
+        if _group_of(s.get("kind"), s.get("band")) != MULTIPHASE or not s.get("phases") or is_ignored(s):
+            continue
+        validated = s.get("label") or (s.get("review") or {}).get("state") == "validated"
+        if validated or not validated_only:
+            out[s["id"]] = list(s["phases"])
+    return out
 
 
 def match(registry: Mapping | None, activation: Mapping) -> str | None:
@@ -678,8 +849,11 @@ def annotate_report(report: dict, registry: Mapping | None) -> dict:
 # ---------------------------------------------------------------------------
 # kind, band of the groups a signature can be in
 GROUPS = (("steady", "short"), ("steady", "medium"), ("steady", "long"), ("cycling", "session"))
+# the groups an appliance's signature source can name (a multiphase one is
+# learned only: it cannot be expected from a power alone, see the API)
+SOURCE_GROUPS = (*GROUPS, MULTIPHASE)
 # typical duration of an expected signature, before its first use is seen
-_BAND_DURATION_S = {"short": 120, "medium": 1200, "long": 7200, "session": 1800}
+_BAND_DURATION_S = {"short": 120, "medium": 1200, "long": 7200, "session": 1800, "cycle": 5400}
 
 
 def nearest_signature(registry: Mapping | None, kind: str, band: str, power_w: float) -> dict | None:
@@ -732,4 +906,4 @@ def expected_signature(
         "occurrences": [],
         "created_at": now,
         "expected": True,
-    }
+    } | ({"phases": [], "cycle_kwh": None} if (kind, band) == MULTIPHASE else {})

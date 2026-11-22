@@ -114,6 +114,14 @@ Each report is a JSON document with:
 - `signatures`, `activations`: the appliances found in the curve that day.
   Their `signature` is a daily cluster id; the API adds `registry_id`, the
   long-lived id of the signature registry;
+- `cycles`: the candidate cycles of multi-phase appliances (dishwasher,
+  washing machine, dryer): `start`, `end`, `power_w` (the heating power),
+  `energy_kwh`, `phases` (`kind` `heat` or `motor`, `offset_s`,
+  `duration_s`, `power_w`), and `template` when it was recognised as a
+  cycle of a `multiphase` signature. A recognised cycle is also one
+  activation with `multiphase: true` and its `phases` (its `power_w` is its
+  mean power); the activations inside it (its heating phases) are not
+  listed again;
 - `peaks`: the day's top episodes (up to 5, above 80 % of the day's own
   maximum, so a normal day always has some) and what was running
   (`registry_id` on the signature parts). `notable` is `true` when the
@@ -137,8 +145,8 @@ Each signature keeps:
 
 | Field | Description |
 |---|---|
-| `id` | Stable identity, for example `short-2000w` (steady, under 10 min), `medium-...` (10 to 60 min), `long-...` (over 1 h) or `cyc-1400w` (cycling session). |
-| `kind`, `band` | `steady` or `cycling`; `short`, `medium`, `long` or `session`. |
+| `id` | Stable identity, for example `short-2000w` (steady, under 10 min), `medium-...` (10 to 60 min), `long-...` (over 1 h), `cyc-1400w` (cycling session) or `cycle-2000w` (multi-phase cycle, named after its heating power). |
+| `kind`, `band` | `steady`, `cycling` or `multiphase`; `short`, `medium`, `long`, `session` or `cycle`. |
 | `label`, `appliance` | Name and key of the Home Assistant appliance this signature belongs to (`null` when none). A named signature is never forgotten. |
 | `power_w`, `duration_s` | Typical power and duration (weighted medians). |
 | `on_s`, `period_s`, `duty` | Typical cycle of a cycling session (`null` for steady loads). |
@@ -150,6 +158,7 @@ Each signature keeps:
 | `energy_kwh`, `weighted_energy_kwh` | Energy of the stored uses, raw and weighted. |
 | `examples` | The most recent uses: `day`, `start`, `end` (unix time), `power_w`. |
 | `occurrences` | Every use of the last 60 days as `[start, duration_s, power_w]` (unix time, seconds, watts), sorted by start, at most 600 (the most recent ones): the day raster of the panel (add-on 0.9.0+). |
+| `phases`, `cycle_kwh` | `multiphase` only: the template, its phases in order (`kind` `heat` or `motor`, `offset_s`, `duration_s`, `power_w`), and the typical energy of one cycle. |
 | `created_at` | When the id was given (unix time). |
 | `expected` | `true` for a signature declared by the user before it is seen ("Kettle, 2000 W"): no use yet; the first cluster of its group within 12 % of its power takes its id and name. |
 | `review` | The user's decision in the review of the panel, when there is one (see [Review](#review)). |
@@ -159,6 +168,14 @@ still there: the clusters of the night are matched to the signatures of the
 previous registry by kind, duration band and power (within 12 %). A new
 cluster gets a new id. The daily reports keep their own daily cluster ids
 (`signature`); the API adds the matching registry id (`registry_id`).
+
+**Multi-phase appliances** (add-on 0.10.0+): the candidate cycles of the
+stored days are clustered on their sequence of phases; a pattern seen at
+least 3 times becomes a `multiphase` signature, proposed in the review like
+the others. Its energy only moves to it once you name it (or validate it in
+the review): from the next night, each cycle that matches its template is
+one use of it, low-power phases included, and the activations inside the
+cycle (its heating phases) no longer count for their own signatures.
 
 The registry also remembers the **switched loads** (power and polarity
 learned on the days with transitions, with the same decay; a day without
@@ -506,8 +523,9 @@ the integration is set up with the address of the service.
   reports every 10 seconds is much better than one every minute.
 - The analysis needs the full history of the grid power sensor: do not
   exclude it from the recorder.
-- Appliances below `step_threshold_w`, loads whose power varies continuously
-  (EV chargers, inverter heat pumps) and multi-phase appliances (one signature
-  per heating phase) are not recognised well yet. See the
+- Appliances below `step_threshold_w` and loads whose power varies
+  continuously (EV chargers, inverter heat pumps) are not recognised well yet.
+  Multi-phase appliances have a first version: two of them running at once,
+  or a low load running next to a cycle, blur their cycles. See the
   [README](https://github.com/sylvaing/ha-energy-mapper#limits) for the full
   list and the roadmap.

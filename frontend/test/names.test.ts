@@ -5,6 +5,7 @@ import { localeInfo } from "../src/format.ts";
 import { translator } from "../src/i18n.ts";
 import {
   distinctNames,
+  phasesSummary,
   dominantTimeOfDay,
   provisionalName,
   roundedDuration,
@@ -102,4 +103,20 @@ test("distinct names: alike names get a number", () => {
     ]),
   );
   assert.deepEqual([...out.values()], ["2 kW appliance", "Kettle", "2 kW appliance (2)", "2 kW appliance (3)"]);
+});
+
+test("multi-phase signatures (#26): provisional name and phases summary", () => {
+  const sig = { kind: "multiphase", power_w: 2050, duration_s: 5400, hours: hours({ 20: 3 }) };
+  assert.equal(provisionalName(sig, tEn, en), "Cycle with 2.1 kW heating, ~1 h 30, in the evening");
+  assert.equal(provisionalName(sig, tFr, fr), "Cycle avec chauffe de 2,1 kW, ~1 h 30, le soir");
+  assert.equal(provisionalName({ kind: "multiphase" }, tEn, en), "Multi-phase cycle");
+  const phases = [
+    { kind: "motor", power_w: 92, duration_s: 480 },
+    { kind: "heat", power_w: 2100, duration_s: 1200 },
+    { kind: "motor", power_w: 110, duration_s: 1800 },
+  ];
+  assert.equal(phasesSummary(phases, tEn, en), "motor 92 W 8 min → heating 2.1 kW 20 min → motor 110 W 30 min");
+  assert.equal(phasesSummary(phases, tFr, fr), "moteur 92 W 8 min → chauffe 2,1 kW 20 min → moteur 110 W 30 min");
+  assert.equal(phasesSummary(phases, tEn, en, 2), "motor 92 W 8 min → heating 2.1 kW 20 min → …");
+  assert.equal(phasesSummary(null, tEn, en), "");
 });

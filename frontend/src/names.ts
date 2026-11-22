@@ -66,15 +66,15 @@ export function roundedDuration(seconds: number): number {
 const valid = (v: number | null | undefined): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
 
 /** "2.6 kW appliance, ~50 min, in the evening"; cycling: "900 W appliance in
- * cycles, in the evening". Missing fields leave their part out. */
+ * cycles, in the evening"; multi-phase (#26): "Cycle with 2 kW heating,
+ * ~1 h 30, in the evening". Missing fields leave their part out. */
 export function provisionalName(sig: NameSource, t: Translate, info: LocaleInfo): string {
   const cycling = sig.kind === "cycling";
+  const multiphase = sig.kind === "multiphase";
   const power = valid(sig.power_w) ? roundedPower(sig.power_w, info) : null;
-  const parts: string[] = [
-    power
-      ? t(cycling ? "name_power_cycles" : "name_power", { power })
-      : t(cycling ? "name_unknown_cycles" : "name_unknown"),
-  ];
+  const named = multiphase ? "name_power_multiphase" : cycling ? "name_power_cycles" : "name_power";
+  const unknown = multiphase ? "name_unknown_multiphase" : cycling ? "name_unknown_cycles" : "name_unknown";
+  const parts: string[] = [power ? t(named, { power }) : t(unknown)];
   if (!cycling && valid(sig.duration_s)) parts.push(`~${formatDuration(roundedDuration(sig.duration_s), info)}`);
   const when = dominantTimeOfDay(sig.hours);
   if (when === "all_day") parts.push(t("tod_all_day"));
@@ -83,6 +83,25 @@ export function provisionalName(sig: NameSource, t: Translate, info: LocaleInfo)
     parts.push(t("tod_pair", { a: t(`tod_${when[0]}` as StringKey), b: t(`tod_${when[1]}` as StringKey) }));
   }
   return parts.join(", ");
+}
+
+/** One phase of a multi-phase cycle (#26), as the registry stores it. */
+export interface PhaseInfo {
+  kind: string;
+  power_w: number;
+  duration_s: number;
+}
+
+/** "heating 2.1 kW 20 min → motor 100 W 30 min → …": the phases of a
+ * multi-phase signature in order; at most ``max`` of them, then "…". */
+export function phasesSummary(phases: PhaseInfo[] | null | undefined, t: Translate, info: LocaleInfo, max = 6): string {
+  const valid = (phases ?? []).filter((p) => Number.isFinite(p?.power_w) && Number.isFinite(p?.duration_s));
+  const parts = valid.slice(0, max).map((p) => {
+    const kind = t(p.kind === "heat" ? "phase_heat" : "phase_motor");
+    return `${kind} ${roundedPower(p.power_w, info)} ${formatDuration(roundedDuration(p.duration_s), info)}`;
+  });
+  if (valid.length > max) parts.push("…");
+  return parts.join(" → ");
 }
 
 /** The same names made distinct (the chart legend toggles series by name):

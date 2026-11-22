@@ -30,7 +30,7 @@ import math
 import re
 from collections.abc import Iterable, Mapping
 
-from nilm_core.registry import GROUPS, expected_signature
+from nilm_core.registry import SOURCE_GROUPS, expected_signature
 
 ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 SIGNATURE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
@@ -93,7 +93,7 @@ def _source(where: str, item) -> dict:
     power = item.get("power_w")
     if group != (None, None) or power is not None:
         # how to recreate it when the registry does not have it
-        if group not in GROUPS:
+        if group not in SOURCE_GROUPS:
             raise AppliancesError(f"{where}: unknown signature kind/band {group}")
         if isinstance(power, bool) or not isinstance(power, int | float) or not math.isfinite(power):
             raise AppliancesError(f"{where}.power_w: expected a number")
