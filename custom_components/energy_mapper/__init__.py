@@ -57,7 +57,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: EnergyMapperConfigEntry)
     await coordinator.async_load()
     # raises ConfigEntryNotReady when the add-on does not answer
     await coordinator.async_config_entry_first_refresh()
-    live = LiveHub(hass, client, lambda: (coordinator.data or {}).get("version"))
+    live = LiveHub(
+        hass, client, lambda: (coordinator.data or {}).get("version"), coordinator.async_live_events
+    )
     entry.runtime_data = EnergyMapperData(client=client, coordinator=coordinator, live=live)
     entry.async_on_unload(live.async_stop)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -159,7 +159,7 @@ def new_signature(
     return sig
 
 
-def _owner(sig: Mapping | None, key: str) -> str | None:
+def owner_of(sig: Mapping | None, key: str) -> str | None:
     """The other appliance that owns this signature, if any."""
     if not sig:
         return None
@@ -207,7 +207,7 @@ def status(
     if learned is None:
         return out
     sig = resolve(registry, learned, config)
-    owner = _owner(sig, key)
+    owner = owner_of(sig, key)
     if owner:
         out["conflict"] = {"id": sig["id"], "appliance": owner}
     linked = {s.get("id") for s in appliance.get("sources") or [] if s.get("type") == "signature"}
@@ -282,7 +282,7 @@ def apply(
         )
     sig = resolve(registry, learned, config)
     if sig is not None:
-        owner = _owner(sig, appliance["key"])
+        owner = owner_of(sig, appliance["key"])
         if owner:
             raise TeachingError("conflict", f"{sig['id']} belongs to {owner}", sig["id"])
         return sig, False, learned.to_dict()

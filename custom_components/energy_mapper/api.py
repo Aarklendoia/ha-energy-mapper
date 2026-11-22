@@ -165,6 +165,20 @@ class EnergyMapperClient:
             params["since"] = str(since)
         return await self._request("GET", "/api/live", params=params, timeout=wait + TIMEOUT_LIVE - LIVE_WAIT)
 
+    async def live_event(self, event_id: int, session: int | None = None) -> dict[str, Any]:
+        """One event of the running live session, to label it (add-on
+        0.12.0+): ``{"session", "event"}``; errors ``not_found`` (404, gone
+        from the session) and ``session_ended`` (409)."""
+        params = {"id": str(event_id)}
+        if session is not None:
+            params["session"] = str(session)
+        return await self._request("GET", "/api/live/event", params=params)
+
+    async def examples(self) -> dict[str, Any]:
+        """``{"last_day", "appliances": [...]}``: the labelled examples found
+        again in the analysed days (add-on 0.12.0+)."""
+        return await self._request("GET", "/api/examples")
+
     async def live_stats(self) -> dict[str, Any]:
         """The live view's state and timings (add-on 0.12.0+)."""
         return await self._request("GET", "/api/live/stats")

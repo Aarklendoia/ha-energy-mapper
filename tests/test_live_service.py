@@ -246,6 +246,23 @@ class LiveServiceTest(unittest.TestCase):
         self.assertEqual(now["submeters"], [])
         self.assertEqual(now["switches"], [])
 
+    def test_event_accessor_for_labelling(self):
+        h = Harness(self, House([(T0 - 300, T0 + 3600, 2000)]))
+        self.assertEqual(h.svc.event(1), ("session_ended", None))  # nothing runs
+        answer = h.svc.poll(None, wait=5)
+        [ev] = answer["events"]
+        found, got = h.svc.event(ev["id"], answer["session"])
+        self.assertEqual(found, "ok")
+        self.assertEqual(got["session"], answer["session"])
+        self.assertEqual(
+            {k: got["event"][k] for k in ("id", "t_on", "delta_w")},
+            {k: ev[k] for k in ("id", "t_on", "delta_w")},
+        )
+        got["event"]["candidates"].append("x")  # a copy: the service's own is untouched
+        self.assertNotIn("x", h.svc.event(ev["id"])[1]["event"]["candidates"])
+        self.assertEqual(h.svc.event(ev["id"], answer["session"] - 1), ("session_ended", None))
+        self.assertEqual(h.svc.event(ev["id"] + 100, answer["session"]), ("not_found", None))
+
     def test_long_poll_sequence_numbers(self):
         # the fake clock runs faster than the requests come: no idle stop here
         h = Harness(self, House([(T0 + 60, T0 + 180, 2000)]), idle_s=10_000)

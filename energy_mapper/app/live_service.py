@@ -164,6 +164,23 @@ class LiveService:
                 return self._answer(since)
             return self._unavailable(STARTING)
 
+    def event(self, event_id: int, session: int | None = None) -> tuple[str, dict | None]:
+        """One event of the running session, for labelling it (#17): ``("ok",
+        {"session", "event"})``, ``("session_ended", None)`` when ``session`` is not the
+        running one (or nothing runs), ``("not_found", None)`` when the
+        session no longer holds it (cancelled, or ended more than 15 minutes
+        ago). Not a request: it does not start the view."""
+        with self._cond:
+            if self._session is None or (session is not None and session != self._session):
+                return "session_ended", None
+            ev = self._events.get(event_id)
+            if ev is None or ev["state"] == CANCELLED:
+                return "not_found", None
+            return "ok", {
+                "session": self._session,
+                "event": {**ev, "candidates": list(ev.get("candidates") or [])},
+            }
+
     def stats(self) -> dict:
         """``GET /api/live/stats`` (not a request: it does not start the view)."""
         with self._cond:

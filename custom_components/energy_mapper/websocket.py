@@ -22,6 +22,7 @@ from homeassistant.helpers import config_validation as cv
 from .api import EnergyMapperApiError, EnergyMapperClient, EnergyMapperConnectionError, EnergyMapperError
 from .const import CONF_URL, DOMAIN, OPT_REVIEW_REPAIR, OPT_SETTINGS
 from .coordinator import EnergyMapperConfigEntry, EnergyMapperCoordinator, ReviewError
+from .labels import TARGETS, TRACKS, async_label
 from .takeover import TakeoverError
 
 DAY = vol.Match(r"^\d{4}-\d{2}-\d{2}$")
@@ -61,6 +62,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_stop_teaching,
         ws_self_test,
         ws_live_subscribe,
+        ws_live_label,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -245,9 +247,9 @@ def ws_appliances(
     if entry is None or entry.state is not ConfigEntryState.LOADED:
         connection.send_error(msg["id"], ERR_NOT_LOADED, "Energy Mapper is not set up")
         return
+    coordinator = entry.runtime_data.coordinator
     appliances = sorted(
-        entry.runtime_data.coordinator.appliances_by_subentry().values(),
-        key=lambda a: (a.name.casefold(), a.key),
+        coordinator.appliances_by_subentry().values(), key=lambda a: (a.name.casefold(), a.key)
     )
     connection.send_result(
         msg["id"],
@@ -262,6 +264,9 @@ def ws_appliances(
                     "power_w": a.power_w,
                     "sources": [s.as_dict() for s in a.sources],
                     "teacher": a.teacher.as_dict() if a.teacher else None,
+                    # labelled examples (#17), and what the analysed days found of them
+                    "examples": [dict(e) for e in a.examples],
+                    "examples_status": coordinator.examples_status.get(a.key),
                 }
                 for a in appliances
             ],
@@ -586,3 +591,34 @@ def ws_live_subscribe(
 
     connection.send_result(msg["id"])
     connection.subscriptions[msg["id"]] = entry.runtime_data.live.subscribe(forward)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "energy_mapper/live/label",
+        vol.Required("target"): vol.In(TARGETS),
+        # the live event (``id`` of an event and ``session`` of the live stream)
+        vol.Optional("event_id"): vol.All(int, vol.Range(min=0)),
+        vol.Optional("session"): vol.All(int, vol.Range(min=0)),
+        # or the use itself (guided mode); they win over the event's
+        vol.Optional("t_on"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        vol.Optional("t_off"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0))),
+        vol.Optional("power_w"): vol.All(vol.Coerce(float), vol.Range(min=1, max=100000)),
+        vol.Optional("source", default="live"): vol.In(["live", "guided"]),
+        vol.Optional("signature_id"): SIGNATURE_ID,
+        vol.Optional("appliance"): APPLIANCE_KEY,
+        vol.Optional("name"): vol.All(str, vol.Length(min=1, max=100)),
+        vol.Optional("track", default="curve"): vol.In(TRACKS),
+        vol.Optional("entity_id"): cv.entity_id,
+        vol.Optional("on_states"): vol.All([vol.All(str, vol.Length(min=1, max=100))], vol.Length(max=20)),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_live_label(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Label a live event (#17, ``labels.py``): name a signature, add an
+    example to an appliance, create a new appliance, or never propose a
+    signature again. Answers what it did (``effect``)."""
+    await _review(hass, connection, msg, lambda coordinator: async_label(coordinator, msg))

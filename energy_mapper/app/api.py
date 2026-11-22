@@ -32,6 +32,11 @@ GET  /api/live?since=<seq>&wait=<s>
                               without since, else what changed after it (at most wait s,
                               25 by default); {"seq", "available", ...}
 GET  /api/live/stats          the live view's state and timings (does not start it)
+GET  /api/live/event?id=<id>&session=<session>
+                              {"session", "event"}: one event of the running session, to
+                              label it; 404 not_found, 409 session_ended
+GET  /api/examples            {"last_day", "appliances": [...]}: the labelled examples of
+                              each appliance found again in the analysed days (examples.py)
 """
 
 from __future__ import annotations
@@ -174,6 +179,23 @@ def _live(live, query: dict) -> tuple[int, dict]:
     return 200, live.poll(since, wait)
 
 
+def _live_event(live, query: dict) -> tuple[int, dict]:
+    try:
+        event_id = int((query.get("id") or [""])[0])
+        raw = (query.get("session") or [""])[0]
+        session = int(raw) if raw else None
+    except ValueError:
+        return 400, {"error": "invalid_query", "message": "id: expected an event id, session: a session"}
+    if live is None:
+        return 409, {"error": "session_ended", "message": "the live view is disabled"}
+    found, answer = live.event(event_id, session)
+    if found == "session_ended":
+        return 409, {"error": "session_ended", "message": "the live session of this event has ended"}
+    if answer is None:
+        return 404, {"error": "not_found", "message": f"no live event {event_id}"}
+    return 200, answer
+
+
 def route(
     analyzer: Analyzer,
     store: ReportStore,
@@ -189,6 +211,12 @@ def route(
 
     if path == "/api/live" and method == "GET":
         return _live(live, query)
+
+    if path == "/api/live/event" and method == "GET":
+        return _live_event(live, query)
+
+    if path == "/api/examples" and method == "GET":
+        return 200, analyzer.examples()
 
     if path == "/api/live/stats" and method == "GET":
         return 200, live.stats() if live is not None else {"enabled": False, "state": "disabled"}
@@ -328,6 +356,8 @@ def route(
         "/api/self_test",
         "/api/live",
         "/api/live/stats",
+        "/api/live/event",
+        "/api/examples",
     }
     if path in known or path.startswith(("/api/report/", "/api/hourly/")):
         return 405, {"error": "method_not_allowed"}
