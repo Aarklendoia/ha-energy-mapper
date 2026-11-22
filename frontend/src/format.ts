@@ -95,14 +95,16 @@ export function formatTime(ts: number, info: LocaleInfo, seconds = false): strin
 }
 
 /** "Tue, March 9, 2027" for a "YYYY-MM-DD" day (no time zone shift). */
-export function formatDay(day: string, info: LocaleInfo, style: "long" | "short" = "long"): string {
+export function formatDay(day: string, info: LocaleInfo, style: "long" | "short" | "brief" = "long"): string {
   const [y, m, d] = day.split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d, 12));
   return new Intl.DateTimeFormat(
     info.language,
     style === "long"
       ? { weekday: "short", year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }
-      : { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" },
+      : style === "brief"
+        ? { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }
+        : { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" },
   ).format(date);
 }
 

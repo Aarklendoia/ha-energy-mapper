@@ -89,6 +89,7 @@
           <option value="unavailable">add-on unavailable</option>
           <option value="not_configured">not configured</option>
           <option value="empty">no report yet</option>
+          <option value="many">30+ signatures to review</option>
         </select>
       </label>
       <label><input type="checkbox" id="admin" checked /> admin</label>
@@ -136,8 +137,11 @@
             return scenario === "empty" ? { days: [], summary_days: [] } : sample("days");
           case "energy_mapper/signatures": {
             if (scenario === "empty") return { signatures: [], switched_loads: [], peak: null };
-            const reg = await sample("signatures");
-            for (const s of reg.signatures) if (labels[s.id]) s.label = labels[s.id];
+            const reg = await signatures();
+            for (const s of reg.signatures) {
+              if (labels[s.id]) s.label = labels[s.id];
+              if (decisions[s.id]?.state === "validated") s.appliance = decisions[s.id].appliance;
+            }
             return reg;
           }
           case "energy_mapper/report":
@@ -181,7 +185,7 @@
           case "energy_mapper/ignore":
           case "energy_mapper/restore": {
             const action = msg.type.split("/")[1];
-            const s = (await sample("signatures")).signatures.find((x) => x.id === msg.signature_id);
+            const s = (await signatures()).signatures.find((x) => x.id === msg.signature_id);
             if (!s) throw { code: "not_found", message: `no signature ${msg.signature_id}` };
             if (action === "restore") delete decisions[s.id];
             else if (action === "ignore") decisions[s.id] = { state: "ignored", at: NOW };
@@ -200,13 +204,57 @@
         }
       }
 
+      // the registry; scenario "many": 28 synthetic signatures more, to review (#51)
+      async function signatures() {
+        const reg = await sample("signatures");
+        if ($("scenario").value !== "many") return reg;
+        const day0 = Date.UTC(2027, 2, 3) / 1000 - 3600; // 2027-03-03 00:00 in Paris
+        const days = ["2027-03-03", "2027-03-04", "2027-03-05", "2027-03-06", "2027-03-07", "2027-03-08", "2027-03-09"];
+        for (let i = 0; i < 28; i++) {
+          const power = 150 + ((i * 397) % 2800);
+          const cycling = i % 5 === 3;
+          const duration = cycling ? 2400 : 120 + ((i * 1013) % 7000);
+          const hour = (i * 7) % 24;
+          const hours = Array.from({ length: 24 }, (_, h) => (h === hour ? 3 : Math.abs(h - hour) === 1 ? 1 : 0));
+          const count = 5 + ((i * 3) % 30);
+          const examples = [0, 1, 2].map((k) => {
+            const d = 6 - ((i + k * 2) % 7);
+            const start = day0 + d * 86400 + hour * 3600 + ((i * 11) % 50) * 60;
+            return { day: days[d], start, end: start + duration, power_w: power };
+          });
+          reg.signatures.push({
+            id: `${cycling ? "cyc" : duration < 600 ? "short" : duration < 3600 ? "medium" : "long"}-${power}w-${i}`,
+            kind: cycling ? "cycling" : "steady",
+            band: cycling ? "session" : duration < 600 ? "short" : duration < 3600 ? "medium" : "long",
+            label: null,
+            power_w: power,
+            duration_s: duration,
+            on_s: cycling ? 60 : null,
+            period_s: cycling ? 180 : null,
+            duty: cycling ? 0.33 : null,
+            weight: count * 0.9,
+            count,
+            days_seen: Math.min(count, 3 + (i % 5)),
+            per_week: count / 4,
+            first_seen: days[i % 3],
+            last_seen: "2027-03-09",
+            hours,
+            energy_kwh: Math.round(((power * duration) / 3600000) * count * 100) / 100,
+            weighted_energy_kwh: Math.round(((power * duration) / 3600000) * count * 90) / 100,
+            examples,
+            appliance: null,
+          });
+        }
+        return reg;
+      }
+
       // review of the signatures (the add-on's rules, in memory)
       const NOW = Date.UTC(2027, 2, 10, 4, 30) / 1000;
       const decisions = {};
       const labels = {};
       async function review() {
         if ($("scenario").value === "empty") throw { code: "not_found", message: "no review" };
-        const reg = await sample("signatures");
+        const reg = await signatures();
         const state = (s) => {
           const d = decisions[s.id];
           if (s.label || labels[s.id] || d?.state === "validated") return "validated";

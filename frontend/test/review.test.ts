@@ -3,6 +3,20 @@ import { test } from "node:test";
 
 import { translator } from "../src/i18n.ts";
 import {
+  blankForm,
+  currentOf,
+  exampleDrawing,
+  filterCounts,
+  filterOf,
+  formForMerge,
+  formForUse,
+  nextAfter,
+  reviewProgress,
+  reviewQueue,
+  shortcutFor,
+  shortcutLetters,
+  stepFrom,
+  typingTarget,
   bestSuggestion,
   drivesLoad,
   entityChoices,
@@ -134,8 +148,8 @@ test("review strings exist in French", () => {
   const fr = translator("fr");
   assert.equal(fr("review"), "À examiner");
   assert.equal(fr("review_uses", { count: "8", days: "4" }), "8 utilisations sur 4 jours");
-  for (const mode of ["new", "switch", "sensor"]) {
-    assert.notEqual(fr(`review_mode_${mode}` as never), translator("en")(`review_mode_${mode}` as never));
+  for (const mode of ["new", "switch", "sensor", "merge"]) {
+    assert.notEqual(fr(`rq_track_${mode}` as never), translator("en")(`rq_track_${mode}` as never));
   }
 });
 
@@ -268,6 +282,178 @@ test("merge message (#43)", () => {
   });
   assert.deepEqual(validateMessage(s, "merge", "x", "", undefined, ""), { missing: "appliance" });
   const fr = translator("fr");
-  assert.equal(fr("review_merge_into", { name: "Radiateur" }), "Fusionner dans Radiateur");
-  assert.notEqual(fr("review_mode_merge"), translator("en")("review_mode_merge"));
+  assert.equal(fr("rq_merge_hint", { name: "Radiateur" }), "Ajouter cette signature à Radiateur");
+  assert.notEqual(fr("review_mode_merge_hint"), translator("en")("review_mode_merge_hint"));
+});
+
+// -- one signature at a time (#51) ----------------------------------------
+
+function withEnergy(id: string, state: ReviewSignature["review_state"], energy: number, extra: Partial<ReviewSignature> = {}): ReviewSignature {
+  return { ...sig(id, state), energy_kwh: energy, weighted_energy_kwh: energy, ...extra };
+}
+
+const ids = (list: Array<{ id: string }>) => list.map((s) => s.id);
+
+test("review queue: most energy first, per filter", () => {
+  const l = listing(
+    withEnergy("small", "proposed", 1),
+    withEnergy("big", "proposed", 9, { suggestions: [suggestion("switch.x", 0.9)] }),
+    withEnergy("mid", "proposed", 4),
+    withEnergy("w1", "waiting", 2),
+    withEnergy("w2", "waiting", 5),
+    withEnergy("i1", "ignored", 3),
+    withEnergy("v", "validated", 99),
+  );
+  assert.deepEqual(ids(reviewQueue(l, "energy")), ["big", "mid", "small"]);
+  assert.deepEqual(ids(reviewQueue(l, "suggested")), ["big"]);
+  assert.deepEqual(ids(reviewQueue(l, "waiting")), ["w2", "w1"]);
+  assert.deepEqual(ids(reviewQueue(l, "ignored")), ["i1"]);
+  assert.deepEqual(reviewQueue(null, "energy"), []);
+  assert.deepEqual(filterCounts(l), { energy: 3, suggested: 1, waiting: 2, ignored: 1 });
+});
+
+test("review queue: ties are broken by weighted energy, then id", () => {
+  const l = listing(
+    withEnergy("b", "proposed", 2, { weighted_energy_kwh: 1 }),
+    withEnergy("a", "proposed", 2, { weighted_energy_kwh: 1 }),
+    withEnergy("c", "proposed", 2, { weighted_energy_kwh: 1.5 }),
+  );
+  assert.deepEqual(ids(reviewQueue(l, "energy")), ["c", "a", "b"]);
+});
+
+test("the filter that lists a signature", () => {
+  assert.equal(filterOf(sig("a", "proposed")), "energy");
+  assert.equal(filterOf(sig("a", "waiting")), "waiting");
+  assert.equal(filterOf(sig("a", "ignored")), "ignored");
+  assert.equal(filterOf(sig("a", "validated")), null);
+  assert.equal(filterOf(sig("a", "immature")), null);
+  assert.equal(filterOf(undefined), null);
+});
+
+test("current signature and the stepper", () => {
+  const q = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  assert.equal(currentOf(q, "b"), "b");
+  assert.equal(currentOf(q, "gone"), "a");
+  assert.equal(currentOf(q, null), "a");
+  assert.equal(currentOf([], "a"), null);
+  assert.equal(stepFrom(q, "b", 1), "c");
+  assert.equal(stepFrom(q, "b", -1), "a");
+  assert.equal(stepFrom(q, "c", 1), null);
+  assert.equal(stepFrom(q, "a", -1), null);
+  assert.equal(stepFrom(q, "gone", 1), "a");
+});
+
+test("next selection after an action", () => {
+  const q = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+  assert.equal(nextAfter(q, "b", ["b"]), "c");
+  assert.equal(nextAfter(q, "d", ["d"]), "c");
+  assert.equal(nextAfter(q, "b", ["b", "c"]), "d");
+  assert.equal(nextAfter(q, "c", ["c", "d"]), "b");
+  // a bulk action on other rows keeps the current one
+  assert.equal(nextAfter(q, "a", ["c", "d"]), "a");
+  assert.equal(nextAfter(q, "a", ["a", "b", "c", "d"]), null);
+  assert.equal(nextAfter(q, null, ["a"]), "b");
+});
+
+test("review progress: the share of the energy explained, with the registry", () => {
+  const l = { ...listing(withEnergy("p", "proposed", 3), withEnergy("w", "waiting", 1), withEnergy("i", "ignored", 2)), counts: { validated: 2 } };
+  const registry = {
+    signatures: [
+      { label: "Oven", appliance: null, energy_kwh: 4 },
+      { label: null, appliance: "load:switch.x", energy_kwh: 2 },
+      { label: null, appliance: null, energy_kwh: 50 }, // immature: not counted
+    ],
+  };
+  const p = reviewProgress(l, registry);
+  assert.deepEqual({ ...p, share: Math.round((p.share ?? 0) * 100) }, {
+    named: 2,
+    toReview: 1,
+    waiting: 1,
+    ignored: 1,
+    share: 50,
+    basis: "energy",
+  });
+});
+
+test("review progress: the share of the signatures handled, without the registry", () => {
+  const l = { ...listing(sig("p", "proposed"), sig("w", "waiting"), sig("i", "ignored")), counts: { validated: 1 } };
+  const p = reviewProgress(l, null);
+  assert.equal(p.basis, "count");
+  assert.equal(p.share, 0.5); // (1 named + 1 ignored) / 4
+  assert.equal(reviewProgress(listing(), null).share, null);
+  // no energy at all: falls back to the count
+  assert.equal(reviewProgress({ ...listing(withEnergy("p", "proposed", 0)), counts: { validated: 0 } }, { signatures: [] }).basis, "count");
+});
+
+test("keyboard shortcuts of the review", () => {
+  const k = (key: string, mods: Partial<KeyboardEvent> = {}) =>
+    shortcutFor({ key, ctrlKey: false, metaKey: false, altKey: false, ...mods } as KeyboardEvent);
+  assert.equal(k("v"), "validate");
+  assert.equal(k("V"), "validate");
+  assert.equal(k("w"), "wait");
+  assert.equal(k("a"), "wait");
+  assert.equal(k("i"), "ignore");
+  assert.equal(k("ArrowLeft"), "prev");
+  assert.equal(k("ArrowRight"), "next");
+  assert.equal(k("x"), null);
+  assert.equal(k("v", { ctrlKey: true }), null);
+  assert.equal(k("a", { metaKey: true }), null);
+  assert.deepEqual(shortcutLetters("en"), { validate: "V", wait: "W", ignore: "I" });
+  assert.deepEqual(shortcutLetters("fr-CA"), { validate: "V", wait: "A", ignore: "I" });
+});
+
+test("no shortcut while typing", () => {
+  const el = (tagName: string, extra: Record<string, unknown> = {}) => ({ tagName, getAttribute: () => null, ...extra }) as unknown as EventTarget;
+  assert.equal(typingTarget([el("INPUT", { type: "text" }), el("DIV")]), true);
+  assert.equal(typingTarget([el("INPUT", { type: "checkbox" }), el("DIV")]), false);
+  assert.equal(typingTarget([el("SELECT")]), true);
+  assert.equal(typingTarget([el("TEXTAREA")]), true);
+  assert.equal(typingTarget([el("DIV"), el("HA-ENTITY-PICKER")]), true);
+  assert.equal(typingTarget([el("DIV", { isContentEditable: true })]), true);
+  assert.equal(typingTarget([el("BUTTON", { getAttribute: (n: string) => (n === "role" ? "tab" : null) })]), true);
+  assert.equal(typingTarget([el("BUTTON"), el("SECTION")]), false);
+  assert.equal(typingTarget([{} as EventTarget]), false); // window, document: no tag
+});
+
+test("Use and Merge on a suggestion (#51)", () => {
+  const edge = suggestion("switch.oven_plug", 0.92);
+  assert.deepEqual(formForUse("a", edge, () => "Oven plug"), {
+    id: "a",
+    mode: "switch",
+    name: "Oven plug",
+    entity: "switch.oven_plug",
+    appliance: "",
+  });
+  const contained: EntitySuggestion = {
+    ...suggestion("climate.room", 0.97, ["heating"]),
+    attribute: "hvac_action",
+    match: "containment",
+    appliance: { key: "load:switch.radiator", name: "Radiator", via: "device" },
+  };
+  assert.deepEqual(formForUse("a", contained, () => "Room"), { id: "a", mode: "new", name: "Room", entity: "", appliance: "" });
+  assert.deepEqual(formForMerge("a", contained), { id: "a", mode: "merge", name: "", entity: "", appliance: "load:switch.radiator" });
+  assert.equal(formForMerge("a", edge), null);
+  assert.deepEqual(blankForm("a"), { id: "a", mode: "new", name: "", entity: "", appliance: "" });
+});
+
+test("an example drawn on the house curve", () => {
+  const curve = Array.from({ length: 200 }, (_, i) => ({ t: 1000 + i * 60, house: i >= 100 && i < 110 ? 2500 : 300 }));
+  const ex = { day: "2027-03-09", start: 1000 + 100 * 60, end: 1000 + 110 * 60, power_w: 2200 };
+  const d = exampleDrawing(curve, ex, 1000, 1000 + 200 * 60, 200, 56);
+  assert.ok(d);
+  assert.ok(d.path.startsWith("M"));
+  assert.ok(d.area.endsWith("Z"));
+  assert.ok(d.from > 0 && d.to > d.from && d.to < 200);
+  // the use is in the middle of its window (margins of 20 min on both sides)
+  assert.ok(Math.abs(d.from + d.to - 200) < 2);
+  assert.equal(exampleDrawing([], ex, 1000, 13000), null);
+});
+
+test("queue strings exist in French", () => {
+  const fr = translator("fr");
+  const en = translator("en");
+  for (const key of ["rq_filter_energy", "rq_validate_next", "rq_how", "rq_track_new", "rq_step", "rq_key_wait"] as const) {
+    assert.notEqual(fr(key), en(key));
+  }
+  assert.equal(fr("rq_step", { pos: "1", count: "34" }), "1 sur 34");
 });

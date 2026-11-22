@@ -204,10 +204,17 @@ address, so a view can be bookmarked.
   yesterday*, *Highest use (30 days)* and *Last notable peak*. Administrators can **analyse a
   day** again (after changing the settings, for example).
 - **To review** (administrators): the recurring signatures seen often enough to be an
-  appliance (5 uses on 3 different days by default), most energy first, with their power,
-  duration or on/off rhythm, number of uses, energy, usual hours and up to three recent
-  **examples**: select one to open its day zoomed on it. For each one:
-  - **Validate…**: say what it is: a **new appliance** (give it a name: Energy Mapper creates
+  appliance (5 uses on 3 different days by default), **one at a time**. A progress card at the
+  top counts the named, to review, waiting and ignored signatures and shows how much of their
+  energy is already explained; chips filter the queue: *Most energy first*, *With a
+  suggestion*, *Waiting*, *Ignored*. On the left, the queue (name, uses per week, energy):
+  tick several to **Wait**, **Ignore** or **Restore** them at once. On the right, the current
+  signature: power, usual duration, runs per week, energy, first seen, a 24-hour histogram of
+  its usual hours and up to three recent **examples drawn on the house curve**: select one to
+  open its day zoomed on it. Below, the form: a name and *How to track it*, then **Validate and
+  next**, **Wait** or **Ignore**; keyboard shortcuts **V**, **W** (wait), **I** and the arrows.
+  On a phone the queue becomes a "1 of 34" stepper. What the choices do:
+  - **Curve only**: a **new appliance** (give it a name: Energy Mapper creates
     the appliance, its sensors and hourly energy statistics from the signature); an appliance
     **driven by a switch** without power measurement (relay-driven water heater, pilot-wire
     radiator: its state becomes the ground truth and Energy Mapper measures its power); or an
@@ -215,18 +222,18 @@ address, so a view can be bookmarked.
     the analysis, so its steps no longer appear). The switch or sensor is picked with Home
     Assistant's entity picker;
   - **Probably: Attic fan (92 %)**: the entity whose state changes when the signature starts
-    and stops, found by Energy Mapper (see below). *Validate…* then opens with it already
-    picked and named after it; the other suggested entities are one click away, and any other
+    and stops, found by Energy Mapper (see below). **Use** fills the form with it (linked as
+    the switch, named after it); the other suggested entities are one click away, and any other
     entity can still be chosen. A thermostat found by its *heating* periods is shown as
     **Living room (heating)**: it names a new appliance, it is not linked as a switch;
-  - **Probably part of Radiator: …** and **Merge into Radiator**: the entity found already
+  - **Probably part of Radiator: …** and **Merge**: the entity found already
     belongs to an appliance (it is one of its switches or sensors, or in the same device), so
     the signature is probably a part of it, such as a radiator cycling on its own thermostat
     while its pilot-wire relay allows heating. Merging adds the signature to the appliance:
-    its energy is added to the appliance's, past days included. *Validate…* also offers
-    **A part of an existing appliance** for any appliance;
+    its energy is added to the appliance's, past days included. *How to track it* also
+    offers **Merge into an appliance** for any appliance;
   - **Wait**: hide it until there is clearly more data (twice as many uses, or 14 days later);
-  - **Ignore**: never propose it again. The *Ignored* list below brings one back (*Restore*).
+  - **Ignore**: never propose it again. The *Ignored* filter brings one back (*Restore*).
     A signature whose appliance you deleted is listed there too.
 
   Decisions are kept by the add-on (in Home Assistant backups). A single notice in
@@ -277,7 +284,7 @@ address, so a view can be bookmarked.
   short detail (runs and time span, *in cycles*, time on for switched loads) and kWh; base
   load, plugs and sensors, estimated and unexplained are rows too. Appliances still to name
   are in italics with a dashed dot. Select a row to highlight that appliance in the timeline;
-  administrators can open the review of an unnamed one.
+  administrators can open an unnamed one in *To review*.
 - **Peaks**: the day's top episodes (up to 5) with what was running at the maximum and the
   unexplained power. A peak is **notable** when it reaches the notable threshold (80 % of the
   highest power of the last 30 days, or your fixed threshold). Select a peak to zoom on it.
@@ -671,11 +678,19 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   *Avant-hier*, *Conso. max. (30 j)* et *Dernier pic notable*. Les administrateurs peuvent
   **analyser un jour** à nouveau (après un changement de réglages, par exemple).
 - **À examiner** (administrateurs) : les signatures récurrentes vues assez souvent pour être
-  un appareil (5 utilisations sur 3 jours différents par défaut), les plus gourmandes d'abord,
-  avec leur puissance, leur durée ou leur rythme marche/arrêt, leur nombre d'utilisations,
-  leur énergie, leurs heures habituelles et jusqu'à trois **exemples** récents : sélectionnez-en
-  un pour ouvrir son jour zoomé dessus. Pour chacune :
-  - **Valider…** : dites ce que c'est : un **nouvel appareil** (donnez-lui un nom : Energy
+  un appareil (5 utilisations sur 3 jours différents par défaut), **une à la fois**. Une carte
+  de progression en haut compte les signatures nommées, à examiner, en attente et ignorées et
+  montre quelle part de leur énergie est déjà expliquée ; des puces filtrent la file : *Plus
+  énergivores d'abord*, *Avec suggestion*, *En attente*, *Ignorées*. À gauche, la file (nom,
+  utilisations par semaine, énergie) : cochez-en plusieurs pour les **Attendre**, **Ignorer**
+  ou **Rétablir** d'un coup. À droite, la signature en cours : puissance, durée habituelle,
+  fréquence, énergie, première apparition, un histogramme de ses heures habituelles sur 24 h et
+  jusqu'à trois **exemples dessinés sur la courbe de la maison** : sélectionnez-en un pour
+  ouvrir son jour zoomé dessus. En dessous, le formulaire : un nom et *Comment le suivre*, puis
+  **Valider et passer au suivant**, **Attendre** ou **Ignorer** ; raccourcis clavier **V**,
+  **A** (attendre), **I** et les flèches. Sur téléphone, la file devient un sélecteur « 1 sur
+  34 ». Ce que font les choix :
+  - **Sur la courbe seulement** : un **nouvel appareil** (donnez-lui un nom : Energy
     Mapper crée l'appareil, ses capteurs et ses statistiques d'énergie horaires à partir de la
     signature) ; un appareil **commandé par un interrupteur** sans mesure de puissance
     (chauffe-eau sur relais, radiateur sur fil pilote : son état devient la référence et
@@ -684,22 +699,22 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
     n'apparaissent plus). L'interrupteur ou le capteur se choisit avec le sélecteur d'entités
     de Home Assistant ;
   - **Probablement : Ventilateur des combles (92 %)** : l'entité dont l'état change quand la
-    signature démarre et s'arrête, trouvée par Energy Mapper (voir plus bas). *Valider…*
-    s'ouvre alors avec cette entité déjà choisie et le nom pré-rempli ; les autres entités
+    signature démarre et s'arrête, trouvée par Energy Mapper (voir plus bas). **Utiliser**
+    remplit le formulaire avec elle (reliée comme interrupteur, nom pré-rempli) ; les autres entités
     suggérées sont à un clic, et toute autre entité reste possible. Un thermostat trouvé par
     ses périodes de chauffe s'affiche **Salon (heating)** : il nomme un nouvel appareil, il
     n'est pas relié comme interrupteur ;
-  - **Probablement une partie de Radiateur : …** et **Fusionner dans Radiateur** : l'entité
+  - **Probablement une partie de Radiateur : …** et **Fusionner** : l'entité
     trouvée appartient déjà à un appareil (c'est l'un de ses interrupteurs ou capteurs, ou elle
     est dans le même appareil Home Assistant), donc la signature en fait probablement partie,
     comme un radiateur qui cycle sur son propre thermostat pendant que son relais de fil pilote
     autorise la chauffe. La fusion ajoute la signature à l'appareil : son énergie s'ajoute à
-    celle de l'appareil, jours passés compris. *Valider…* propose aussi **Une partie d'un
-    appareil existant** pour n'importe quel appareil ;
+    celle de l'appareil, jours passés compris. *Comment le suivre* propose aussi **Fusionner
+    avec un appareil** pour n'importe quel appareil ;
   - **Attendre** : la masquer jusqu'à avoir nettement plus de données (deux fois plus
     d'utilisations, ou 14 jours plus tard) ;
-  - **Ignorer** : ne plus jamais la proposer. La liste *Ignorées* en dessous permet de revenir
-    en arrière (*Rétablir*). Une signature dont vous avez supprimé l'appareil y figure aussi.
+  - **Ignorer** : ne plus jamais la proposer. Le filtre *Ignorées* permet de revenir en
+    arrière (*Rétablir*). Une signature dont vous avez supprimé l'appareil y figure aussi.
 
   Les décisions sont gardées par l'add-on (dans les sauvegardes de Home Assistant). Un seul
   avis dans **Paramètres → Réparations** indique combien de signatures attendent et renvoie à

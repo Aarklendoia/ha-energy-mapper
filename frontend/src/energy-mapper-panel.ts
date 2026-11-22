@@ -7,6 +7,7 @@ import {
   mdiChevronLeft,
   mdiChevronRight,
   mdiFormatListChecks,
+  mdiLightbulbOutline,
   mdiMenu,
   mdiRefresh,
 } from "@mdi/js";
@@ -61,18 +62,32 @@ import { type StringKey, type Translate, translator } from "./i18n.ts";
 import { distinctNames, provisionalName } from "./names.ts";
 import {
   bestSuggestion,
+  blankForm,
+  currentOf,
   drivesLoad,
   entityChoices,
+  exampleDrawing,
   exampleWindow,
+  filterCounts,
+  filterOf,
   formatHours,
+  formForMerge,
   formForSuggestion,
-  initialForm,
+  formForUse,
   type LinkMode,
   linkDomains,
   linkable,
+  nextAfter,
+  REVIEW_FILTERS,
+  type ReviewFilter,
   type ReviewForm,
-  reviewGroups,
+  reviewProgress,
+  reviewQueue,
+  shortcutFor,
+  shortcutLetters,
+  stepFrom,
   suggestionLabel,
+  typingTarget,
   usualHours,
   validateMessage,
 } from "./review.ts";
@@ -114,6 +129,17 @@ import type {
 } from "./types.ts";
 
 const REGISTRY_ROWS = 10;
+/** Rows of the review queue shown before "Show the N others" (#51). */
+const QUEUE_ROWS = 12;
+/** Days whose house curve is kept for the examples of the review. */
+const MAX_EXAMPLE_CURVES = 12;
+
+/** The house curve of a day, for the examples of the review (#51). */
+interface ExampleCurve {
+  start: number;
+  end: number;
+  points: Array<{ t: number; house: number }>;
+}
 
 interface WsError {
   code?: string;
@@ -156,13 +182,16 @@ export class EnergyMapperPanel extends LitElement {
     _reviewForm: { state: true },
     _reviewBusy: { state: true },
     _reviewError: { state: true },
-    _showIgnored: { state: true },
+    _reviewFilter: { state: true },
+    _reviewCurrent: { state: true },
+    _reviewChecked: { state: true },
+    _queueAll: { state: true },
+    _exampleCurves: { state: true },
     _tab: { state: true },
     _dayView: { state: true },
     _window: { state: true },
     _category: { state: true },
     _appliance: { state: true },
-    _reviewTarget: { state: true },
   };
 
   static override styles = panelStyles;
@@ -188,19 +217,26 @@ export class EnergyMapperPanel extends LitElement {
   declare _stats: Record<string, DayStats>;
   /** the review of the signatures (administrators; null: not available) */
   declare _review: ReviewListing | null;
-  /** the validation form open in the review */
+  /** the validation form of the signature shown, once edited */
   declare _reviewForm: ReviewForm | null;
   declare _reviewBusy: string | null;
   declare _reviewError: string | null;
-  declare _showIgnored: boolean;
+  /** the filter of the review queue (#51) */
+  declare _reviewFilter: ReviewFilter;
+  /** the signature shown in the review (null: the first of the queue) */
+  declare _reviewCurrent: string | null;
+  /** the signatures selected for a bulk action */
+  declare _reviewChecked: string[];
+  /** the whole queue shown, not only its first rows */
+  declare _queueAll: boolean;
+  /** the house curves of the days of the examples (null: none) */
+  declare _exampleCurves: Record<string, ExampleCurve | null>;
   /** the tab asked for (URL ``?tab=``); the one shown may differ (#47) */
   declare _tab: Tab;
   /** the category of the split bar selected on the Today tab (#48), null: all */
   declare _category: SplitKey | null;
   /** the appliance selected in "What used energy" (#50): a chart series id, null: none */
   declare _appliance: string | null;
-  /** the signature opened from "What used energy" in To review (#50) */
-  declare _reviewTarget: string | null;
   /** the view of the day card (#49): the timeline or the stacked chart */
   declare _dayView: "timeline" | "stacked";
   /** the window (s) shown by the timeline, null: the whole day */
@@ -212,6 +248,9 @@ export class EnergyMapperPanel extends LitElement {
   private modelCache: { report: Report; registry: Registry | null; key: string; model: ChartModel } | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private highlightCache: { key: string; ids: string[] | null } | null = null;
+  private queueCache: { listing: ReviewListing | null; filter: ReviewFilter; queue: ReviewSignature[] } | null = null;
+  private curveRequests = new Set<string>();
+  private curveTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor() {
     super();
@@ -235,11 +274,14 @@ export class EnergyMapperPanel extends LitElement {
     this._reviewForm = null;
     this._reviewBusy = null;
     this._reviewError = null;
-    this._showIgnored = false;
+    this._reviewFilter = "energy";
+    this._reviewCurrent = null;
+    this._reviewChecked = [];
+    this._queueAll = false;
+    this._exampleCurves = {};
     this._tab = tabFromSearch(location.search);
     this._category = null;
     this._appliance = null;
-    this._reviewTarget = null;
     this._dayView = "timeline";
     this._window = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
@@ -334,6 +376,10 @@ export class EnergyMapperPanel extends LitElement {
     }
   }
 
+  protected override updated(): void {
+    this.loadExampleCurves();
+  }
+
   private async load(day?: string | null): Promise<void> {
     this._loading = true;
     this._error = null;
@@ -419,23 +465,36 @@ export class EnergyMapperPanel extends LitElement {
     void this.selectTab(next, true);
   };
 
-  private async decide(sig: ReviewSignature, action: "wait" | "ignore" | "restore"): Promise<void> {
-    this._reviewBusy = sig.id;
+  /** Wait, ignore or restore signatures (one, or the selection of the
+   * queue), then show the next one of the queue. */
+  private async decide(ids: string[], action: "wait" | "ignore" | "restore"): Promise<void> {
+    if (!ids.length || this._reviewBusy) return;
+    const queue = this.queue;
+    const current = this.currentSig?.id ?? null;
+    const done: string[] = [];
+    this._reviewBusy = ids.length === 1 ? ids[0] : "*";
     this._reviewError = null;
     try {
-      await this.ws({ type: `energy_mapper/${action}`, signature_id: sig.id });
-      if (this._reviewForm?.id === sig.id) this._reviewForm = null;
-      await this.loadReview();
+      for (const id of ids) {
+        await this.ws({ type: `energy_mapper/${action}`, signature_id: id });
+        done.push(id);
+      }
     } catch (err) {
       this._reviewError = this.errorText(err);
     } finally {
+      if (done.length) {
+        this._reviewChecked = this._reviewChecked.filter((id) => !done.includes(id));
+        this.selectSignature(nextAfter(queue, current, done));
+        await this.loadReview();
+      }
       this._reviewBusy = null;
     }
   }
 
+  /** Validate the signature with its form ("Validate and next"). */
   private async validate(sig: ReviewSignature): Promise<void> {
-    const form = this._reviewForm;
-    if (!form || form.id !== sig.id) return;
+    if (this._reviewBusy) return;
+    const form = this.formOf(sig);
     const built = validateMessage(
       sig,
       form.mode,
@@ -446,13 +505,18 @@ export class EnergyMapperPanel extends LitElement {
     );
     if ("missing" in built) {
       this._reviewForm = { ...form, missing: built.missing };
+      await this.updateComplete;
+      this.renderRoot.querySelector<HTMLElement>(built.missing === "entity" ? ".rq-form ha-entity-picker, .rq-form input[list]" : "#rq-input")?.focus();
       return;
     }
+    const queue = this.queue;
     this._reviewBusy = sig.id;
     this._reviewError = null;
     try {
       await this.ws(built.msg);
       this._reviewForm = null;
+      this._reviewChecked = this._reviewChecked.filter((id) => id !== sig.id);
+      this.selectSignature(nextAfter(queue, sig.id, [sig.id]));
       this._notice =
         form.mode === "merge"
           ? this.t("review_merged", { name: this.applianceName(form.appliance) })
@@ -467,12 +531,6 @@ export class EnergyMapperPanel extends LitElement {
     } finally {
       this._reviewBusy = null;
     }
-  }
-
-  /** Merge a signature into the appliance its best suggestion belongs to (#43). */
-  private async mergeInto(sig: ReviewSignature, key: string): Promise<void> {
-    this._reviewForm = { id: sig.id, mode: "merge", name: "", entity: "", appliance: key };
-    await this.validate(sig);
   }
 
   /** The name of an appliance of the review listing. */
@@ -1401,17 +1459,16 @@ export class EnergyMapperPanel extends LitElement {
     </section>`;
   }
 
-  /** To review, scrolled to one signature (when it is listed there). */
+  /** To review, showing one signature (in the filter that lists it). */
   private async openReview(registryId: string): Promise<void> {
-    this._reviewTarget = registryId;
-    await this.selectTab("review", false, false);
-    const item = this.renderRoot.querySelector<HTMLElement>(`[data-signature="${CSS.escape(registryId)}"]`);
-    if (item) {
-      item.scrollIntoView({ block: "center" });
-      item.focus({ preventScroll: true });
-    } else {
-      this.renderRoot.firstElementChild?.scrollIntoView({ block: "start" });
+    const sig = this._review?.signatures.find((x) => x.id === registryId);
+    const filter = filterOf(sig);
+    if (filter) {
+      if (filter !== this._reviewFilter) this.setFilter(filter);
+      this.selectSignature(registryId);
     }
+    await this.selectTab("review", false, true);
+    if (filter) this.renderRoot.querySelector<HTMLElement>("#rq-title")?.focus({ preventScroll: true });
   }
 
   private renderSwitchedLoads(t: Translate): TemplateResult | typeof nothing {
@@ -1569,147 +1626,359 @@ export class EnergyMapperPanel extends LitElement {
     </ul>`;
   }
 
-  // -- review of the signatures (#10) ---------------------------------------
+  // -- review of the signatures: one at a time (#10, #51) --------------------
+  /** The queue of the filter shown (memoised on the listing). */
+  private get queue(): ReviewSignature[] {
+    const c = this.queueCache;
+    if (c && c.listing === this._review && c.filter === this._reviewFilter) return c.queue;
+    const queue = reviewQueue(this._review, this._reviewFilter);
+    this.queueCache = { listing: this._review, filter: this._reviewFilter, queue };
+    return queue;
+  }
+
+  /** The signature shown in detail. */
+  private get currentSig(): ReviewSignature | undefined {
+    const id = currentOf(this.queue, this._reviewCurrent);
+    return this.queue.find((s) => s.id === id);
+  }
+
+  /** The validation form of a signature (a blank one until it is edited). */
+  private formOf(s: Pick<ReviewSignature, "id">): ReviewForm {
+    return this._reviewForm?.id === s.id ? this._reviewForm : blankForm(s.id);
+  }
+
+  private selectSignature(id: string | null): void {
+    this._reviewCurrent = id;
+    if (id && this._reviewForm?.id !== id) this._reviewForm = null;
+  }
+
+  private step(delta: number): void {
+    const id = stepFrom(this.queue, this.currentSig?.id ?? null, delta);
+    if (id) this.selectSignature(id);
+  }
+
+  private setFilter(filter: ReviewFilter): void {
+    this._reviewFilter = filter;
+    this._reviewChecked = [];
+    this._queueAll = false;
+  }
+
+  private reviewKeydown = (ev: KeyboardEvent) => {
+    if (ev.defaultPrevented || typingTarget(ev.composedPath())) return;
+    const action = shortcutFor(ev);
+    const sig = this.currentSig;
+    if (!action || !sig) return;
+    // also keeps Home Assistant's own one-letter shortcuts out of the way
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (this._reviewBusy) return;
+    switch (action) {
+      case "prev":
+        return this.step(-1);
+      case "next":
+        return this.step(1);
+      case "validate":
+        return void this.validate(sig);
+      case "wait":
+        if (sig.review_state === "proposed") void this.decide([sig.id], "wait");
+        return;
+      case "ignore":
+        if (sig.review_state !== "ignored") void this.decide([sig.id], "ignore");
+        return;
+    }
+  };
+
+  /** The house curves of the days of the examples shown, loaded a moment
+   * after a signature is shown (stepping through the queue loads nothing). */
+  private loadExampleCurves(): void {
+    if (this.shownTab !== "review") return;
+    const sig = this.currentSig;
+    if (!sig) return;
+    const available = new Set(dayEntries(this._days).map((e) => e.day));
+    const days = [...new Set((sig.examples ?? []).slice(0, 3).map((e) => e.day))].filter(
+      (d) => available.has(d) && !(d in this._exampleCurves) && !this.curveRequests.has(d),
+    );
+    if (!days.length) return;
+    clearTimeout(this.curveTimer);
+    this.curveTimer = setTimeout(() => {
+      if (this.currentSig?.id !== sig.id) return;
+      for (const day of days) void this.loadCurve(day);
+    }, 300);
+  }
+
+  private async loadCurve(day: string): Promise<void> {
+    if (this.curveRequests.has(day)) return;
+    this.curveRequests.add(day);
+    let curve: ExampleCurve | null = null;
+    try {
+      const report =
+        this._report?.day === day ? this._report : await this.ws<Report>({ type: "energy_mapper/report", day });
+      curve = { start: report.start, end: report.end, points: report.curve.map((p) => ({ t: p.t, house: p.house })) };
+    } catch {
+      curve = null;
+    } finally {
+      this.curveRequests.delete(day);
+    }
+    const kept = Object.entries(this._exampleCurves).slice(-(MAX_EXAMPLE_CURVES - 1));
+    this._exampleCurves = { ...Object.fromEntries(kept), [day]: curve };
+  }
+
   private renderReview(t: Translate): TemplateResult | typeof nothing {
     const listing = this._review;
     if (!listing || !this.isAdmin) return nothing;
-    const groups = reviewGroups(listing);
-    const info = this.info;
-    const c = listing.criteria;
-    return html`<div class="card review" id="review">
-      <div class="card-header">${t("review")}${groups.proposed.length ? html`<span class="count">${groups.proposed.length}</span>` : nothing}</div>
-      <div class="card-hint">${t("review_hint")}</div>
-      ${listing.suggest?.unrecorded_domains?.length
-        ? html`<div class="card-hint">${t("review_unrecorded", { domains: listing.suggest.unrecorded_domains.join(", ") })}</div>`
-        : nothing}
-      ${this._reviewError ? html`<div class="card-content">${this.alert("error", this._reviewError)}</div>` : nothing}
-      ${groups.proposed.length
-        ? html`<ul class="review-list">${groups.proposed.map((s) => this.renderCandidate(s, t))}</ul>`
-        : html`<div class="message">
-            ${t("review_none", { uses: formatNumber(c.min_uses, info), days: formatNumber(c.min_days, info) })}
-          </div>`}
-      ${groups.waiting.length
-        ? html`<div class="review-more">
-            <div class="secondary">${t("review_waiting", { count: formatNumber(groups.waiting.length, info) })}</div>
-            <ul class="review-compact">
-              ${groups.waiting.map((s) => this.renderCompact(s, t, this.waitText(s, t)))}
-            </ul>
-          </div>`
-        : nothing}
-      ${groups.ignored.length
-        ? html`<div class="review-more">
-            ${this.textButton(
-              t("review_ignored", { count: formatNumber(groups.ignored.length, info) }),
-              () => (this._showIgnored = !this._showIgnored),
-            )}
-            ${this._showIgnored
-              ? html`<ul class="review-compact">
-                  ${groups.ignored.map((s) =>
-                    this.renderCompact(s, t, s.review?.state === "validated" ? t("review_ignored_appliance") : ""),
-                  )}
-                </ul>`
-              : nothing}
-          </div>`
-        : nothing}
+    const queue = this.queue;
+    const sig = this.currentSig;
+    return html`<div class="review" id="review" @keydown=${this.reviewKeydown}>
+      ${this.renderProgress(listing, t)}
+      ${this._reviewError ? this.alert("error", this._reviewError) : nothing}
+      <div class="rq-layout">
+        <div class="rq-grid">
+          ${this.renderQueue(queue, sig, t)}
+          <section class="card rq-detail" aria-labelledby="rq-title">
+            ${queue.length ? this.renderStepper(queue, sig, t) : nothing}
+            ${sig ? this.renderDetail(sig, queue, t) : this.renderEmptyQueue(listing, t)}
+          </section>
+        </div>
+      </div>
     </div>`;
   }
 
-  private waitText(s: ReviewSignature, t: Translate): string {
-    const r = s.review;
-    if (!r?.until_count || !r.until) return "";
-    const day = dayOf(r.until * 1000, this.info.time_zone);
-    return t("review_back", { uses: formatNumber(r.until_count, this.info), day: formatDay(day, this.info, "short") });
-  }
-
-  /** The facts of a signature: power, duration or rhythm, uses, energy, hours. */
-  private reviewFacts(s: ReviewSignature, t: Translate): string[] {
+  /** Named / to review / waiting / ignored, the share explained and the filters. */
+  private renderProgress(listing: ReviewListing, t: Translate): TemplateResult {
     const info = this.info;
-    const facts = [formatPower(s.power_w, info)];
-    if (s.kind === "cycling" && s.on_s && s.period_s) {
-      facts.push(t("cycle", { on: formatDuration(s.on_s, info), period: formatDuration(s.period_s, info) }));
-      if (s.duration_s) facts.push(formatDuration(s.duration_s, info));
-    } else {
-      facts.push(formatDuration(s.duration_s, info));
-    }
-    facts.push(t("review_uses", { count: formatNumber(s.count, info), days: formatNumber(s.days_seen, info) }));
-    if (s.per_week != null) facts.push(t("review_per_week", { count: formatNumber(s.per_week, info, 1) }));
-    facts.push(t("review_energy", { energy: formatEnergy(s.energy_kwh, info) }));
-    const hours = formatHours(usualHours(s.hours));
-    if (hours) facts.push(t("review_hours", { hours }));
-    return facts;
-  }
-
-  private renderCandidate(s: ReviewSignature, t: Translate): TemplateResult {
-    const info = this.info;
-    const busy = this._reviewBusy === s.id;
-    const form = this._reviewForm?.id === s.id ? this._reviewForm : null;
-    const profile = hourProfile(s.hours);
-    const days = new Set(dayEntries(this._days).map((e) => e.day));
-    return html`<li
-      data-signature=${s.id}
-      tabindex="-1"
-      class=${this._reviewTarget === s.id ? "targeted" : ""}
-    >
-      <div class="review-head">
-        <div class="review-main">
-          <div class="sig-name">${registryName(s, this.namer)}</div>
-          <div class="secondary">${this.reviewFacts(s, t).join(" · ")}</div>
-          <div class="secondary sig-id">${s.id}</div>
-          ${this.renderProbably(s, t)}
-        </div>
-        <div class="hours" title=${formatHours(usualHours(s.hours, 0.01, 24))}>
-          ${profile.map((v) => html`<div class=${v > 0 ? "" : "zero"} style="height:${Math.max(v * 100, 4)}%"></div>`)}
-        </div>
+    const p = reviewProgress(listing, this._registry);
+    const counts = filterCounts(listing);
+    const n = (v: number) => formatNumber(v, info);
+    const share = p.share ?? 0;
+    return html`<section class="card rq-progress">
+      <div class="rq-progress-head">
+        <span>
+          <strong>${p.named === 1 ? t("rq_named_one") : t("rq_named", { count: n(p.named) })}</strong> ·
+          ${t("rq_to_review", { count: n(p.toReview) })} · ${t("rq_waiting", { count: n(p.waiting) })} ·
+          ${p.ignored === 1 ? t("rq_ignored_one") : t("rq_ignored", { count: n(p.ignored) })}
+        </span>
+        ${p.share !== null
+          ? html`<span class="secondary">
+              ${t(p.basis === "energy" ? "rq_share_energy" : "rq_share_count", { share: formatPercent(share, info) })}
+            </span>`
+          : nothing}
       </div>
-      ${s.examples?.length
-        ? html`<div class="chips">
-            <span class="secondary">${t("review_examples")}</span>
-            ${s.examples.map((ex) => {
-              const label = `${formatDay(ex.day, info, "short")} ${formatTime(ex.start, info)}`;
-              return days.has(ex.day)
-                ? html`<button class="chip link" title=${t("show_on_chart")} @click=${() => void this.showExample(ex)}>
-                    ${label}<span class="chip-value">${formatDuration(ex.end - ex.start, info)}</span>
-                  </button>`
-                : html`<span class="chip">${label}</span>`;
+      <div
+        class="rq-bar"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow=${Math.round(share * 100)}
+        aria-label=${t(p.basis === "energy" ? "rq_share_energy" : "rq_share_count", { share: formatPercent(share, info) })}
+      >
+        <div style="width:${(share * 100).toFixed(1)}%"></div>
+      </div>
+      <div class="rq-filters" role="group" aria-label=${t("rq_filters")}>
+        ${REVIEW_FILTERS.map((f) => {
+          const label =
+            f === "energy" ? t("rq_filter_energy") : t(`rq_filter_${f}` as StringKey, { count: n(counts[f]) });
+          const on = this._reviewFilter === f;
+          return html`<button type="button" class="filter-chip ${on ? "selected" : ""}" aria-pressed=${on ? "true" : "false"} @click=${() => this.setFilter(f)}>
+            ${label}
+          </button>`;
+        })}
+      </div>
+      ${listing.suggest?.unrecorded_domains?.length
+        ? html`<div class="secondary">${t("review_unrecorded", { domains: listing.suggest.unrecorded_domains.join(", ") })}</div>`
+        : nothing}
+    </section>`;
+  }
+
+  /** The short detail of a queue item: uses per week and a hint. */
+  private queueDetail(s: ReviewSignature, t: Translate): string {
+    const parts: string[] = [];
+    if (s.per_week != null) parts.push(t("rq_per_week", { count: formatNumber(s.per_week, this.info, s.per_week < 10 ? 1 : 0) }));
+    const best = bestSuggestion(s);
+    if (best) parts.push(best.appliance ? t("rq_known") : t("rq_suggestion"));
+    if (s.review_state === "waiting") {
+      const back = this.waitText(s, t);
+      if (back) parts.push(back);
+    }
+    return parts.join(" · ");
+  }
+
+  private renderQueue(queue: ReviewSignature[], sig: ReviewSignature | undefined, t: Translate): TemplateResult {
+    const info = this.info;
+    const checked = new Set(this._reviewChecked.filter((id) => queue.some((s) => s.id === id)));
+    const busy = this._reviewBusy !== null;
+    const index = queue.findIndex((s) => s.id === sig?.id);
+    const limit = this._queueAll ? queue.length : Math.max(QUEUE_ROWS, index + 1);
+    const shown = queue.slice(0, limit);
+    const ids = [...checked];
+    const filter = this._reviewFilter;
+    return html`<section class="card rq-queue" aria-label=${t("rq_queue")}>
+      <div class="rq-queue-head">
+        <span class="rq-queue-title">
+          ${checked.size === 0
+            ? t("rq_queue")
+            : checked.size === 1
+              ? t("rq_selected_one")
+              : t("rq_selected", { count: formatNumber(checked.size, info) })}
+        </span>
+        ${checked.size
+          ? html`${filter === "waiting" || filter === "ignored"
+                ? this.textButton(t("review_restore"), () => void this.decide(ids, "restore"), busy)
+                : this.textButton(t("review_wait"), () => void this.decide(ids, "wait"), busy, "plain", t("review_wait_hint"))}
+              ${filter !== "ignored"
+                ? this.textButton(t("review_ignore"), () => void this.decide(ids, "ignore"), busy, "plain", t("review_ignore_hint"))
+                : nothing}`
+          : nothing}
+      </div>
+      ${queue.length
+        ? html`<ol class="rq-list">
+            ${shown.map((s) => {
+              const name = registryName(s, this.namer);
+              const current = s.id === sig?.id;
+              return html`<li class=${current ? "current" : ""}>
+                <input
+                  type="checkbox"
+                  .checked=${checked.has(s.id)}
+                  aria-label=${t("rq_select", { name })}
+                  @change=${(ev: Event) => {
+                    const on = (ev.target as HTMLInputElement).checked;
+                    this._reviewChecked = on ? [...checked, s.id] : [...checked].filter((id) => id !== s.id);
+                  }}
+                />
+                <button type="button" class="rq-row" aria-current=${current ? "true" : "false"} title=${name} @click=${() => this.selectSignature(s.id)}>
+                  <span class="rq-row-name">${name}</span>
+                  <span class="secondary">${this.queueDetail(s, t)}</span>
+                </button>
+                <span class="rq-row-energy">${formatEnergy(s.energy_kwh, info)}</span>
+              </li>`;
             })}
+          </ol>`
+        : html`<div class="rq-queue-empty secondary">${t("rq_empty")}</div>`}
+      ${shown.length < queue.length
+        ? html`<div class="rq-queue-more">
+            ${this.textButton(t("rq_more", { count: formatNumber(queue.length - shown.length, info) }), () => (this._queueAll = true))}
           </div>`
         : nothing}
-      ${form
-        ? this.renderValidateForm(s, form, t)
-        : html`<div class="review-actions">
-            ${bestSuggestion(s)?.appliance
-              ? this.textButton(
-                  t("review_merge_into", { name: bestSuggestion(s)?.appliance?.name ?? "" }),
-                  () => void this.mergeInto(s, bestSuggestion(s)?.appliance?.key ?? ""),
-                  busy,
-                  "accent",
-                  t("review_merge_hint"),
-                )
-              : nothing}
-            ${this.textButton(
-              t("review_validate"),
-              () => (this._reviewForm = initialForm(s, (e) => this.friendlyName(e))),
-              busy,
-              bestSuggestion(s)?.appliance ? "plain" : "accent",
-            )}
-            ${this.textButton(t("review_wait"), () => void this.decide(s, "wait"), busy, "plain", t("review_wait_hint"))}
-            ${this.textButton(t("review_ignore"), () => void this.decide(s, "ignore"), busy, "plain", t("review_ignore_hint"))}
-          </div>`}
-    </li>`;
+    </section>`;
   }
 
-  /** The friendly name of an entity, if Home Assistant knows it. */
-  private friendlyName(entityId: string): string | undefined {
-    const name = this.hass?.states?.[entityId]?.attributes?.friendly_name;
-    return typeof name === "string" ? name : undefined;
+  /** Phones: "1 of 34" with previous and next, instead of the queue. */
+  private renderStepper(queue: ReviewSignature[], sig: ReviewSignature | undefined, t: Translate): TemplateResult {
+    const info = this.info;
+    const i = queue.findIndex((s) => s.id === sig?.id);
+    return html`<div class="rq-stepper">
+      ${this.iconButton(mdiChevronLeft, t("rq_prev"), () => this.step(-1), i <= 0)}
+      <span class="rq-stepper-pos">${t("rq_step", { pos: formatNumber(i + 1, info), count: formatNumber(queue.length, info) })}</span>
+      ${this.iconButton(mdiChevronRight, t("rq_next"), () => this.step(1), i < 0 || i >= queue.length - 1)}
+    </div>`;
   }
 
-  /** "Probably: <entity> (92 %)": the best entity suggested (#41). */
-  private renderProbably(s: ReviewSignature, t: Translate): TemplateResult | typeof nothing {
+  private renderEmptyQueue(listing: ReviewListing, t: Translate): TemplateResult {
+    const c = listing.criteria;
+    const info = this.info;
+    return html`<div class="message">
+      ${this._reviewFilter === "energy"
+        ? t("review_none", { uses: formatNumber(c.min_uses, info), days: formatNumber(c.min_days, info) })
+        : t("rq_empty")}
+    </div>`;
+  }
+
+  private renderDetail(s: ReviewSignature, queue: ReviewSignature[], t: Translate): TemplateResult {
+    const info = this.info;
+    const i = queue.findIndex((q) => q.id === s.id);
+    const note = s.review_state === "waiting" ? this.waitText(s, t) : "";
+    return html`<div class="rq-head">
+        <div class="rq-head-main">
+          <div class="secondary">
+            <span class="rq-pos">${t("rq_position", { pos: formatNumber(i + 1, info), count: formatNumber(queue.length, info) })}</span
+            >${note ? html`<span class="rq-note">${note}</span>` : nothing}
+          </div>
+          <h2 id="rq-title" tabindex="-1" title=${s.id}>${registryName(s, this.namer)}</h2>
+        </div>
+        <span class="rq-nav">
+          ${this.iconButton(mdiChevronLeft, t("rq_prev"), () => this.step(-1), i <= 0)}
+          ${this.iconButton(mdiChevronRight, t("rq_next"), () => this.step(1), i >= queue.length - 1)}
+        </span>
+      </div>
+      ${this.renderFacts(s, t)} ${this.renderHistogram(s, t)} ${this.renderExamples(s, t)} ${this.renderSuggestion(s, t)}
+      ${this.renderValidateForm(s, t)}`;
+  }
+
+  private renderFacts(s: ReviewSignature, t: Translate): TemplateResult {
+    const info = this.info;
+    const facts: Array<[string, string, string?]> = [[t("rq_power"), formatPower(s.power_w, info)]];
+    if (s.kind === "cycling" && s.on_s && s.period_s) {
+      facts.push([t("rq_cycle"), t("cycle", { on: formatDuration(s.on_s, info), period: formatDuration(s.period_s, info) })]);
+    }
+    if (s.duration_s) facts.push([t("rq_duration"), formatDuration(s.duration_s, info)]);
+    if (s.per_week != null) {
+      facts.push([t("rq_frequency"), t("rq_times_week", { count: formatNumber(s.per_week, info, s.per_week < 10 ? 1 : 0) })]);
+    }
+    facts.push([
+      t("rq_energy"),
+      formatEnergy(s.energy_kwh, info),
+      `${t("rq_energy_hint")} · ${t("review_uses", { count: formatNumber(s.count, info), days: formatNumber(s.days_seen, info) })}`,
+    ]);
+    if (s.first_seen) facts.push([t("rq_first_seen"), formatDay(s.first_seen, info, "short")]);
+    return html`<dl class="rq-facts">
+      ${facts.map(([label, value, title]) => html`<div title=${title ?? nothing}><dt>${label}</dt><dd>${value}</dd></div>`)}
+    </dl>`;
+  }
+
+  /** The usual hours: a 24-hour histogram. */
+  private renderHistogram(s: ReviewSignature, t: Translate): TemplateResult | typeof nothing {
+    const profile = hourProfile(s.hours);
+    if (!profile.some((v) => v > 0)) return nothing;
+    const hours = formatHours(usualHours(s.hours));
+    return html`<div>
+      <div class="secondary rq-label">${t("rq_usual_hours")}</div>
+      <div class="rq-hist" role="img" aria-label=${hours ? t("review_hours", { hours }) : t("rq_usual_hours")} title=${formatHours(usualHours(s.hours, 0.01, 24))}>
+        ${profile.map((v) => html`<div class=${v >= 0.5 ? "peak" : v > 0 ? "" : "zero"} style="height:${Math.max(v * 100, 4)}%"></div>`)}
+      </div>
+      <div class="rq-hist-axis secondary"><span>0 h</span><span>6 h</span><span>12 h</span><span>18 h</span><span>24 h</span></div>
+    </div>`;
+  }
+
+  /** Up to three uses drawn on the house curve; a click opens the day, zoomed. */
+  private renderExamples(s: ReviewSignature, t: Translate): TemplateResult | typeof nothing {
+    const examples = (s.examples ?? []).slice(0, 3);
+    if (!examples.length) return nothing;
+    const info = this.info;
+    const days = new Set(dayEntries(this._days).map((e) => e.day));
+    return html`<div>
+      <div class="secondary rq-label">${t("rq_examples")}</div>
+      <div class="rq-examples">
+        ${examples.map((ex) => {
+          const curve = this._exampleCurves[ex.day];
+          const drawing = curve ? exampleDrawing(curve.points, ex, curve.start, curve.end, 200, 56) : null;
+          const label = html`<span class="rq-example-label">
+            <strong>${formatDay(ex.day, info, "brief")} ${formatTime(ex.start, info)}</strong>
+            <span class="secondary">${formatDuration(ex.end - ex.start, info)}</span>
+          </span>`;
+          const picture = drawing
+            ? html`<svg class="rq-example-curve" viewBox="0 0 200 56" preserveAspectRatio="none" aria-hidden="true">
+                <rect class="use" x=${drawing.from} y="0" width=${drawing.to - drawing.from} height="56"></rect>
+                <path class="area" d=${drawing.area}></path>
+                <path class="line" d=${drawing.path}></path>
+              </svg>`
+            : html`<span class="rq-example-curve empty secondary small">${days.has(ex.day) && curve === undefined ? "…" : t("rq_no_curve")}</span>`;
+          return days.has(ex.day)
+            ? html`<button type="button" class="rq-example" title=${t("show_on_chart")} @click=${() => void this.showExample(ex)}>
+                ${picture}${label}
+              </button>`
+            : html`<div class="rq-example">${picture}${label}</div>`;
+        })}
+      </div>
+    </div>`;
+  }
+
+  /** The best entity suggested (#41, #43), with "Use" and, when it belongs
+   * to an appliance, "Merge". */
+  private renderSuggestion(s: ReviewSignature, t: Translate): TemplateResult | typeof nothing {
     const best = bestSuggestion(s);
     if (!best) return nothing;
     const info = this.info;
-    const hint = drivesLoad(best)
+    const busy = this._reviewBusy !== null;
+    const why = drivesLoad(best)
       ? t("review_probably_hint", {
           matches: formatNumber(best.matches, info),
           steps: formatNumber(best.steps ?? 0, info),
@@ -1722,24 +1991,51 @@ export class EnergyMapperPanel extends LitElement {
           days: formatNumber(best.days, info),
           share: formatPercent(best.time_share ?? 0, info),
         });
-    const name = suggestionLabel(best, (e) => this.friendlyName(e));
+    const friendly = (e: string) => this.friendlyName(e);
+    const name = suggestionLabel(best, friendly);
     const score = formatPercent(best.score, info);
     const ident = best.attribute ? `${best.entity_id} · ${best.attribute}` : best.entity_id;
-    return html`<div class="probably" title=${`${ident} · ${hint}`}>
-      ${best.appliance
-        ? t("review_probably_part", { appliance: best.appliance.name, name, score })
-        : t("review_probably", { name, score })}
+    const merge = formForMerge(s.id, best);
+    return html`<div class="rq-suggestion">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d=${mdiLightbulbOutline}></path></svg>
+      <div class="rq-suggestion-text" title=${ident}>
+        <strong>
+          ${best.appliance
+            ? t("review_probably_part", { appliance: best.appliance.name, name, score })
+            : t("review_probably", { name, score })}
+        </strong>
+        <span class="secondary">${why}</span>
+      </div>
+      <span class="rq-suggestion-actions">
+        ${this.textButton(t("rq_use"), () => (this._reviewForm = formForUse(s.id, best, friendly)), busy, "plain", t("rq_use_hint"))}
+        ${merge
+          ? this.textButton(t("rq_merge"), () => (this._reviewForm = merge), busy, "plain", t("rq_merge_hint", { name: best.appliance?.name ?? "" }))
+          : nothing}
+      </span>
     </div>`;
   }
 
-  /** The suggested entities in the validation form: one click links one. */
+  private waitText(s: ReviewSignature, t: Translate): string {
+    const r = s.review;
+    if (!r?.until_count || !r.until) return "";
+    const day = dayOf(r.until * 1000, this.info.time_zone);
+    return t("review_back", { uses: formatNumber(r.until_count, this.info), day: formatDay(day, this.info, "short") });
+  }
+
+  /** The friendly name of an entity, if Home Assistant knows it. */
+  private friendlyName(entityId: string): string | undefined {
+    const name = this.hass?.states?.[entityId]?.attributes?.friendly_name;
+    return typeof name === "string" ? name : undefined;
+  }
+
+  /** The other suggested entities in the form: one click links one. */
   private renderSuggested(s: ReviewSignature, form: ReviewForm, t: Translate): TemplateResult | typeof nothing {
-    if (!s.suggestions?.length) return nothing;
+    if ((s.suggestions?.length ?? 0) < 2) return nothing;
     const info = this.info;
     const friendly = (e: string) => this.friendlyName(e);
     return html`<div class="chips">
       <span class="secondary">${t("review_suggested")}</span>
-      ${s.suggestions.map((c) => {
+      ${s.suggestions!.map((c) => {
         const picked = formForSuggestion(s.id, c, friendly);
         const selected =
           form.mode === picked.mode &&
@@ -1756,10 +2052,10 @@ export class EnergyMapperPanel extends LitElement {
           title=${c.appliance ? `${c.entity_id} → ${c.appliance.name}` : c.entity_id}
           @click=${() => {
             if (picked.mode === "switch") {
-              this.setForm({ mode: "switch" });
-              this.pickEntity(c.entity_id);
+              this.setForm(s, { mode: "switch" });
+              this.pickEntity(s, c.entity_id);
             } else {
-              this.setForm({ mode: picked.mode, appliance: picked.appliance, name: picked.name || form.name, entity: "" });
+              this.setForm(s, { mode: picked.mode, appliance: picked.appliance, name: picked.name || form.name, entity: "" });
             }
           }}
         >
@@ -1769,32 +2065,19 @@ export class EnergyMapperPanel extends LitElement {
     </div>`;
   }
 
-  private renderCompact(s: ReviewSignature, t: Translate, note: string): TemplateResult {
-    const facts = this.reviewFacts(s, t).slice(0, 3);
-    if (note) facts.push(note);
-    return html`<li data-signature=${s.id} tabindex="-1" class=${this._reviewTarget === s.id ? "targeted" : ""}>
-      <div class="review-main">
-        <span class="sig-name" title=${s.id}>${registryName(s, this.namer)}</span>
-        <span class="secondary">${facts.join(" · ")}</span>
-      </div>
-      ${this.textButton(t("review_restore"), () => void this.decide(s, "restore"), this._reviewBusy === s.id)}
-    </li>`;
+  private setForm(s: Pick<ReviewSignature, "id">, patch: Partial<ReviewForm>): void {
+    this._reviewForm = { ...this.formOf(s), ...patch, missing: undefined };
   }
 
-  private setForm(patch: Partial<ReviewForm>): void {
-    if (this._reviewForm) this._reviewForm = { ...this._reviewForm, ...patch, missing: undefined };
-  }
-
-  private pickEntity(entity: string): void {
-    const form = this._reviewForm;
-    if (!form) return;
+  private pickEntity(s: Pick<ReviewSignature, "id">, entity: string): void {
+    const form = this.formOf(s);
     const name = this.friendlyName(entity);
     // the name follows the entity until the user types one
     const typed = form.name.trim() && form.name !== this.friendlyName(form.entity);
-    this.setForm({ entity, name: typed || name === undefined ? form.name : name });
+    this.setForm(s, { entity, name: typed || name === undefined ? form.name : name });
   }
 
-  private renderEntityPicker(form: ReviewForm, t: Translate): TemplateResult {
+  private renderEntityPicker(s: ReviewSignature, form: ReviewForm, t: Translate): TemplateResult {
     if (defined("ha-entity-picker")) {
       return html`<ha-entity-picker
         .hass=${this.hass}
@@ -1804,7 +2087,7 @@ export class EnergyMapperPanel extends LitElement {
         .includeDeviceClasses=${form.mode === "sensor" ? ["power"] : undefined}
         .entityFilter=${(st: { entity_id: string; attributes?: Record<string, unknown> }) =>
           linkable(form.mode, st.entity_id, st.attributes)}
-        @value-changed=${(ev: CustomEvent<{ value?: string }>) => this.pickEntity(ev.detail?.value ?? "")}
+        @value-changed=${(ev: CustomEvent<{ value?: string }>) => this.pickEntity(s, ev.detail?.value ?? "")}
       ></ha-entity-picker>`;
     }
     const listId = `em-entities-${form.mode}`;
@@ -1814,7 +2097,7 @@ export class EnergyMapperPanel extends LitElement {
         class="text-input"
         list=${listId}
         .value=${form.entity}
-        @change=${(ev: Event) => this.pickEntity((ev.target as HTMLInputElement).value.trim())}
+        @change=${(ev: Event) => this.pickEntity(s, (ev.target as HTMLInputElement).value.trim())}
       />
       <datalist id=${listId}>
         ${entityChoices(this.hass?.states, form.mode).map((e) => html`<option value=${e.id}>${e.name}</option>`)}
@@ -1822,58 +2105,46 @@ export class EnergyMapperPanel extends LitElement {
     </label>`;
   }
 
-  private renderValidateForm(
-    s: ReviewSignature,
-    form: ReviewForm,
-    t: Translate,
-  ): TemplateResult {
-    const busy = this._reviewBusy === s.id;
+  /** The validation form, inline: name (or appliance), how to track it,
+   * "Validate and next", Wait, Ignore (Restore for the waiting and the
+   * ignored), and the keyboard shortcuts. */
+  private renderValidateForm(s: ReviewSignature, t: Translate): TemplateResult {
+    const form = this.formOf(s);
+    const busy = this._reviewBusy !== null;
     const appliances = this._review?.appliances ?? [];
     const modes: LinkMode[] = ["new", "switch", "sensor"];
     if (appliances.length || form.mode === "merge") modes.push("merge");
+    const keys = shortcutLetters(this.hass?.locale?.language || this.hass?.language);
+    const kbd = (k: string) => html`<kbd>${k}</kbd>`;
     return html`<form
-      class="review-form"
+      class="rq-form"
       @submit=${(ev: Event) => {
         ev.preventDefault();
         void this.validate(s);
       }}
     >
-      <fieldset>
-        <legend>${t("review_mode")}</legend>
-        ${modes.map(
-          (m) => html`<label class="radio">
-            <input
-              type="radio"
-              name="mode-${s.id}"
-              .checked=${form.mode === m}
-              @change=${() => this.setForm({ mode: m, entity: "" })}
-            />
-            ${t(`review_mode_${m}` as StringKey)}
-          </label>`,
-        )}
-      </fieldset>
-      ${this.renderSuggested(s, form, t)}
-      <div class="secondary">${t(`review_mode_${form.mode}_hint` as StringKey)}</div>
-      ${form.mode === "switch" || form.mode === "sensor" ? this.renderEntityPicker(form, t) : nothing}
       ${form.mode === "merge"
         ? html`<label class="field">
             <span>${t("review_appliance")}</span>
             <select
+              id="rq-input"
               class="text-input"
               .value=${form.appliance}
-              @change=${(ev: Event) => this.setForm({ appliance: (ev.target as HTMLSelectElement).value })}
+              @change=${(ev: Event) => this.setForm(s, { appliance: (ev.target as HTMLSelectElement).value })}
             >
               <option value="" ?selected=${!form.appliance}></option>
               ${appliances.map((a) => html`<option value=${a.key} ?selected=${a.key === form.appliance}>${a.name}</option>`)}
             </select>
           </label>`
         : html`<label class="field">
-            <span>${t("review_name")}</span>
+            <span>${t("rq_name")}</span>
             <input
+              id="rq-input"
               class="text-input"
               maxlength="100"
+              placeholder=${t("rq_name_placeholder")}
               .value=${form.name}
-              @input=${(ev: Event) => this.setForm({ name: (ev.target as HTMLInputElement).value })}
+              @input=${(ev: Event) => this.setForm(s, { name: (ev.target as HTMLInputElement).value })}
               @keydown=${(ev: KeyboardEvent) => {
                 if (ev.key === "Enter") {
                   ev.preventDefault();
@@ -1882,8 +2153,26 @@ export class EnergyMapperPanel extends LitElement {
               }}
             />
           </label>`}
+      <div class="rq-how">
+        <span class="secondary" id="rq-how-label">${t("rq_how")}</span>
+        <div class="seg" role="group" aria-labelledby="rq-how-label">
+          ${modes.map(
+            (m) => html`<button
+              type="button"
+              class=${form.mode === m ? "selected" : ""}
+              aria-pressed=${form.mode === m ? "true" : "false"}
+              @click=${() => this.setForm(s, { mode: m, entity: "" })}
+            >
+              ${t(`rq_track_${m}` as StringKey)}
+            </button>`,
+          )}
+        </div>
+        <span class="secondary">${t(`review_mode_${form.mode}_hint` as StringKey)}</span>
+      </div>
+      ${form.mode === "switch" || form.mode === "sensor" ? this.renderEntityPicker(s, form, t) : nothing}
+      ${this.renderSuggested(s, form, t)}
       ${form.missing
-        ? html`<div class="field-error">
+        ? html`<div class="field-error" role="alert">
             ${form.missing === "name"
               ? t("review_missing_name")
               : form.missing === "appliance"
@@ -1891,9 +2180,18 @@ export class EnergyMapperPanel extends LitElement {
                 : t("review_missing_entity")}
           </div>`
         : nothing}
-      <div class="review-actions">
-        ${this.textButton(t("review_cancel"), () => (this._reviewForm = null), busy)}
-        ${this.textButton(t("review_confirm"), () => void this.validate(s), busy, "accent")}
+      <div class="rq-actions">
+        ${this.textButton(t("rq_validate_next"), () => void this.validate(s), busy, "accent")}
+        ${s.review_state === "proposed"
+          ? this.textButton(t("review_wait"), () => void this.decide([s.id], "wait"), busy, "plain", t("review_wait_hint"))
+          : this.textButton(t("review_restore"), () => void this.decide([s.id], "restore"), busy)}
+        ${s.review_state !== "ignored"
+          ? this.textButton(t("review_ignore"), () => void this.decide([s.id], "ignore"), busy, "plain", t("review_ignore_hint"))
+          : nothing}
+        <span class="rq-keys secondary small" aria-label=${t("rq_keys")}>
+          ${kbd(keys.validate)} ${t("rq_key_validate")} · ${kbd(keys.wait)} ${t("rq_key_wait")} · ${kbd(keys.ignore)}
+          ${t("rq_key_ignore")} · ${kbd("←")} ${kbd("→")} ${t("rq_key_navigate")}
+        </span>
       </div>
     </form>`;
   }
