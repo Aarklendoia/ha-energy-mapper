@@ -631,6 +631,206 @@ export const panelStyles = css`
   .narrow .usage-review-space {
     width: 44px;
   }
+  /* the day, appliance by appliance (#49) */
+  .day-card .card-header {
+    flex-wrap: wrap;
+  }
+  .view-toggle {
+    display: inline-flex;
+    gap: 6px;
+  }
+  .chip.link.view {
+    padding: 4px 12px;
+    font-size: var(--ha-font-size-m, 14px);
+  }
+  .timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .tl-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .tl-row {
+    display: grid;
+    grid-template-columns: clamp(110px, 22%, 220px) minmax(0, 1fr) 72px;
+    gap: 12px;
+    align-items: center;
+  }
+  .tl-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: inherit;
+    font-size: var(--ha-font-size-s, 13px);
+    color: var(--primary-text-color);
+    text-align: start;
+    background: none;
+    border: none;
+    border-radius: var(--ha-border-radius-sm, 4px);
+    padding: 2px 0;
+    cursor: pointer;
+  }
+  .tl-house .tl-name,
+  .tl-axis-row .tl-name {
+    cursor: default;
+    color: var(--secondary-text-color);
+  }
+  .tl-name:hover {
+    text-decoration: underline;
+  }
+  .tl-name:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+  }
+  .tl-row.unnamed .tl-name {
+    font-style: italic;
+  }
+  .tl-row.selected .tl-name {
+    font-weight: var(--ha-font-weight-bold, 700);
+  }
+  .tl-energy {
+    text-align: end;
+    white-space: nowrap;
+    font-size: var(--ha-font-size-s, 12px);
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .tl-house .tl-energy {
+    font-weight: var(--ha-font-weight-normal, 400);
+  }
+  .tl-strip {
+    position: relative;
+    height: 56px;
+  }
+  .tl-strip svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    fill: var(--disabled-text-color, #bdbdbd);
+  }
+  .tl-mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--error-color, #db4437);
+    opacity: 0.18;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .tl-track {
+    position: relative;
+    height: 22px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--secondary-background-color, #f5f5f5);
+    cursor: pointer;
+  }
+  .tl-row.selected .tl-track {
+    background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.16);
+  }
+  .tl-block {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    border-radius: 3px;
+    background: var(--c);
+    box-sizing: border-box;
+  }
+  /* a cycling session: one block, striped like its cycles */
+  .tl-block.cycling {
+    background: repeating-linear-gradient(90deg, var(--c) 0 3px, transparent 3px 5px);
+  }
+  /* a signature still to name: dashed, like its dot in the list */
+  .tl-row.unnamed .tl-block {
+    border: 2px dashed var(--c);
+    background: color-mix(in srgb, var(--c) 22%, transparent);
+  }
+  .tl-row.unnamed .tl-block.cycling {
+    background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--c) 45%, transparent) 0 3px, transparent 3px 5px);
+  }
+  .timeline.has-selection .tl-row:not(.selected):not(.tl-house):not(.tl-axis-row) .tl-block {
+    opacity: 0.25;
+  }
+  .timeline.has-selection .tl-row:not(.selected):not(.tl-house):not(.tl-axis-row) :is(.tl-name, .tl-energy) {
+    opacity: 0.5;
+  }
+  .tl-axis {
+    position: relative;
+    height: 16px;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-xs, 11px);
+  }
+  .tl-tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .tl-tick.start {
+    transform: none;
+  }
+  .tl-tick.end {
+    transform: translateX(-100%);
+  }
+  .tl-peaks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--divider-color);
+  }
+  .chip.link.peak-chip {
+    display: inline-block;
+    text-align: start;
+    max-width: 100%;
+    padding: 4px 12px;
+    color: var(--error-color, #db4437);
+    border-color: color-mix(in srgb, var(--error-color, #db4437) 40%, transparent);
+    background: color-mix(in srgb, var(--error-color, #db4437) 8%, transparent);
+  }
+  .chip.link.peak-chip strong {
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .chip.link.peak-chip.selected {
+    border-color: var(--error-color, #db4437);
+    background: color-mix(in srgb, var(--error-color, #db4437) 18%, transparent);
+  }
+  /* phones: the name and the energy above the track, which takes the width */
+  .narrow .tl-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+  }
+  .narrow .tl-row > .tl-strip,
+  .narrow .tl-row > .tl-track,
+  .narrow .tl-row > .tl-axis {
+    grid-row: 2;
+    grid-column: 1 / 3;
+  }
+  .narrow .tl-axis-row > .tl-name,
+  .narrow .tl-axis-row > .tl-energy {
+    display: none;
+  }
+  .narrow .tl-rows {
+    gap: 8px;
+  }
+  .narrow .tl-strip {
+    height: 40px;
+  }
+  .narrow .tl-track {
+    height: 16px;
+  }
+  .narrow .tl-block {
+    top: 2px;
+    bottom: 2px;
+  }
   .review li.targeted {
     outline: 2px solid var(--primary-color);
     outline-offset: -2px;

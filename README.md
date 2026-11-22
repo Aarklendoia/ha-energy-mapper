@@ -54,9 +54,10 @@ Technical details: [design document](docs/design.md) and the
 - group the remaining steps into **activations** (one use of one appliance) and the
   activations into **signatures** (for example "about 2 kW for 3 minutes, mornings and
   evenings"), learned across days with a progressive forgetting;
-- show a daily report in a sidebar panel: an energy summary, a stacked per-minute chart, the
-  day's peaks with what was running, the switched loads and the signature registry, plus what
-  is worth checking in your Energy dashboard setup.
+- show a daily report in a sidebar panel: an energy summary, a timeline of each appliance's
+  runs (or a stacked per-minute chart), the day's peaks with what was running, the switched
+  loads and the signature registry, plus what is worth checking in your Energy dashboard
+  setup.
 
 **It does not:**
 
@@ -262,14 +263,20 @@ address, so a view can be bookmarked.
   percentile of the day), **measured by plugs and sensors**, **estimated** (devices whose
   power is only an estimate, e.g. lights estimated by an estimation integration), **named
   appliances** (switched loads and named signatures), **still to name** (signatures without
-  a name yet) and **unexplained**. Select a part to highlight it in the chart.
-- **Consumption breakdown**: the same split per minute, stacked, with the house and solar
-  lines, the notable threshold (dashed) and the peaks shaded. Zoom with the slider or the
-  mouse wheel; each appliance keeps its colour from one day to the next.
+  a name yet) and **unexplained**. Select a part to highlight it in the timeline.
+- **The day, appliance by appliance**: a timeline with one row per appliance of the day
+  (switched loads, plugs and sensors, signatures), its running periods as blocks on a
+  0–24 h axis and its kWh, under a thin strip of the house power. Appliances still to name
+  are dashed, with their provisional name in italics; cycling appliances are striped. The
+  notable peaks are shaded on the strip and listed as chips: select one to zoom on it,
+  *Whole day* to come back. Select a row to highlight that appliance. *Stacked curve*
+  switches to the same split per minute, stacked, with the house and solar lines, the
+  notable threshold (dashed) and the peaks shaded; zoom with the slider or the mouse wheel.
+  Each appliance keeps its colour from one day to the next.
 - **What used energy**: one row per appliance of the day, by energy, with its colour, a
   short detail (runs and time span, *in cycles*, time on for switched loads) and kWh; base
   load, plugs and sensors, estimated and unexplained are rows too. Appliances still to name
-  are in italics with a dashed dot. Select a row to highlight that appliance in the chart;
+  are in italics with a dashed dot. Select a row to highlight that appliance in the timeline;
   administrators can open the review of an unnamed one.
 - **Peaks**: the day's top episodes (up to 5) with what was running at the maximum and the
   unexplained power. A peak is **notable** when it reaches the notable threshold (80 % of the
@@ -504,7 +511,7 @@ l'add-on).
   utilisations en **signatures** (par exemple « environ 2 kW pendant 3 minutes, matin et
   soir »), apprises au fil des jours avec un oubli progressif ;
 - affiche un rapport quotidien dans un panneau de la barre latérale : bilan énergétique,
-  courbe empilée minute par minute, pics de la journée avec ce qui tournait, appareils
+  frise des marches de chaque appareil (ou courbe empilée minute par minute), pics de la journée avec ce qui tournait, appareils
   pilotés et registre des signatures, plus ce qui mérite d'être vérifié dans votre
   configuration Énergie.
 
@@ -731,18 +738,24 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   **mesuré par prises et capteurs**, **estimé** (appareils dont la puissance n'est qu'une
   estimation, comme des lumières estimées par une intégration d'estimation), **appareils
   nommés** (appareils pilotés et signatures nommées), **à nommer** (signatures encore sans
-  nom) et **non expliqué**. Sélectionnez une partie pour la mettre en évidence dans le
-  graphique.
-- **Répartition de la consommation** : la même répartition minute par minute, empilée, avec
-  les courbes de la maison et du solaire, le seuil notable (en pointillés) et les pics
-  surlignés. Zoomez avec le curseur ou la molette ; chaque appareil garde sa couleur d'un
-  jour à l'autre.
+  nom) et **non expliqué**. Sélectionnez une partie pour la mettre en évidence dans la
+  frise.
+- **La journée, appareil par appareil** : une frise avec une ligne par appareil de la
+  journée (appareils pilotés, prises et capteurs, signatures), ses périodes de marche en
+  blocs sur un axe de 0 à 24 h et ses kWh, sous une fine bande de la puissance de la maison.
+  Les appareils à nommer sont en pointillés, avec leur nom provisoire en italique ; les
+  appareils en cycles sont hachurés. Les pics notables sont surlignés sur la bande et listés
+  en pastilles : sélectionnez-en un pour zoomer dessus, *Toute la journée* pour revenir.
+  Sélectionnez une ligne pour mettre l'appareil en évidence. *Courbe empilée* affiche la même
+  répartition minute par minute, empilée, avec les courbes de la maison et du solaire, le
+  seuil notable (en pointillés) et les pics surlignés ; zoomez avec le curseur ou la molette.
+  Chaque appareil garde sa couleur d'un jour à l'autre.
 - **Ce qui a consommé** : une ligne par appareil de la journée, par énergie, avec sa
   couleur, un court détail (nombre de fois et plage horaire, *en cycles*, durée allumée pour
   les appareils pilotés) et les kWh ; la consommation de fond, les prises et capteurs,
   l'estimé et le non expliqué sont aussi des lignes. Les appareils à nommer sont en italique
   avec un point en pointillés. Sélectionnez une ligne pour mettre l'appareil en évidence dans
-  le graphique ; les administrateurs peuvent ouvrir l'examen d'un appareil sans nom.
+  la frise ; les administrateurs peuvent ouvrir l'examen d'un appareil sans nom.
 - **Pics** : les épisodes les plus hauts de la journée (jusqu'à 5) avec ce qui tournait au
   maximum et la puissance non expliquée. Un pic est **notable** quand il atteint le seuil notable
   (80 % de la puissance la plus haute des 30 derniers jours, ou votre seuil fixe).
