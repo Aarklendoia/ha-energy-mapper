@@ -1,4 +1,5 @@
-"""Read-only access to Home Assistant: websocket commands and recorder history.
+"""Read-only access to Home Assistant: websocket commands, recorder history
+and, for the live view, a subscription to the state changes of a few entities.
 
 Under the Supervisor the add-on talks to Home Assistant through the
 Supervisor proxy (``http://supervisor/core``) with ``SUPERVISOR_TOKEN``.
@@ -12,6 +13,7 @@ import datetime as dt
 import json
 import logging
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -130,19 +132,28 @@ class HAClient:
         self.timeout = timeout
 
     # --- websocket ---------------------------------------------------------
+    def _connect(self, timeout: float) -> WebSocket:
+        """An authenticated websocket connection (raises HAError)."""
+        ws = WebSocket(self.endpoint.websocket, timeout=timeout)
+        try:
+            msg = json.loads(ws.recv_text())
+            if msg.get("type") != "auth_required":
+                raise HAError(f"unexpected websocket greeting: {msg.get('type')}")
+            ws.send_text(json.dumps({"type": "auth", "access_token": self.endpoint.token}))
+            msg = json.loads(ws.recv_text())
+            if msg.get("type") != "auth_ok":
+                raise HAError("websocket authentication failed")
+        except BaseException:
+            ws.close()
+            raise
+        return ws
+
     def ws_commands(self, commands: list[dict]) -> list:
         """Run commands on one websocket connection. A command that fails
         returns None (e.g. ``energy/get_prefs`` without Energy dashboard)."""
         results: list = []
         try:
-            with WebSocket(self.endpoint.websocket, timeout=self.timeout) as ws:
-                msg = json.loads(ws.recv_text())
-                if msg.get("type") != "auth_required":
-                    raise HAError(f"unexpected websocket greeting: {msg.get('type')}")
-                ws.send_text(json.dumps({"type": "auth", "access_token": self.endpoint.token}))
-                msg = json.loads(ws.recv_text())
-                if msg.get("type") != "auth_ok":
-                    raise HAError("websocket authentication failed")
+            with self._connect(self.timeout) as ws:
                 for i, cmd in enumerate(commands, start=1):
                     ws.send_text(json.dumps({**cmd, "id": i}))
                     while True:
@@ -158,6 +169,30 @@ class HAClient:
         except (OSError, WebSocketError, ValueError) as err:
             raise HAError(f"websocket: {err}") from err
         return results
+
+    def subscribe_states(self, entities: list[str], timeout: float = 30.0) -> StateSubscription:
+        """Subscribe to the state changes of ``entities`` (the live view, #17):
+        ``subscribe_entities`` filtered on them. Raises HAError."""
+        try:
+            ws = self._connect(timeout)
+        except (OSError, WebSocketError, ValueError) as err:
+            raise HAError(f"websocket: {err}") from err
+        try:
+            ws.send_text(json.dumps({"id": 1, "type": "subscribe_entities", "entity_ids": list(entities)}))
+            while True:
+                msg = json.loads(ws.recv_text())
+                if msg.get("id") == 1 and msg.get("type") == "result":
+                    break
+            if not msg.get("success"):
+                err = msg.get("error") or {}
+                raise HAError(f"subscribe_entities: {err.get('message') or err.get('code')}")
+        except (OSError, WebSocketError, ValueError) as err:
+            ws.close()
+            raise HAError(f"websocket: {err}") from err
+        except HAError:
+            ws.close()
+            raise
+        return StateSubscription(ws, 1)
 
     def snapshot(self) -> dict:
         """Everything the configuration is derived from."""
@@ -227,6 +262,66 @@ class HAClient:
             payload = self._get(f"/history/period/{quote(iso(start))}?{query}")
             out.update(parse_attribute_history(payload, {e: wanted[e] for e in chunk}, window_start=start))
         return out
+
+
+def entity_changes(event: dict) -> list[tuple[str, float | None, str]]:
+    """The states in a ``subscribe_entities`` event: ``(entity_id, ts, state)``.
+
+    The first event lists every entity (``"a"``: ``{"s": state, "lc": last
+    changed, ...}``), later ones the changes (``"c"``: ``{"+": {"s", "lc"}}``).
+    Only state changes count, as in the recorder history the night reads: an
+    attribute change keeps the state. ``ts`` is None when HA gave no time."""
+    out: list[tuple[str, float | None, str]] = []
+
+    def stamp(item: dict) -> float | None:
+        value = item.get("lc", item.get("lu"))
+        return float(value) if isinstance(value, int | float) else None
+
+    for entity_id, item in (event.get("a") or {}).items():
+        if isinstance(item, dict) and "s" in item:
+            out.append((entity_id, stamp(item), str(item["s"])))
+    for entity_id, diff in (event.get("c") or {}).items():
+        plus = diff.get("+") if isinstance(diff, dict) else None
+        if isinstance(plus, dict) and "s" in plus:
+            out.append((entity_id, stamp(plus), str(plus["s"])))
+    return out
+
+
+class StateSubscription:
+    """An open ``subscribe_entities`` subscription (``HAClient.subscribe_states``)."""
+
+    def __init__(self, ws: WebSocket, sub_id: int):
+        self._ws = ws
+        self._id = sub_id
+        self._next_id = sub_id + 1
+        self.last_message = time.monotonic()  # for a silent (dead) connection
+
+    def next(self, timeout: float) -> list[tuple[str, float | None, str]] | None:
+        """The states of the next message (``entity_changes``), [] for another
+        message (a pong), None when nothing came within ``timeout``. Raises
+        HAError when the connection is lost."""
+        try:
+            text = self._ws.recv_text(timeout)
+            if text is None:
+                return None
+            msg = json.loads(text)
+        except (OSError, WebSocketError, ValueError) as err:
+            raise HAError(f"websocket: {err}") from err
+        self.last_message = time.monotonic()
+        if msg.get("type") == "event" and msg.get("id") == self._id:
+            return entity_changes(msg.get("event") or {})
+        return []
+
+    def ping(self) -> None:
+        """Ask for a pong: a connection that stays silent is dead."""
+        try:
+            self._ws.send_text(json.dumps({"id": self._next_id, "type": "ping"}))
+        except OSError as err:
+            raise HAError(f"websocket: {err}") from err
+        self._next_id += 1
+
+    def close(self) -> None:
+        self._ws.close()
 
 
 def chunks(entities: list[str], max_chars: int) -> list[list[str]]:

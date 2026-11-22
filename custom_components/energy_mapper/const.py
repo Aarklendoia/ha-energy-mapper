@@ -31,6 +31,11 @@ HOURLY_CONCURRENCY: Final = 4
 # request timeouts (seconds): an analysis reads a whole day of history
 TIMEOUT: Final = 30
 TIMEOUT_ANALYZE: Final = 600
+# the live view (#17): the add-on's long-poll answers within 25 s
+LIVE_WAIT: Final = 25
+TIMEOUT_LIVE: Final = LIVE_WAIT + 15
+# the first add-on with the live view
+LIVE_MIN_ADDON: Final = "0.12.0"
 
 # settings of the add-on (PUT /api/settings); see energy_mapper/app/settings.py
 SENSOR_KEYS: Final = ("grid_entity", "grid_export_entity", "pv_entity", "battery_entity")

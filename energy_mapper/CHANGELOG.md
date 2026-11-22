@@ -21,6 +21,24 @@
   same time" flag, and `replay`, which streams a stored day.
 - `Matcher.near` lists the registry signatures near a power, with the
   registry's tolerance, for the candidates.
+- Live view, on-demand service (#17, part 2 of 4): `GET /api/live?since=<seq>`
+  is a long-poll (25 s at most) with sequence numbers: a snapshot of the last
+  15 minutes (curve, events, "now" summary), then only the new samples and
+  the events that appeared or changed. `GET /api/live/stats` gives the state,
+  readings per second, processing times (median, 99th percentile), lag and
+  buffer sizes.
+- The first request starts a `live` thread: it subscribes to the state
+  changes of the analysed meters and switched loads only
+  (`subscribe_entities` over the add-on's websocket client), replays the last
+  15 minutes of history, reconnects and fills the gap after an outage, ranks
+  the candidates again after a registry update or review decision, and
+  starts again when the settings or the appliances' sources change. It stops
+  after 2 minutes without a request (no cost when nobody looks) and, for 5
+  minutes, when processing falls more than 30 s behind (self-protection). The
+  nightly analysis is never affected.
+- New option `live_view` (on by default): the kill switch of the live view.
+- The websocket client waits for a message with a timeout without losing a
+  frame received in part.
 
 ## 0.11.0
 

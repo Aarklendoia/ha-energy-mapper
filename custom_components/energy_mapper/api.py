@@ -7,7 +7,7 @@ from typing import Any
 
 import aiohttp
 
-from .const import TIMEOUT, TIMEOUT_ANALYZE
+from .const import LIVE_WAIT, TIMEOUT, TIMEOUT_ANALYZE, TIMEOUT_LIVE
 
 
 class EnergyMapperError(Exception):
@@ -154,3 +154,17 @@ class EnergyMapperClient:
         ``{"signature", "created", "learned"}``; errors ``not_found`` (404),
         ``not_learned`` / ``not_recognisable`` (422), ``conflict`` (409)."""
         return await self._request("POST", "/api/teaching", json={"appliance": key})
+
+    async def live(self, since: int | None = None, wait: float = LIVE_WAIT) -> dict[str, Any]:
+        """The live view's long-poll (add-on 0.12.0+, #17): a snapshot without
+        ``since``, else what changed after it, within ``wait`` seconds:
+        ``{"seq", "available", ...}``. An older add-on answers ``not_found``
+        (404)."""
+        params = {"wait": f"{wait:g}"}
+        if since is not None:
+            params["since"] = str(since)
+        return await self._request("GET", "/api/live", params=params, timeout=wait + TIMEOUT_LIVE - LIVE_WAIT)
+
+    async def live_stats(self) -> dict[str, Any]:
+        """The live view's state and timings (add-on 0.12.0+)."""
+        return await self._request("GET", "/api/live/stats")

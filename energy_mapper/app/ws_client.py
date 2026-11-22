@@ -2,6 +2,8 @@
 
 Enough for the Home Assistant websocket API: text messages, fragmentation,
 ping/pong and close. No extensions (no compression) are negotiated.
+``recv_text(timeout)`` returns None when no message came in time, without
+losing a partly received frame (the live view waits for states that way).
 """
 
 from __future__ import annotations
@@ -13,11 +15,13 @@ import os
 import socket
 import ssl
 import struct
+import time
 from urllib.parse import urlsplit
 
 _GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 OP_CONT, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
+MAX_MESSAGE = 64 * 1024 * 1024  # a whole get_states of a large installation fits
 
 
 class WebSocketError(Exception):
@@ -64,6 +68,39 @@ def read_frame(recv_exact) -> tuple[bool, int, bytes]:
     return fin, opcode, payload
 
 
+def parse_frame(buf) -> tuple[bool, int, bytes, int] | None:
+    """The frame at the start of ``buf``: (fin, opcode, payload, its size in
+    ``buf``), or None while it is incomplete. Nothing is consumed."""
+    if len(buf) < 2:
+        return None
+    b0, b1 = buf[0], buf[1]
+    n, pos = b1 & 0x7F, 2
+    if n == 126:
+        if len(buf) < 4:
+            return None
+        (n,) = struct.unpack_from("!H", buf, 2)
+        pos = 4
+    elif n == 127:
+        if len(buf) < 10:
+            return None
+        (n,) = struct.unpack_from("!Q", buf, 2)
+        pos = 10
+    if n > MAX_MESSAGE:
+        raise WebSocketError(f"frame too large: {n} bytes")
+    mask = None
+    if b1 & 0x80:
+        if len(buf) < pos + 4:
+            return None
+        mask = bytes(buf[pos : pos + 4])
+        pos += 4
+    if len(buf) < pos + n:
+        return None
+    payload = bytes(buf[pos : pos + n])
+    if mask:
+        payload = _apply_mask(payload, mask)
+    return bool(b0 & 0x80), b0 & 0x0F, payload, pos + n
+
+
 class WebSocket:
     def __init__(self, url: str, timeout: float = 60.0, headers: dict[str, str] | None = None):
         parts = urlsplit(url)
@@ -75,7 +112,9 @@ class WebSocket:
         if parts.scheme == "wss":
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
         self._sock = sock
+        self._timeout = timeout
         self._buf = bytearray()
+        self._parts: list[bytes] = []  # fragments of the message being received
         key = base64.b64encode(os.urandom(16)).decode()
         path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
         lines = [
@@ -113,21 +152,35 @@ class WebSocket:
         del self._buf[: i + len(marker)]
         return out
 
-    def _recv_exact(self, n: int) -> bytes:
-        while len(self._buf) < n:
-            self._fill()
-        out = bytes(self._buf[:n])
-        del self._buf[:n]
-        return out
-
     def send_text(self, text: str) -> None:
         self._sock.sendall(encode_frame(OP_TEXT, text.encode()))
 
-    def recv_text(self) -> str:
-        """Next complete text message (control frames are handled here)."""
-        parts: list[bytes] = []
+    def recv_text(self, timeout: float | None = None) -> str | None:
+        """Next complete text message (control frames are handled here).
+
+        Without ``timeout`` it waits as long as the connection's timeout
+        (then raises). With one, it returns None when no complete message
+        came within it; a frame received in part is kept for the next call."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            fin, opcode, payload = read_frame(self._recv_exact)
+            frame = parse_frame(self._buf)
+            if frame is None:
+                if deadline is None:
+                    self._fill()
+                    continue
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self._sock.settimeout(left)
+                try:
+                    self._fill()
+                except TimeoutError:
+                    return None
+                finally:
+                    self._sock.settimeout(self._timeout)
+                continue
+            fin, opcode, payload, size = frame
+            del self._buf[:size]
             if opcode == OP_PING:
                 self._sock.sendall(encode_frame(OP_PONG, payload))
                 continue
@@ -136,9 +189,10 @@ class WebSocket:
             if opcode == OP_CLOSE:
                 raise WebSocketError("closed by server")
             if opcode in (OP_TEXT, OP_BINARY, OP_CONT):
-                parts.append(payload)
+                self._parts.append(payload)
                 if fin:
-                    return b"".join(parts).decode()
+                    data, self._parts = b"".join(self._parts), []
+                    return data.decode()
 
     def close(self) -> None:
         with contextlib.suppress(OSError):

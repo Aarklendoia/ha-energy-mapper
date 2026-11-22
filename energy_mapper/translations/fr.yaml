@@ -70,6 +70,12 @@ configuration:
     description: >-
       Seuil fixe des pics notables. Par défaut 80 % de la puissance la plus
       haute de la fenêtre des pics (ou du jour, si elle est plus haute).
+  live_view:
+    name: Vue en direct
+    description: >-
+      L'onglet En direct du panneau : les marches et événements au moment où
+      ils arrivent. Elle ne tourne que lorsqu'un onglet est ouvert (aucun coût
+      sinon) ; désactivez-la pour la couper complètement.
   log_level:
     name: Niveau de journalisation
     description: Niveau de détail du journal de l'add-on.

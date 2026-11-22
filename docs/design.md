@@ -646,6 +646,8 @@ flowchart LR
 5. **Replay** (`live.replay`) streams a stored day (the raw histories of `analyze`) reading
    by reading through the whole pipeline, with the night's meter interval by default.
 
+The service that runs this pipeline while a panel watches, and its API, are in § 8.8.
+
 Tests (`tests/test_live.py`): the samples of the stream equal those of `build_samples`
 (PV dropouts, import/export, kW, several meters, battery, sub-meters); replayed synthetic
 days give exactly the steps of `detect_steps` (noise, overlapping loads, multi-phase
@@ -805,6 +807,8 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 | `GET /api/teaching` | `200 {"teachers": [...]}`: per appliance with a teacher, `{key, name, entity_id, since, days, first_day, last_day, uses, energy_kwh, learned, signature: {id, kind, band, power_w, label, in_registry, linked}, conflict: {id, appliance} \| null, evaluation, per_day}` (§ 8.6) |
 | `POST /api/teaching` | `{"appliance": <key>}`: `200 {"signature", "created", "learned"}`; `404 not_found` (no appliance with a teacher), `422 not_learned` / `not_recognisable`, `409 conflict` (`id`), `400 invalid_teaching` |
 | `GET /api/self_test` | `200 {"enabled", "devices_per_night", "window_days", "min_uses", "last_day", "devices": [...]}`: per tested device `{entity_id, name, appliance, state, tests, nights, first_day, last_day, uses, found, detections, correct, recall, precision, truth_kwh, detected_kwh, energy_ratio, rate, trend, learned, signature, history}` (§ 8.7) |
+| `GET /api/live?since=<seq>&wait=<s>` | The live view's long-poll (§ 8.8): `200 {"seq", "session", "available": true, "reset", "history_s", "threshold_w", "time_zone", "curve", "events", "now"}`, or `200 {"seq", "available": false, "reason", "error"?, "retry_at"?}`; `400 invalid_query` |
+| `GET /api/live/stats` | `200` the live view's state, counters and timings (§ 8.8); does not start it |
 
 Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 `405 {"error": "method_not_allowed"}`. The registry signature fields are documented in the
@@ -819,7 +823,7 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
 administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over`, `undo_take_over`, `teaching`, `teach`,
-`stop_teaching` and `self_test`, each command relays one add-on request and returns its JSON unchanged.
+`stop_teaching`, `self_test` and `live/subscribe`, each command relays one add-on request and returns its JSON unchanged.
 
 | Command | Parameters | Result |
 |---|---|---|
@@ -842,6 +846,7 @@ administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_ove
 | `energy_mapper/teach` | `appliance` (key), `entity_id` (a power sensor) | Starts learning the appliance from that sensor: `{"key", "teacher"}`; admin only |
 | `energy_mapper/stop_teaching` | `appliance` (key), `use` (bool, default false) | Ends the learning; with `use`, links the learned signature: `{"key", "sources", "signature", "created"}`; admin only |
 | `energy_mapper/self_test` | – | `GET /api/self_test` and `"supported"` (false for an add-on before 0.11.0: `{"supported": false, "enabled": false, "devices": []}`), for every user (§ 8.7). Integration 0.9.0+ |
+| `energy_mapper/live/subscribe` | – | A **subscription** (§ 8.8), for every user, read-only: the result, then `snapshot`, `update` and `status` event messages until `unsubscribe_events`. Integration 0.10.0+ |
 
 The review commands take `signature_id` (`id` is the websocket message's own id).
 Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized`,
@@ -1516,6 +1521,112 @@ low for the whole-house curve (90 W)"; one that never ran "No use seen yet".
 several nights' hidden reports to measure the signatures the registry would learn for the
 device (today the signature comes from its own runs), and a test of the teaching sensors with
 the same card.
+
+### 8.8 Live view service (#17)
+
+The engine side is § 4.11. This is what runs it, only while someone watches (phase 1 of #17,
+the proposal's option A: in the add-on, not in the panel, so that what the user labels is what
+the night sees).
+
+```mermaid
+sequenceDiagram
+  participant P as Panel (Live tab)
+  participant I as Integration (LiveHub)
+  participant A as Add-on (LiveService)
+  participant H as Home Assistant
+  P->>I: energy_mapper/live/subscribe
+  I->>A: GET /api/live (no since)
+  A->>H: snapshot (config), subscribe_entities, history (15 min)
+  A-->>I: snapshot (reset)
+  I-->>P: snapshot
+  loop while a panel is subscribed
+    H-->>A: state changes
+    I->>A: GET /api/live?since=seq (answers when something is new, 25 s at most)
+    A-->>I: new samples, changed events, now
+    I-->>P: update
+  end
+  P->>I: unsubscribe (last panel)
+  Note over A: no request for 2 min: unsubscribe, free the buffers
+```
+
+**Add-on** (`live_service.py`). `LiveService.poll` is `GET /api/live`; every call is also the
+"someone watches" signal. The first one starts the `live` thread (`_Session`):
+
+1. `Analyzer.live_config()`: one Home Assistant snapshot (Energy dashboard, states, entity
+   registry), `derive()` with the effective options, the learned power of the switched loads:
+   the `AnalysisConfig` of the night, without the candidate lists. A `LiveDetector` with the
+   stored registry and the local hour of Home Assistant's time zone.
+2. `HAClient.subscribe_states(det.entities)`: `subscribe_entities` filtered on the meters,
+   sub-meters and switched loads, on its own websocket connection (`ws_client.WebSocket`,
+   whose `recv_text(timeout)` returns None without losing a frame received in part). Only
+   state changes count (`"s"` with `"lc"`, `ha_client.entity_changes`), as in the recorder
+   history the night reads.
+3. The recorder history of the last 15 minutes (`history`, the night's request), pushed in
+   time order. A reading is pushed once: one not newer than the last pushed for its entity is
+   dropped (the subscription's first message and the history overlap).
+4. Then a loop: the next message (with a timeout up to the next round), pushed; about once a
+   second a round `advance(now − 5 s)` (PV and grid are not reported together), published;
+   every 10 s `rerank(now)` and a check of the configuration; a ping every 30 s.
+
+**Publishing.** Each round that has new samples, changed events or a changed "now" summary
+takes a new **sequence number**. `seq` starts at the add-on's start time in milliseconds and
+only increases, so a `since` from another process or session is older than the running
+session (`session`: the seq it started at) and gets a snapshot (`reset: true`), as does a
+`since` above the current seq. The service keeps the curve of the last 15 minutes (each
+sample with its seq: `[ts, house W, residual W]`), the events the detector still holds (each
+`LiveEvent.to_dict()` plus its last `seq` and `steps`; event ids continue across sessions,
+`LiveDetector(first_event_id)`), and the "now" summary (last sample, sub-meters with their
+appliance key, switched loads and their state, running event ids, unexplained power). A
+snapshot gives all of it but the cancelled events; an answer to `since` the samples and the
+events with a larger seq. A long-poll answers at once when the seq is past `since`, else
+waits on a condition until the next publication or `wait` (25 s at most): the same seq and
+empty lists. Events leave the detector (and the service) 15 minutes after they ended
+(`pairer.prune`); the panel keeps its own feed.
+
+**Lifecycle.**
+
+| Situation | Behaviour |
+|---|---|
+| No request for 2 min (`IDLE_S`) | Unsubscribes, frees curve, events and readings: `state: idle`. The next request starts a new session (snapshot) |
+| Home Assistant connection lost, or silent for 75 s despite the pings | Reconnects (1, 2, 5, 10, 30 s), then reads the history from the last reading (at most 15 min) and pushes what is newer |
+| Registry written (nightly update, review decision, expected signature, teaching) | `ReportStore.registry_version` changed: `set_registry`, then every running event ranked again |
+| Settings or appliances' sources changed (`Analyzer.live_options()`) | A new session (the meters may have changed): snapshot with `reset` |
+| Processing lags > 30 s | `overloaded`: logged, the thread stops, no restart for 5 min (`retry_at`). The lag is the delay of the freshest reading of a round (state time to handling, minus the smallest delay seen: the clock offset with Home Assistant), or the round's own duration |
+| Start fails (Home Assistant down, no grid meter) | `error` (`ha_error`, `no_grid`, `internal`), retried by the next request after 30 s |
+| `live_view: false` | `disabled`: nothing starts |
+
+The thread never takes the analysis lock: the nightly analysis is never affected. Cost: zero
+without a viewer; one snapshot and a 15-minute history request per session; then a fraction of a
+millisecond per round (a 2 s meter on a desktop: median 0.2 ms, 99th percentile 0.6 ms) (`GET /api/live/stats`:
+`process_ms` median and 99th percentile, `readings_per_s`, `lag_s`, buffer sizes).
+
+**Integration** (`live.py`). One `LiveHub` per entry (`runtime_data.live`). The websocket
+command `energy_mapper/live/subscribe` (every user, read-only) adds a subscriber; the hub
+long-polls the add-on (timeout 40 s) only while it has one, keeps a merged copy (curve trimmed
+to `history_s`, events by id without the cancelled ones and those ended before the curve, the
+last "now") and sends:
+
+| Message | When |
+|---|---|
+| `{"type": "snapshot", "available": true, "seq", "session", "history_s", "threshold_w", "time_zone", "curve", "events", "now"}` | To a new subscriber at once (the merged copy), and to all when the add-on answers `reset` |
+| `{"type": "update", "seq", "curve", "events", "now"}` | New samples, events that appeared or changed (whole), the "now" summary; not sent when nothing changed |
+| `{"type": "status", "available": false, "reason", ...}` | `disabled`, `starting`, `overloaded` (`retry_at`), `error` (`error`, `retry_at`), `addon_unavailable` (`message`), `addon_too_old` (`min_version`: 0.12.0, `addon_version`: from the add-on's 404 on `/api/live`), `not_loaded` (the entry unloads); sent once per change |
+
+After a status the hub polls again without `since` (`starting` at once, `addon_unavailable`
+after 2, 5, 10, 30 s, `error` 30 s, `overloaded` and `disabled` 60 s, `addon_too_old` 5 min).
+When the last subscriber leaves, the poll is cancelled; the add-on stops 2 minutes later.
+
+**Tests.** Add-on (`tests/test_live_service.py`, a fake subscription feeding states with a
+fake clock): the first request starts and replays 15 minutes (an appliance already on is an
+event); long-poll seq semantics (waits, answers once, an updated event comes back whole with
+a new seq, an old `since` gets a diff, a future one a snapshot); idle stop frees everything
+and a new session gives a snapshot; an add-on restart replays the history; reconnection
+fills the gap without duplicates; the kill switch; self-protection and its pause; a failed
+start; a new registry ranks again; a configuration change starts a new session; the frame
+kept across a `recv_text` timeout. Integration (`tests_integration/test_live.py`, a fake
+long-polling add-on): snapshot then updates, a non-admin subscriber joining gets the merged
+snapshot, a cancelled event leaves it, a reset, unsubscribing stops the poll, every status
+reason, an add-on too old, not loaded, unload.
 
 ## 9. Settings and precedence
 

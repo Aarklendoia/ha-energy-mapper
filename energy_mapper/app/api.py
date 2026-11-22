@@ -27,6 +27,11 @@ POST /api/teaching            {"appliance": key}: the signature learned for it, 
 GET  /api/self_test           {"enabled", "devices_per_night", "window_days", "min_uses",
                               "last_day", "devices": [...]}: the nightly self-test, the
                               success rate of each hidden measured device (selftest.py, #15)
+GET  /api/live?since=<seq>&wait=<s>
+                              the live view (live_service.py, #17), a long-poll: a snapshot
+                              without since, else what changed after it (at most wait s,
+                              25 by default); {"seq", "available", ...}
+GET  /api/live/stats          the live view's state and timings (does not start it)
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from appliances import AppliancesError
 from appliances import validate as validate_appliances
 from const import VERSION
 from ha_client import HAError
+from live_service import WAIT_S, LiveService
 from nilm_core.hourly import hourly_breakdown
 from nilm_core.registry import GROUPS, annotate_report, empty_registry
 from review import ACTIONS as REVIEW_ACTIONS
@@ -153,13 +159,39 @@ def _apply_teaching(analyzer: Analyzer, body: bytes) -> tuple[int, dict]:
     return 200, answer
 
 
+def _live(live, query: dict) -> tuple[int, dict]:
+    since_raw = (query.get("since") or [""])[0]
+    wait_raw = (query.get("wait") or [""])[0]
+    try:
+        since = int(since_raw) if since_raw else None
+        wait = float(wait_raw) if wait_raw else WAIT_S
+    except ValueError:
+        return 400, {"error": "invalid_query", "message": "since: expected a sequence number, wait: seconds"}
+    if since is not None and since < 0 or not 0 <= wait <= 600:
+        return 400, {"error": "invalid_query", "message": "since: expected a sequence number, wait: seconds"}
+    if live is None:
+        return 200, {"seq": 0, "available": False, "reason": "disabled"}
+    return 200, live.poll(since, wait)
+
+
 def route(
-    analyzer: Analyzer, store: ReportStore, method: str, target: str, body: bytes = b""
+    analyzer: Analyzer,
+    store: ReportStore,
+    method: str,
+    target: str,
+    body: bytes = b"",
+    live: LiveService | None = None,
 ) -> tuple[int, dict]:
     """Answer one request: (HTTP status, JSON body)."""
     parts = urlsplit(target)
     path = parts.path.rstrip("/")
     query = parse_qs(parts.query)
+
+    if path == "/api/live" and method == "GET":
+        return _live(live, query)
+
+    if path == "/api/live/stats" and method == "GET":
+        return 200, live.stats() if live is not None else {"enabled": False, "state": "disabled"}
 
     if path == "/api/health" and method == "GET":
         last = store.state().get("last_run")
@@ -294,18 +326,22 @@ def route(
         "/api/review",
         "/api/teaching",
         "/api/self_test",
+        "/api/live",
+        "/api/live/stats",
     }
     if path in known or path.startswith(("/api/report/", "/api/hourly/")):
         return 405, {"error": "method_not_allowed"}
     return 404, {"error": "not_found"}
 
 
-def make_server(analyzer: Analyzer, store: ReportStore, host: str, port: int) -> ThreadingHTTPServer:
+def make_server(
+    analyzer: Analyzer, store: ReportStore, host: str, port: int, live: LiveService | None = None
+) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
         server_version = f"EnergyMapper/{VERSION}"
 
         def _answer(self, method: str, body: bytes = b"") -> None:
-            status, answer = route(analyzer, store, method, self.path, body)
+            status, answer = route(analyzer, store, method, self.path, body, live)
             self._send(status, answer)
 
         def _send(self, status: int, answer: dict) -> None:
