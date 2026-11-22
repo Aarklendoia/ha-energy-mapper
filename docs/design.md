@@ -175,6 +175,17 @@ legend, its tooltip, the peaks, the signature table and the review use it; the r
 stays as secondary text or tooltip, for debugging. Two alike names in the legend get a
 number ("(2)"), since the legend toggles series by name.
 
+**Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
+toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the
+panel), the name column of the tables wraps and a table still too wide scrolls inside its
+card (`.table-wrap`), the signatures become a list when Home Assistant reports `narrow`,
+and the chart takes the width of its card. Manual test, in the dev harness
+(`frontend/dev/index.html`) with the browser's device toolbar at 360, 390 and 768 px, light
+and dark, `en` and `fr`, admin and `admin=0`, and the `empty`/`unavailable` scenarios:
+expand the lists, click a peak, open a *Validate…* form, then check in the console that
+`document.documentElement.scrollWidth <= innerWidth`. Names and entity ids much longer
+than the sample's (edit `dev/sample/*.json` locally) must wrap, not widen the page.
+
 ## 4. The engine
 
 `nilm_core.analyze()` turns raw histories into a daily report. Across days,

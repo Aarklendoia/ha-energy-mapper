@@ -11,6 +11,9 @@ export const panelStyles = css`
     color: var(--primary-text-color, #212121);
     font-family: var(--ha-font-family-body, Roboto, Noto, sans-serif);
     -webkit-font-smoothing: var(--ha-font-smoothing, antialiased);
+    /* phones (360 px and up): long names and entity ids break instead of
+       widening the page */
+    overflow-wrap: anywhere;
   }
 
   /* toolbar, as in the HA panels */
@@ -167,6 +170,10 @@ export const panelStyles = css`
     border-inline-start: 4px solid var(--alert-color);
     color: var(--primary-text-color);
   }
+  .alert > div {
+    flex: 1;
+    min-width: 0;
+  }
   .alert.warning {
     --alert-color: var(--warning-color, #ffa600);
   }
@@ -321,6 +328,8 @@ export const panelStyles = css`
     font-weight: var(--ha-font-weight-medium, 500);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    white-space: nowrap;
+    flex: none;
     border-radius: var(--ha-border-radius-pill, 9999px);
     padding: 2px 8px;
     color: var(--text-primary-color, #fff);
@@ -386,6 +395,12 @@ export const panelStyles = css`
     border-bottom: 1px solid var(--divider-color);
     vertical-align: middle;
     white-space: nowrap;
+  }
+  /* the name column wraps so that narrow tables fit their card; the other
+     columns stay on one line (the table scrolls inside .table-wrap if needed) */
+  td:first-child {
+    white-space: normal;
+    min-width: 120px;
   }
   tr:last-child td {
     border-bottom: none;
