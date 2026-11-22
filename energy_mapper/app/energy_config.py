@@ -243,7 +243,9 @@ def derive(
     settings (grid_entity, grid_export_entity, grid_invert, pv_entity,
     battery_entity, battery_invert, submeters, switched_loads, thresholds;
     excluded_switched_loads: switches never measured as switched loads;
-    extra_submeters: (entity, name) always subtracted).
+    excluded_submeters: automatic sub-meters not subtracted (ignored when
+    ``submeters`` gives the list); extra_submeters: (entity, name) always
+    subtracted).
     ``statistics`` maps Energy Mapper's own statistic ids to their appliance
     (an appliance whose estimate was replaced by its Energy Mapper statistic
     in the Energy dashboard stays measured)."""
@@ -301,6 +303,8 @@ def derive(
     # switched loads the user excluded: an estimate driven by such a switch is
     # subtracted like any other estimate instead of being measured
     excluded = set(options.get("excluded_switched_loads") or [])
+    # automatic sub-meters the user excluded: their power stays in the residual
+    excluded_meters = set(options.get("excluded_submeters") or [])
     devices = (prefs or {}).get("device_consumption") or []
     parents = {d.get("stat_consumption") for d in devices}
     for d in devices:
@@ -342,6 +346,9 @@ def derive(
                 Finding("no_power_sensor", energy, f"{name}: no power sensor, not subtracted")
             )
             continue
+        if power in excluded_meters:
+            out.tracked.append(TrackedDevice(name, energy, power, "excluded", src))
+            continue
         role = "estimated" if src else "submeter"
         submeters.append(SubmeterConfig(power, name, estimated=role == "estimated"))
         out.tracked.append(TrackedDevice(name, energy, power, role, src))
@@ -362,6 +369,9 @@ def derive(
     battery = options.get("battery_entity") or battery
     if options.get("submeters") is not None:
         submeters = [SubmeterConfig(e, e) for e in options["submeters"]]
+    # also those of the add-on option (derive_options drops the exclusions
+    # when the settings give the exact list)
+    submeters = [m for m in submeters if m.entity_id not in excluded_meters]
     # sub-meters of the user's appliances: always added
     for entity, label in options.get("extra_submeters") or []:
         if all(m.entity_id != entity for m in submeters):

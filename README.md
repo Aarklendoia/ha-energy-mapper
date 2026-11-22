@@ -135,11 +135,12 @@ Once the add-on runs, Home Assistant **discovers** it: **Settings → Devices & 
 shows *Energy Mapper* under *Discovered*; select **Add** and confirm. The **Energy Mapper**
 panel then appears in the sidebar.
 
-If it is not discovered, add the integration by hand (**Add integration → Energy Mapper**)
-and enter the address of the add-on API: `http://<hostname>:8099`, where `<hostname>` is
-shown on the add-on's *Info* page (for example `xxxxxxxx-energy-mapper`; `local-energy-mapper`
-for a local copy of the add-on). The port is only reachable from Home Assistant, not from your
-network.
+If it is not discovered, add the integration by hand (**Add integration → Energy Mapper**).
+When the add-on is installed on this Home Assistant, its address is proposed: keep it. It is
+`http://<hostname>:8099`, where `<hostname>` is shown on the add-on's *Info* page (for example
+`xxxxxxxx-energy-mapper`; `local-energy-mapper` for a local copy of the add-on). The port is
+only reachable from Home Assistant, not from your network. For a standalone container, enter
+`http://<address of the machine>:8099`.
 
 ## Configuration
 
@@ -164,7 +165,8 @@ what the add-on uses (Energy dashboard first, then the add-on options, then the 
 Change only what is wrong: a field left as found keeps following the Energy dashboard, and
 only the values that differ are saved. The settings are kept in Home Assistant (and in its
 backups), pushed to the add-on on save and each time Home Assistant starts, and take
-precedence over the add-on options.
+precedence over the add-on options. The top of the form lists the sub-meters and switched
+appliances that come from the Energy dashboard, and your changes (excluded, added or changed).
 
 | Section | Setting | Default | Notes |
 |---|---|---|---|
@@ -172,9 +174,10 @@ precedence over the add-on options.
 | | Grid export power | Energy dashboard | Only for meters that report import and export as two positive sensors. |
 | | Solar power | Energy dashboard | |
 | | Battery power, *positive when charging* | Energy dashboard | Positive when discharging. |
-| | Sub-meters | Energy dashboard | Power sensors of measured appliances; a list here replaces the Energy dashboard's. |
-| Switched appliances | Entity, name, on-states | Energy dashboard | Added to those of the Energy dashboard, or replacing one with the same entity. *On-states*: the states in which the appliance runs (`on` by default). The **polarity is detected automatically**: a pilot-wire radiator whose relay cuts the heating when `on` is found and shown as *Inverted*. Appliances (below) are the simpler way to add one. |
-| | Excluded switches | empty | Switches never measured nor proposed as appliances. Deleting an appliance driven by a switch adds its switch here; remove it to measure it again. An estimate of the Energy dashboard driven by an excluded switch is subtracted like any other estimate. |
+| | Sub-meters to subtract | Automatic | *Automatic*: those of the Energy dashboard; remove one from the list to ignore it (new ones of the Energy dashboard still come). *Only the sensors of the list*: your own list (adding a sensor the Energy dashboard does not list makes the list yours). *None*: subtract nothing. |
+| | Sub-meters | Energy dashboard | Power sensors of measured appliances, subtracted before the analysis. |
+| Switched appliances | Entity, name, on-states | Energy dashboard | Those of the Energy dashboard, plus yours: an entry here adds one or changes the one with the same entity; removing one of the Energy dashboard from the list excludes it. *On-states*: the states in which the appliance runs (`on` by default). The **polarity is detected automatically**: a pilot-wire radiator whose relay cuts the heating when `on` is found and shown as *Inverted*. Appliances (below) are the simpler way to add one. |
+| | Excluded switches | empty | Switches never measured nor proposed as appliances. Removing a switched appliance of the Energy dashboard from the list above, or deleting an appliance driven by a switch, adds its switch here; remove it to measure it again. An estimate of the Energy dashboard driven by an excluded switch is subtracted like any other estimate. |
 | Thresholds | Smallest appliance (step threshold) | 300 W | Smaller detects more appliances, and more noise. |
 | | Fixed peak threshold | empty | Empty: a peak is *notable* above 80 % of the highest power of the recent days. Set a value (for example your subscribed power) to use it instead. |
 | Analysis and storage | Time of the nightly analysis | 04:30 | Applies after the next analysis. |
@@ -619,10 +622,11 @@ services** affiche *Energy Mapper* dans *Découverts* ; choisissez **Ajouter** e
 Le panneau **Energy Mapper** apparaît alors dans la barre latérale.
 
 S'il n'est pas découvert, ajoutez l'intégration à la main (**Ajouter une intégration →
-Energy Mapper**) avec l'adresse de l'API de l'add-on : `http://<nom d'hôte>:8099`, où le nom
-d'hôte figure sur la page *Infos* de l'add-on (par exemple `xxxxxxxx-energy-mapper` ;
-`local-energy-mapper` pour une copie locale de l'add-on). Le port n'est accessible que depuis
-Home Assistant, pas depuis votre réseau.
+Energy Mapper**). Quand l'add-on est installé sur ce Home Assistant, son adresse est proposée :
+gardez-la. C'est `http://<nom d'hôte>:8099`, où le nom d'hôte figure sur la page *Infos* de
+l'add-on (par exemple `xxxxxxxx-energy-mapper` ; `local-energy-mapper` pour une copie locale de
+l'add-on). Le port n'est accessible que depuis Home Assistant, pas depuis votre réseau. Pour un
+conteneur autonome, saisissez `http://<adresse de la machine>:8099`.
 
 ### Configuration
 
@@ -648,7 +652,8 @@ l'add-on, puis les valeurs par défaut). Ne changez que ce qui est faux : un cha
 quel continue de suivre le tableau Énergie, et seules les valeurs différentes sont
 enregistrées. Les réglages sont gardés dans Home Assistant (et dans ses sauvegardes), envoyés
 à l'add-on à l'enregistrement et à chaque démarrage de Home Assistant, et passent avant les
-options de l'add-on.
+options de l'add-on. Le haut du formulaire liste les sous-compteurs et appareils pilotés qui
+viennent du tableau Énergie, et vos changements (exclus, ajoutés ou modifiés).
 
 | Section | Réglage | Par défaut | Remarques |
 |---|---|---|---|
@@ -656,9 +661,10 @@ options de l'add-on.
 | | Puissance de revente | Tableau Énergie | Seulement pour les compteurs qui donnent achat et revente en deux capteurs positifs. |
 | | Puissance solaire | Tableau Énergie | |
 | | Puissance batterie, *positif en charge* | Tableau Énergie | Positif en décharge. |
-| | Sous-compteurs | Tableau Énergie | Capteurs de puissance d'appareils mesurés ; une liste ici remplace celle du tableau Énergie. |
-| Appareils pilotés | Entité, nom, états de marche | Tableau Énergie | Ajoutés à ceux du tableau Énergie, ou remplaçant celui de même entité. *États de marche* : les états dans lesquels l'appareil fonctionne (`on` par défaut). Le **sens est détecté automatiquement** : un radiateur sur fil pilote dont le relais coupe la chauffe quand il est sur `on` est reconnu et affiché *Inversé*. Les appareils (plus bas) sont le moyen le plus simple d'en ajouter un. |
-| | Interrupteurs exclus | vide | Interrupteurs jamais mesurés ni proposés comme appareils. Supprimer un appareil piloté ajoute son interrupteur ici ; retirez-le pour le mesurer à nouveau. Une estimation du tableau Énergie pilotée par un interrupteur exclu est retirée comme toute autre estimation. |
+| | Sous-compteurs à retirer | Automatique | *Automatique* : ceux du tableau Énergie ; retirez-en un de la liste pour l'ignorer (les nouveaux du tableau Énergie arrivent quand même). *Seulement les capteurs de la liste* : votre propre liste (ajouter un capteur que le tableau Énergie ne liste pas fait de la liste la vôtre). *Aucun* : ne rien retirer. |
+| | Sous-compteurs | Tableau Énergie | Capteurs de puissance d'appareils mesurés, retirés avant l'analyse. |
+| Appareils pilotés | Entité, nom, états de marche | Tableau Énergie | Ceux du tableau Énergie, plus les vôtres : une ligne ici en ajoute un ou modifie celui de même entité ; retirer de la liste un appareil du tableau Énergie l'exclut. *États de marche* : les états dans lesquels l'appareil fonctionne (`on` par défaut). Le **sens est détecté automatiquement** : un radiateur sur fil pilote dont le relais coupe la chauffe quand il est sur `on` est reconnu et affiché *Inversé*. Les appareils (plus bas) sont le moyen le plus simple d'en ajouter un. |
+| | Interrupteurs exclus | vide | Interrupteurs jamais mesurés ni proposés comme appareils. Retirer de la liste ci-dessus un appareil piloté du tableau Énergie, ou supprimer un appareil piloté, ajoute son interrupteur ici ; retirez-le pour le mesurer à nouveau. Une estimation du tableau Énergie pilotée par un interrupteur exclu est retirée comme toute autre estimation. |
 | Seuils | Plus petit appareil (seuil de marche) | 300 W | Plus bas détecte plus d'appareils, et plus de bruit. |
 | | Seuil fixe des pics | vide | Vide : un pic est *notable* au-dessus de 80 % de la puissance la plus haute des derniers jours. Une valeur (par exemple la puissance souscrite) la remplace. |
 | Analyse et stockage | Heure de l'analyse de nuit | 04:30 | S'applique après la prochaine analyse. |

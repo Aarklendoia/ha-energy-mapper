@@ -9,7 +9,7 @@
           "url": "Add-on address"
         },
         "data_description": {
-          "url": "Address of the add-on API, for example http://local-energy-mapper:8099."
+          "url": "Proposed when the add-on is installed on this Home Assistant (the address is also on the add-on's Info page). For a standalone container: http:// followed by the address of the machine and :8099, for example http://192.168.1.20:8099."
         }
       },
       "hassio_confirm": {
@@ -30,7 +30,7 @@
     "step": {
       "init": {
         "title": "Energy Mapper settings",
-        "description": "The fields are pre-filled with what the add-on uses: the Energy dashboard, then the add-on options. Change only what is wrong; a field left as found keeps following the Energy dashboard.",
+        "description": "The fields show what the analysis uses: the Energy dashboard, then the add-on options. Change only what is wrong; a field left as found keeps following the Energy dashboard.\n\n**From the Energy dashboard**\n- Sub-meters: {auto_submeters}\n- Appliances driven by a switch: {auto_loads}\n\n**Your changes**\n- Excluded: {excluded}\n- Added or changed: {own}",
         "sections": {
           "sensors": {
             "name": "Sensors",
@@ -41,6 +41,7 @@
               "pv_entity": "Solar power",
               "battery_entity": "Battery power",
               "battery_invert": "Battery sensor is positive when charging",
+              "submeters_mode": "Sub-meters to subtract",
               "submeters": "Sub-meters"
             },
             "data_description": {
@@ -48,7 +49,8 @@
               "grid_export_entity": "Only for meters that report import and export as two sensors.",
               "pv_entity": "Power of the solar production.",
               "battery_entity": "Power of the home battery, positive when discharging.",
-              "submeters": "Power sensors of measured appliances: their power is subtracted before the analysis."
+              "submeters": "Power sensors of measured appliances: their power is subtracted before the analysis.",
+              "submeters_mode": "Automatic: those of the Energy dashboard; remove one from the list to ignore it. Adding a sensor the Energy dashboard does not list makes the list your own."
             }
           },
           "loads": {
@@ -58,8 +60,8 @@
               "excluded_switched_loads": "Excluded switches"
             },
             "data_description": {
-              "switched_loads": "Appliances whose state tells when they run. Those of the Energy dashboard are always included; an entry here adds one or changes it. On-states: the states in which it runs (default on; off for a pilot-wire radiator relay).",
-              "excluded_switched_loads": "Switches never measured nor proposed as appliances, for example the relay of a deleted appliance. Remove one to measure it again."
+              "switched_loads": "Appliances whose state tells when they run, with those of the Energy dashboard. Add one or change it here; remove from the list one that comes from the Energy dashboard to exclude it. On-states: the states in which it runs (default on; off for a pilot-wire radiator relay).",
+              "excluded_switched_loads": "Switches never measured nor proposed as appliances: those removed from the list above, or the relay of a deleted appliance. Remove one to measure it again."
             }
           },
           "thresholds": {
@@ -226,6 +228,13 @@
         "medium": "Medium (10 min to 1 h)",
         "long": "Long (over 1 h)",
         "cycling": "Cycling on and off (hob, oven)"
+      }
+    },
+    "submeters_mode": {
+      "options": {
+        "automatic": "Automatic, from the Energy dashboard",
+        "manual": "Only the sensors of the list",
+        "none": "None: subtract nothing"
       }
     }
   },
