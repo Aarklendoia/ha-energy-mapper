@@ -252,8 +252,8 @@ that appliance, again to clear it; the selection is panel state (`selectedApplia
 chart series id), the timeline highlights its row and the chart dims the other series, and
 "Show all" clears it. Selecting an appliance clears the category of the split bar and the other way
 round; a selected category highlights its rows. For administrators with a review, an
-unnamed signature has a *Review* icon button: it opens *To review* scrolled to that signature
-and focuses it. On a `narrow` screen the bar goes under the name.
+unnamed signature has a *Review* icon button: it opens *To review* on that signature (in the
+filter that lists it) and focuses its title. On a `narrow` screen the bar goes under the name.
 
 On the right (stacked below on narrow widths), **Peaks**, compact: per peak, the power, the
 time window and "notable", then what ran with the names of the list and their power, and
@@ -268,7 +268,7 @@ card (`.table-wrap`), the signatures become a list when Home Assistant reports `
 and the chart takes the width of its card. Manual test, in the dev harness
 (`frontend/dev/index.html`) with the browser's device toolbar at 360, 390 and 768 px, light
 and dark, `en` and `fr`, admin and `admin=0`, and the `empty`/`unavailable` scenarios:
-expand the lists, click a peak (chip and list), select a timeline row, open a *Validate…* form, then check in the console that
+expand the lists, click a peak (chip and list), select a timeline row, step through *To review* (scenario `many`: 30+ synthetic signatures), then check in the console that
 `document.documentElement.scrollWidth <= innerWidth`. Names and entity ids much longer
 than the sample's (edit `dev/sample/*.json` locally) must wrap, not widen the page.
 
@@ -803,14 +803,50 @@ the panel at `/energy-mapper?review=1`; the panel opens its *To review* tab. It 
 deleted when nothing is proposed, when the option *Notify in Repairs* is off, or when the entry
 is removed. An add-on before 0.6.0 answers 404: no notice, no section.
 
-**Panel** (`frontend/src/review.ts`, unit tested): administrators only. Proposed signatures
-with power, duration or cycle (on-time and period), uses and days, uses per week, energy, the
-usual hours (the hours at or above half of the busiest one, as ranges, across midnight) and
-the three most recent examples of the registry; an example opens its day and zooms the chart
-on it. *Validate…* opens an inline form (new appliance / switch / power sensor, Home
-Assistant's `ha-entity-picker` when loaded, a native input with a list of the matching
-entities otherwise); *Wait* and *Ignore* act at once. Below: the waiting signatures (when they
-come back) and a collapsible *Ignored* list, each with *Restore*.
+**Panel** (`frontend/src/review.ts`, unit tested, #51): administrators only, one signature
+at a time.
+
+- **Progress card**: named (`counts.validated`) / to review / waiting / ignored, and a bar:
+  the share of the signatures' energy already explained (`reviewProgress`: `energy_kwh` of the
+  registry signatures with a label or an appliance, over that plus the energy of the
+  signatures still in the review; the immature ones are left out), or, without the registry,
+  the share of the signatures handled (named or ignored). Filter chips: *Most energy first*
+  (the default: the proposals), *With a suggestion*, *Waiting*, *Ignored*, with their counts.
+- **Queue** (left, 340 px): per signature its provisional name, a short detail (uses per week,
+  "suggestion" or "known appliance?", when a waiting one comes back) and its energy; sorted by
+  `energy_kwh` (the value shown), then `weighted_energy_kwh`, then id (`reviewQueue`). The first
+  12 rows, then *Show the N others* (the current one is always shown). A checkbox per row
+  selects it for a **bulk action** in the queue header: *Wait* / *Ignore* for the proposals,
+  *Restore* / *Ignore* for the waiting, *Restore* for the ignored (one websocket call per
+  signature, then one reload).
+- **Detail** (right): "Signature 3 of 29", the provisional name as title (`h2`, focusable),
+  previous / next (no wrap); facts (power, cycle for a cycling signature, usual duration, runs
+  per week, energy observed, first seen); a 24-hour histogram of the usual hours (the hours at
+  or above half of the busiest one in the primary colour); up to three examples **drawn on the
+  house curve** (`exampleDrawing`: the curve of the example's day around it, at least 20 min
+  or its duration on each side, the use shaded): the curves come from `energy_mapper/report`
+  (the day already loaded is reused), loaded 300 ms after a signature is shown so that stepping
+  through the queue loads nothing, and only the `t`/`house` points of at most 12 days are kept;
+  a click opens *Today* on that day, zoomed on the use; a day kept as a summary only says "no
+  curve". Then the best **entity suggestion** (#41, #43) with *Use* (`formForUse`: linked as a
+  switch when its state drives the load, else a new appliance named after it) and, when it
+  belongs to an appliance, *Merge* (`formForMerge`).
+- **Validate form, inline**: the appliance name (or the appliance, to merge), *How to track
+  it* as a segmented control (*Curve only* / *With a switch* / *With a power sensor* /
+  *Merge into an appliance*, the last one when appliances exist) with its explanation, the
+  entity picker (`ha-entity-picker` when loaded, a native input with a list of the matching
+  entities otherwise), the other suggested entities as chips; *Validate and next*, *Wait*,
+  *Ignore* (*Restore* for a waiting or ignored signature). After an action the next signature
+  of the queue is shown (`nextAfter`: the next one still listed, else the previous one).
+- **Keyboard shortcuts** (`shortcutFor`, shown under the buttons): **V** validate, **W** wait
+  (shown as **A**, *attendre*, in French; both letters work in every language), **I** ignore,
+  **←** / **→** previous / next, when the focus is inside the review but not in a text field,
+  a select, a picker or the tab list (`typingTarget`); Ctrl, Alt and Meta combinations are left
+  alone. A handled key stops there, so Home Assistant's own one-letter shortcuts (such as
+  *a* for Assist) do not fire. W rather than A in English: "wait", and no clash with Assist.
+- **Phones**: under 760 px of width (a container query) the queue, the previous / next of the
+  title and the shortcut legend are hidden; a "1 of 34" stepper with previous / next stands
+  above the detail and the segmented control stacks.
 
 Not in this version: the other proposals of the same section, "take over tracking" (#13) and
 "probable sub-meter" (a power sensor whose steps coincide with the whole-house steps).
@@ -952,13 +988,13 @@ blocking anything. The integration relays the listing, and adds `appliances`.
 
 **Linking.** What a suggestion can become depends on how it matched:
 
-| Suggestion | The *Validate…* form opens on | Why |
+| Suggestion | The form after *Use* / *Merge* (#51) | Why |
 |---|---|---|
-| Belongs to an appliance (`appliance`) | *A part of an existing appliance*, that appliance selected; the card also has *Merge into <appliance>* | The signature is probably a part of it |
-| Edge match of an entity state | *An appliance driven by a switch*, the entity picked and named after it | Its changes are the appliance's steps: a ground truth |
-| Containment match, or an attribute | *A new appliance*, named after the entity | A hint for the name only (below) |
+| Belongs to an appliance (`appliance`) | *Merge*: *Merge into an appliance*, that appliance selected (*Use* as for the other kinds) | The signature is probably a part of it |
+| Edge match of an entity state | *With a switch*, the entity picked and named after it | Its changes are the appliance's steps: a ground truth |
+| Containment match, or an attribute | *Curve only*, named after the entity | A hint for the name only (below) |
 
-The suggested entities are chips; another entity or mode can still be chosen.
+The form starts blank; the other suggested entities are chips in it, and another entity or mode can still be chosen.
 `energy_mapper/validate` accepts `on_states`, sent when the entity is one of the edge state
 suggestions and its on states are not just `on`. Any linked entity becomes a **switched load**
 (§ 4.3): the engine handles any state values once the on states are known (and still tries the

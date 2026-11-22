@@ -51,6 +51,7 @@ test("times in the display time zone", () => {
 
 test("days are not shifted by the time zone", () => {
   assert.equal(formatDay("2027-03-09", en, "short"), "Mar 9, 2027");
+  assert.equal(formatDay("2027-03-09", en, "brief"), "Tue, Mar 9");
   assert.match(formatDay("2027-03-09", fr), /9 mars 2027/);
 });
 
