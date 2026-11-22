@@ -1,0 +1,673 @@
+"""The live view (#17): steps, events and candidates while someone watches.
+
+The pipeline, fed with raw Home Assistant states one at a time::
+
+    states -> SampleBuilder -> StepStream -> LivePairer -> CandidateRanker
+              (signal.py)      (steps.py)    events        top 3 per event
+
+* the samples are those of the night (:class:`~.signal.SampleBuilder`, same
+  rules as :func:`~.signal.build_samples`);
+* the steps are those of the night (:class:`~.steps.StepStream`, same result
+  as :func:`~.steps.detect_steps`), provisional first;
+* an **event** is one line of the feed: a switch-on, completed by the
+  off-step that closes it (the rule of :func:`~.activations.pair_steps`), or
+  a **session** when alternating steps of the same size follow each other
+  (the rule of :func:`~.activations.find_cycling_sessions`), or an off-step
+  whose switch-on was not seen;
+* each event gets its best **candidates**: registry signatures near its
+  power (:meth:`~.registry.Matcher.near`, the registry's own tolerance) and
+  switches that changed at the same time, with a score from 0 to 1.
+
+Everything here is pure (no I/O, no clock): the caller pushes the states
+and says up to when the samples can be built. :func:`replay` streams a
+stored day through the same pipeline (tests, evaluation, benchmarks).
+"""
+
+from __future__ import annotations
+
+import bisect
+import math
+import statistics
+import time
+from collections import deque
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+
+from .registry import GROUPS, MULTIPHASE, Matcher, is_ignored
+from .signal import Sample, SampleBuilder
+from .signatures import DURATION_BANDS, duration_band
+from .steps import CANCELLED, CONFIRMED, PROVISIONAL, LiveStep, Step, StepStream, meter_interval
+
+# score thresholds of the candidates: "looks like" / "maybe" / "unknown"
+LIKELY = 0.6
+MAYBE = 0.3
+SWITCH_SCORE = 0.95  # a relay that changed at the same time: nearly certain
+UNAVAILABLE = {"unavailable", "unknown", ""}
+
+
+def confidence(score: float | None) -> str:
+    """``likely`` (>= 0.6), ``maybe`` (>= 0.3) or ``unknown``."""
+    if score is None or score < MAYBE:
+        return "unknown"
+    return "likely" if score >= LIKELY else "maybe"
+
+
+# ---------------------------------------------------------------------------
+# events: the lines of the feed
+# ---------------------------------------------------------------------------
+@dataclass
+class LiveEvent:
+    """One line of the feed. Updated in place when its steps change.
+
+    ``delta_w`` is the switch-on step (positive), or a negative off-step
+    whose switch-on was not seen (before the view started). ``steps`` are
+    the confirmed ``(ts, delta)`` steps of the event: on, off, on, off...
+    for a session.
+    """
+
+    id: int
+    t_on: float
+    delta_w: float
+    state: str = PROVISIONAL
+    t_off: float | None = None
+    off_w: float | None = None  # size of the last off-step (positive)
+    steps: list[tuple[float, float]] = field(default_factory=list)
+    pv_moved: bool = False
+    candidates: list[dict] = field(default_factory=list)
+    step_id: int | None = None  # the live step that started it
+    pending: LiveStep | None = field(default=None, repr=False)  # provisional next cycle
+
+    @property
+    def running(self) -> bool:
+        """Switched on and not (yet) off."""
+        if self.delta_w <= 0 or self.state == CANCELLED:
+            return False
+        return not self.steps or self.steps[-1][1] > 0
+
+    @property
+    def cycles(self) -> int:
+        return sum(1 for _, d in self.steps if d > 0)
+
+    @property
+    def is_session(self) -> bool:
+        return self.cycles >= 2
+
+    @property
+    def last_on(self) -> float:
+        ons = [t for t, d in self.steps if d > 0]
+        return ons[-1] if ons else self.t_on
+
+    @property
+    def power_w(self) -> float:
+        """Typical power: a session's median step, an activation's mean of
+        its two steps (as :func:`pair_steps`), else the step itself."""
+        if self.is_session:
+            return statistics.median(abs(d) for _, d in self.steps)
+        if self.off_w is not None and not self.running:
+            return (self.delta_w + self.off_w) / 2
+        return abs(self.delta_w)
+
+    @property
+    def duration_s(self) -> float | None:
+        if self.t_off is None or self.running:
+            return None
+        return self.t_off - self.t_on
+
+    def session(self, min_steps: int = 6) -> dict | None:
+        """A session's cycles; ``confirmed`` once it has as many steps as the
+        night needs to call it a session."""
+        if not self.is_session:
+            return None
+        ons, periods = [], []
+        for (ta, da), (tb, db) in zip(self.steps, self.steps[1:], strict=False):
+            if da > 0 and db < 0:
+                ons.append(tb - ta)
+        ups = [t for t, d in self.steps if d > 0]
+        periods = [b - a for a, b in zip(ups, ups[1:], strict=False)]
+        end = self.steps[-1][0]
+        span = end - self.t_on
+        return {
+            "count": len(ups),
+            "steps": len(self.steps),
+            "on_s": round(statistics.median(ons), 1) if ons else None,
+            "period_s": round(statistics.median(periods), 1) if periods else None,
+            "duty": round(min(1.0, sum(ons) / span), 3) if span > 0 else None,
+            "confirmed": len(self.steps) >= min_steps,
+        }
+
+    def to_dict(self) -> dict:
+        top = self.candidates[0]["score"] if self.candidates else None
+        return {
+            "id": self.id,
+            "t_on": self.t_on,
+            "delta_w": round(self.delta_w),
+            "state": self.state,
+            "running": self.running,
+            "t_off": self.t_off,
+            "off_w": round(self.off_w) if self.off_w is not None else None,
+            "duration_s": round(self.duration_s) if self.duration_s is not None else None,
+            "power_w": round(self.power_w),
+            "session": self.session(),
+            "pv_moved": self.pv_moved,
+            "confidence": confidence(top),
+            "candidates": self.candidates,
+        }
+
+
+class LivePairer:
+    """Turns live steps into events, as the night pairs its steps.
+
+    * a provisional switch-on opens a provisional event (a small one, under
+      the threshold, opens none); confirmed, the event is confirmed;
+      cancelled, the event is cancelled;
+    * a confirmed off-step closes the running event closest in size within
+      ``max(tol_w, tol_frac x size)`` (ties: the most recent), the rule of
+      :func:`pair_steps`; none: an event of its own (negative ``delta_w``);
+    * a switch-on of at least ``session_min_w`` within ``session_gap_s`` of
+      the off-step of an event whose steps are all that close and of the
+      same size (``session_tol`` of their median) continues that event as a
+      session instead of opening a new line: the rule of
+      :func:`find_cycling_sessions` (which the night applies from 6 steps).
+
+    Simplification: the night splits a step that combines a cycle and
+    another appliance; live does not.
+    """
+
+    def __init__(
+        self,
+        tol_frac: float = 0.25,
+        tol_w: float = 60.0,
+        max_on_s: float = 6 * 3600.0,
+        session_min_w: float = 600.0,
+        session_gap_s: float = 120.0,
+        session_tol: float = 0.2,
+        session_min_steps: int = 6,
+    ):
+        self.tol_frac, self.tol_w, self.max_on_s = tol_frac, tol_w, max_on_s
+        self.session_min_w, self.session_gap_s = session_min_w, session_gap_s
+        self.session_tol, self.session_min_steps = session_tol, session_min_steps
+        self.events: dict[int, LiveEvent] = {}
+        self._by_step: dict[int, LiveEvent] = {}
+        self._next_id = 1
+
+    def feed(self, step: LiveStep) -> list[LiveEvent]:
+        """One step update; returns the events that appeared or changed."""
+        ev = self._by_step.get(step.id)
+        if step.state == PROVISIONAL:
+            if step.delta <= 0 or step.small:
+                return []
+            if ev is not None:
+                if ev.pending is not step:
+                    ev.t_on, ev.delta_w, ev.pv_moved = step.ts, step.delta, step.pv_moved
+                return [ev]
+            sess = self._session_for(step.ts, step.delta)
+            if sess is not None:
+                sess.pending = step
+                self._by_step[step.id] = sess
+                return [sess]
+            ev = self._new(step, PROVISIONAL)
+            return [ev]
+        if step.state == CANCELLED:
+            if ev is None:
+                return []
+            del self._by_step[step.id]
+            if ev.pending is step:
+                ev.pending = None
+                return [ev]
+            if ev.state == PROVISIONAL:
+                ev.state = CANCELLED
+                return [ev]
+            return []
+        # confirmed
+        if step.delta > 0:
+            if ev is not None and ev.pending is not step:
+                ev.state, ev.t_on, ev.delta_w = CONFIRMED, step.ts, step.delta
+                ev.pv_moved = step.pv_moved
+                ev.steps = [(step.ts, step.delta)]
+                return [ev]
+            if ev is not None:
+                ev.pending = None
+                del self._by_step[step.id]
+            sess = self._session_for(step.ts, step.delta)
+            if sess is not None:
+                sess.steps.append((step.ts, step.delta))
+                sess.t_off = None
+                self._by_step[step.id] = sess
+                return [sess]
+            ev = self._new(step, CONFIRMED)
+            return [ev]
+        best = self._pair(step)
+        if best is not None:
+            best.steps.append((step.ts, step.delta))
+            best.t_off, best.off_w = step.ts, -step.delta
+            self._by_step[step.id] = best
+            return [best]
+        return [self._new(step, CONFIRMED)]
+
+    def _new(self, step: LiveStep, state: str) -> LiveEvent:
+        ev = LiveEvent(
+            id=self._next_id,
+            t_on=step.ts,
+            delta_w=step.delta,
+            state=state,
+            steps=[(step.ts, step.delta)] if state == CONFIRMED else [],
+            pv_moved=step.pv_moved,
+            step_id=step.id,
+        )
+        self._next_id += 1
+        self.events[ev.id] = ev
+        self._by_step[step.id] = ev
+        return ev
+
+    def _pair(self, step: LiveStep) -> LiveEvent | None:
+        size = -step.delta
+        best, best_err = None, None
+        for o in self.events.values():
+            if o.state != CONFIRMED or not o.running or step.ts - o.last_on > self.max_on_s:
+                continue
+            ref = o.power_w
+            tol = max(self.tol_w, self.tol_frac * ref)
+            err = abs(ref - size)
+            if err > tol:
+                continue
+            rel = err / tol
+            if (
+                best is None
+                or rel < best_err - 1e-9
+                or (abs(rel - best_err) <= 1e-9 and o.last_on > best.last_on)
+            ):
+                best, best_err = o, rel
+        return best
+
+    def _session_for(self, ts: float, delta: float) -> LiveEvent | None:
+        if delta < self.session_min_w:
+            return None
+        best = None
+        for o in self.events.values():
+            if o.state != CONFIRMED or o.running or o.delta_w <= 0 or o.t_off is None or o.pending:
+                continue
+            if not 0 <= ts - o.t_off <= self.session_gap_s:
+                continue
+            sizes = [abs(d) for _, d in o.steps]
+            times = [t for t, _ in o.steps]
+            if min(sizes) < self.session_min_w:
+                continue
+            if any(b - a > self.session_gap_s for a, b in zip(times, times[1:], strict=False)):
+                continue
+            ref = statistics.median(sizes)
+            if abs(delta - ref) > self.session_tol * ref:
+                continue
+            if best is None or o.t_off > best.t_off:
+                best = o
+        return best
+
+    def prune(self, before: float) -> None:
+        """Forget the events over before ``before`` (and those running for
+        longer than ``max_on_s``)."""
+        drop = set()
+        for ev in self.events.values():
+            last = ev.steps[-1][0] if ev.steps else ev.t_on
+            if (
+                (ev.state == CANCELLED and ev.t_on < before)
+                or (ev.running and before - ev.last_on > self.max_on_s)
+                or (not ev.running and last < before and ev.state != PROVISIONAL)
+            ):
+                drop.add(ev.id)
+        for i in drop:
+            del self.events[i]
+        self._by_step = {k: v for k, v in self._by_step.items() if v.id not in drop}
+
+
+# ---------------------------------------------------------------------------
+# candidates
+# ---------------------------------------------------------------------------
+@dataclass
+class SwitchChange:
+    """A switch (relay) that changed state: strong evidence for a step at
+    the same time."""
+
+    entity_id: str
+    ts: float
+    on: bool
+    name: str | None = None  # the appliance's name
+    appliance: str | None = None  # the appliance's key
+    power_w: float | None = None  # known power, if any
+
+
+class CandidateRanker:
+    """The best candidates of an event, scored from 0 to 1.
+
+    For each registry signature (named or not, except those the user
+    ignored) of a group the event can still be in, within ``within`` times
+    the registry's power tolerance (:meth:`Matcher.near`):
+
+    * power: ``exp(-d^2 / 2)``, ``d`` the distance in tolerances (1 at the
+      center, 0.61 at the edge of the night's tolerance);
+    * habits, to break ties: the share of the signature's uses at this hour
+      and its frequency move the score between 85 % and 100 %;
+    * the group: a session matches cycling signatures; a closed event the
+      band of its duration (and multi-phase appliances, whose first phase it
+      may be); a running event the bands its elapsed time still allows (a
+      ``short`` one is out after 10 min, a session after 2 min);
+    * PV moved at the same time: the score is halved, so it is never above
+      "maybe".
+
+    A switch that changed in the same direction within ``switch_window_s``
+    scores 0.95 (0.5 when its known power is far from the step).
+    """
+
+    def __init__(
+        self,
+        registry: Mapping | None = None,
+        local_hour: Callable[[float], int] | None = None,
+        limit: int = 3,
+        within: float = 2.0,
+        switch_window_s: float = 30.0,
+        min_score: float = 0.05,
+        session_gap_s: float = 120.0,
+    ):
+        self.matcher = Matcher(registry)
+        self.sigs = {s["id"]: s for s in (registry or {}).get("signatures") or [] if not is_ignored(s)}
+        self.local_hour = local_hour or (lambda ts: time.localtime(ts).tm_hour)
+        self.limit, self.within, self.min_score = limit, within, min_score
+        self.switch_window_s, self.session_gap_s = switch_window_s, session_gap_s
+
+    def groups(self, event: LiveEvent, now: float) -> list[tuple[str, str]]:
+        if event.is_session:
+            return [("cycling", "session")]
+        if event.delta_w < 0:
+            return [*GROUPS, MULTIPHASE]
+        if not event.running and event.duration_s is not None:
+            return [("steady", duration_band(event.duration_s)), MULTIPHASE]
+        elapsed = max(0.0, now - event.t_on)
+        out = [("steady", name) for _lo, hi, name in DURATION_BANDS if hi > elapsed]
+        if elapsed <= self.session_gap_s:
+            out.append(("cycling", "session"))
+        return [*out, MULTIPHASE]
+
+    def rank(self, event: LiveEvent, now: float, switches: Iterable[SwitchChange] = ()) -> list[dict]:
+        power = event.power_w
+        hour = self.local_hour(event.t_on) % 24
+        penalty = 0.5 if event.pv_moved else 1.0
+        out = []
+        for kind, band in self.groups(event, now):
+            for sid, d in self.matcher.near(kind, band, power, self.within):
+                s = self.sigs.get(sid)
+                if s is None:
+                    continue
+                hours = s.get("hours") or []
+                top = max(hours, default=0) if len(hours) == 24 else 0
+                share = hours[hour] / top if top > 0 else 0.0
+                per_week = float(s.get("per_week") or 0.0)
+                habit = 0.5 * share + 0.5 * min(1.0, per_week / 7.0)
+                score = math.exp(-0.5 * d * d) * (0.85 + 0.15 * habit) * penalty
+                out.append(
+                    {
+                        "source": "signature",
+                        "signature_id": sid,
+                        "label": s.get("label"),
+                        "appliance": s.get("appliance"),
+                        "kind": s.get("kind"),
+                        "band": s.get("band"),
+                        "power_w": round(float(s.get("power_w") or 0)),
+                        "score": score,
+                        "reason": {
+                            "power_w": round(float(s.get("power_w") or 0)),
+                            "distance": round(d, 2),
+                            "usual_hour": share >= 0.5,
+                            "per_week": round(per_week, 1),
+                            "expected": bool(s.get("expected")),
+                            "pv_moved": event.pv_moved,
+                        },
+                    }
+                )
+        up = event.delta_w > 0
+        for sw in switches:
+            dt = sw.ts - event.t_on
+            if sw.on != up or abs(dt) > self.switch_window_s:
+                continue
+            far = sw.power_w and abs(power - sw.power_w) > 0.5 * sw.power_w
+            out.append(
+                {
+                    "source": "switch",
+                    "entity_id": sw.entity_id,
+                    "label": sw.name,
+                    "appliance": sw.appliance,
+                    "power_w": round(sw.power_w) if sw.power_w else None,
+                    "score": (0.5 if far else SWITCH_SCORE) * penalty,
+                    "reason": {"switch": sw.entity_id, "seconds": round(dt), "pv_moved": event.pv_moved},
+                }
+            )
+        out = [c for c in out if c["score"] >= self.min_score]
+        out.sort(key=lambda c: -c["score"])
+        for c in out:
+            c["score"] = round(c["score"], 2)
+            c["confidence"] = confidence(c["score"])
+        return out[: self.limit]
+
+
+# ---------------------------------------------------------------------------
+# the pipeline
+# ---------------------------------------------------------------------------
+@dataclass
+class LiveUpdate:
+    """What one :meth:`LiveDetector.advance` produced."""
+
+    samples: list[Sample] = field(default_factory=list)
+    steps: list[LiveStep] = field(default_factory=list)  # appeared or changed
+    events: list[LiveEvent] = field(default_factory=list)  # appeared or changed
+
+
+class LiveDetector:
+    """The live pipeline: push raw states (:meth:`push`), then build up to a
+    bound (:meth:`advance`), a few seconds behind the clock so that every
+    meter has reported (PV and grid are not sampled together).
+
+    ``config`` is the nightly ``AnalysisConfig`` (meters, sub-meters,
+    switched loads, step threshold). ``interval_s``: the meter's reporting
+    interval that sizes the detector windows (the night's is the median of
+    the day; None estimates it from the last readings). A step is marked
+    ``pv_moved`` when the PV median moved by at least ``pv_moved_w``
+    (default: half the step threshold) across it.
+    """
+
+    PV_KEEP_S = 600.0
+    SWITCH_KEEP = 200
+
+    def __init__(
+        self,
+        config,
+        registry: Mapping | None = None,
+        local_hour: Callable[[float], int] | None = None,
+        interval_s: float | None = None,
+        pv_moved_w: float | None = None,
+    ):
+        self.config = config
+        self.local_hour = local_hour
+        self.builder = SampleBuilder.from_config(config)
+        self.stream = StepStream(threshold=config.step_threshold_w, interval_s=interval_s)
+        self.pairer = LivePairer()
+        self.ranker = CandidateRanker(registry, local_hour)
+        self.pv_moved_w = pv_moved_w if pv_moved_w is not None else 0.5 * config.step_threshold_w
+        self.switched = {s.entity_id: s for s in config.switched_loads}
+        self.switches: deque[SwitchChange] = deque(maxlen=self.SWITCH_KEEP)
+        self._switch_on: dict[str, bool] = {}
+        self._pv_ts: list[float] = []
+        self._pv_v: list[float] = []
+        self.now: float | None = None  # time of the last sample
+
+    @property
+    def entities(self) -> list[str]:
+        """The entities to subscribe to."""
+        return list(dict.fromkeys([*self.builder.entities, *self.switched]))
+
+    @property
+    def events(self) -> dict[int, LiveEvent]:
+        return self.pairer.events
+
+    def set_registry(self, registry: Mapping | None) -> None:
+        """A new registry (after the nightly update or a review decision)."""
+        self.ranker = CandidateRanker(registry, self.local_hour)
+
+    def push(self, entity_id: str, ts: float, state) -> None:
+        """One raw HA state of a meter or a switched load."""
+        self.builder.push(entity_id, ts, state)
+        sl = self.switched.get(entity_id)
+        if sl is not None and state not in UNAVAILABLE and state is not None:
+            on = state in sl.on_states
+            if entity_id in self._switch_on and self._switch_on[entity_id] != on:
+                self.switches.append(
+                    SwitchChange(entity_id, float(ts), on, name=sl.name, power_w=sl.power_w or None)
+                )
+            self._switch_on[entity_id] = on
+
+    def add_switch(self, change: SwitchChange) -> None:
+        """A switch change known otherwise (an appliance's switch source)."""
+        self.switches.append(change)
+
+    def advance(self, before: float) -> LiveUpdate:
+        """Build the samples before ``before`` and run them through."""
+        return self._process(self.builder.pop(before), final=False)
+
+    def flush(self) -> LiveUpdate:
+        """End of the stream: everything pushed, the last steps judged."""
+        return self._process(self.builder.flush(), final=True)
+
+    def rerank(self, now: float) -> list[LiveEvent]:
+        """Rank the running events again (their elapsed time rules out
+        bands); returns those whose candidates changed."""
+        out = []
+        for ev in self.pairer.events.values():
+            if ev.running:
+                cands = self.ranker.rank(ev, now, self.switches)
+                if cands != ev.candidates:
+                    ev.candidates = cands
+                    out.append(ev)
+        return out
+
+    def _process(self, samples: list[Sample], final: bool) -> LiveUpdate:
+        update = LiveUpdate(samples=samples)
+        changed: dict[int, LiveEvent] = {}
+        for s in samples:
+            self.now = s.ts
+            if s.pv is not None:
+                self._pv_ts.append(s.ts)
+                self._pv_v.append(s.pv)
+            if s.residual is None:
+                continue
+            for st in self.stream.push(s.ts, s.residual):
+                self._handle(st, s.ts, update, changed)
+        if final:
+            for st in self.stream.flush():
+                self._handle(st, self.now, update, changed)
+        if self._pv_ts and self.now is not None:
+            k = bisect.bisect_left(self._pv_ts, self.now - self.PV_KEEP_S)
+            if k > 256:
+                del self._pv_ts[:k]
+                del self._pv_v[:k]
+        update.events = list(changed.values())
+        return update
+
+    def _handle(self, st: LiveStep, now: float, update: LiveUpdate, changed: dict) -> None:
+        if st.state != CANCELLED:
+            st.pv_moved = self._pv_moved(st.ts)
+        if not any(x is st for x in update.steps):
+            update.steps.append(st)
+        for ev in self.pairer.feed(st):
+            if ev.state != CANCELLED:
+                ev.candidates = self.ranker.rank(ev, now, self.switches)
+            changed[ev.id] = ev
+
+    def _pv_moved(self, ts: float) -> bool:
+        w = self.stream.window_s
+        i = bisect.bisect_left(self._pv_ts, ts - w)
+        j = bisect.bisect_left(self._pv_ts, ts)
+        k = bisect.bisect_right(self._pv_ts, ts + w)
+        if i >= j or j >= k:
+            return False
+        before = statistics.median(self._pv_v[i:j])
+        after = statistics.median(self._pv_v[j:k])
+        return abs(after - before) >= self.pv_moved_w
+
+
+# ---------------------------------------------------------------------------
+# replay
+# ---------------------------------------------------------------------------
+@dataclass
+class ReplayResult:
+    steps: list[Step]  # the confirmed steps, in order: those of detect_steps
+    updates: list[LiveStep]  # a copy of every step update, in order
+    events: list[LiveEvent]  # the events at the end, by id
+    samples: int
+    interval_s: float | None
+
+
+def _readings(histories: Mapping, entities: Sequence[str], end: float | None):
+    out = []
+    for e in dict.fromkeys(entities):
+        for ts, state in histories.get(e, []):
+            if end is None or float(ts) < end:
+                out.append((float(ts), state, e))
+    out.sort(key=lambda r: r[0])  # stable: each entity keeps its order
+    return out
+
+
+def night_interval(histories: Mapping, config) -> float | None:
+    """The meter interval the night uses for this history: the median gap
+    between the readings of the analysed load."""
+    b = SampleBuilder.from_config(config)
+    for ts, state, e in _readings(histories, b.entities, None):
+        b.push(e, ts, state)
+    return meter_interval([s.ts for s in b.flush() if s.residual is not None])
+
+
+def replay(
+    histories: Mapping[str, list[tuple[float, str]]],
+    config,
+    registry: Mapping | None = None,
+    local_hour: Callable[[float], int] | None = None,
+    end: float | None = None,
+    interval_s: float | None | str = "night",
+) -> ReplayResult:
+    """Stream a stored day (the raw histories of :func:`report.analyze`)
+    through the live pipeline, reading by reading in time order.
+
+    ``interval_s``: ``"night"`` (default) sizes the windows as the night does
+    on the same history, so that the confirmed steps are exactly those of
+    the night; None estimates it on the fly, as live does.
+    """
+    if interval_s == "night":
+        interval_s = night_interval(histories, config)
+    det = LiveDetector(config, registry, local_hour, interval_s=interval_s)
+    updates: list[LiveStep] = []
+    samples = 0
+
+    def collect(u: LiveUpdate):
+        nonlocal samples
+        samples += len(u.samples)
+        updates.extend(replace(s) for s in u.steps)
+
+    prev = None
+    for ts, state, entity in _readings(histories, det.entities, end):
+        if prev is not None and ts > prev:
+            collect(det.advance(ts))  # every reading before ts is in
+        det.push(entity, ts, state)
+        prev = ts
+    collect(det.flush())
+    steps = [u.to_step() for u in updates if u.state == CONFIRMED]
+    events = [det.events[i] for i in sorted(det.events)]
+    return ReplayResult(steps, updates, events, samples, interval_s)
+
+
+__all__ = [
+    "CandidateRanker",
+    "LiveDetector",
+    "LiveEvent",
+    "LivePairer",
+    "LiveUpdate",
+    "ReplayResult",
+    "SwitchChange",
+    "confidence",
+    "night_interval",
+    "replay",
+]

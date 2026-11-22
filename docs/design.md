@@ -351,6 +351,8 @@ flowchart TD
   already near zero (night, ≤ 50 W) and *unknown* otherwise (an inverter timeout in daylight
   must not create a multi-kW fake step); samples with unknown PV have no house value. Sub-meters
   and the battery keep their last value for 5 minutes, then count 0.
+- These rules are applied to one grid reading by `sample_at`, shared by the nightly
+  `build_samples` and the live `SampleBuilder` (§ 4.11).
 
 ### 4.2 Steps (`steps.py`)
 
@@ -361,6 +363,7 @@ compared; a difference of at least `step_threshold_w` (300 W) is a step. Windows
 side), which makes the detector robust to single-sample spikes (motor inrush, meter noise)
 and adapts it to meters reporting every 1 s to 60 s. Neighbouring candidates of the same sign
 are merged, keeping the largest.
+The live view (§ 4.11) runs the same detector on a stream (`StepStream`).
 
 ### 4.3 Switched loads (`known.py`)
 
@@ -588,6 +591,69 @@ within 60 W, recall and precision ≥ 0.9, energy ratio within 15 %; a dishwashe
 learned `multiphase` with its five phases, recall ≥ 0.75 before and recall and precision
 ≥ 0.75 after its template is applied.
 
+### 4.11 Live detection (`live.py`, #17)
+
+The *Live* tab (#17 phase 1, add-on 0.12.0+ for the core) shows steps as they happen so that
+the user can label them ("this is the toaster"). The engine runs on a stream of readings and
+gives **the same steps as the night**: what the user labels is exactly what the nightly
+analysis sees. Pure (no clock, no I/O), like the rest of the engine:
+
+```mermaid
+flowchart LR
+  ST[raw states, one at a time] --> SB[SampleBuilder: samples up to a bound]
+  SB --> SS[StepStream: provisional, confirmed, cancelled steps]
+  SS --> LP[LivePairer: events, pairing, sessions]
+  LP --> CR[CandidateRanker: top 3 per event]
+```
+
+1. **Samples** (`signal.SampleBuilder`). The states are pushed as they come; the samples
+   are built up to a time bound (a few seconds behind the clock live, so that PV and grid
+   readings of the same moment are both in; the next reading's time when replaying). Same
+   rules as § 4.1 (`sample_at`), same sum of several meters (unknown until each has
+   reported). Readings older than the hold rules need are forgotten (the last valid one is
+   kept).
+2. **Steps** (`steps.StepStream`). A jump is judged once the window after it is complete,
+   with the same medians as `detect_steps`; a candidate is confirmed once no later one can
+   be merged into it, so `window + merge` after the step (~35 s on a 10 s meter). Before
+   that, a **provisional** step comes after 3 readings (or 10 s), from the median of what is
+   known after the jump; neighbouring jumps of the same sign share one; the confirmed step
+   takes the id of the nearest provisional one of the same sign, and a provisional step no
+   confirmed one can claim is **cancelled** (a spike). Provisional steps between 60 % and
+   100 % of the threshold are flagged `small` (the guided mode says "too small") and never
+   open an event. The windows come from the meter interval: given (the night's: the median
+   of the day), or estimated from the last 100 readings.
+3. **Events** (`live.LivePairer`): one line of the feed. A switch-on (provisional, then
+   confirmed or cancelled) opens one; a confirmed off-step closes the running event closest
+   in size (`pair_steps`: `max(60 W, 25 %)`, ties to the most recent); an off-step with no
+   running event is an event of its own (negative `delta_w`: switched on before the view
+   started). A switch-on of at least 600 W within 120 s of the off-step of an event whose
+   steps are all as close and of the same size (20 % of their median) continues it as a
+   **session** (the cycling rule of § 4.4), `confirmed` from the 6 steps the night needs.
+   The night's split of a step combining a cycle and another appliance is not done live.
+4. **Candidates** (`live.CandidateRanker`). For each event, the registry signatures (named
+   or not, not those the user ignored) of the groups it can still be in, within twice the
+   registry tolerance (`Matcher.near`, the registry's own rule): a session matches
+   `cycling`; a closed event the band of its duration and multi-phase appliances (it may be
+   their first phase); a running event the bands its elapsed time allows (`short` is out
+   after 10 min, a session after 2 min); an orphan off-step all of them. Score =
+   `exp(-d²/2)` (`d` the distance in tolerances: 1 at the center, 0.61 at the edge of the
+   night's tolerance) × 0.85–1 from habits (share of its uses at this hour, uses per week).
+   A switch (a switched load, or one given by the caller) that changed the same way within
+   30 s scores 0.95 (0.5 if its known power is far). A step across which the PV median moved
+   by half the threshold is `pv_moved`: its scores are halved, so never above "maybe".
+   Levels: ≥ 0.6 `likely`, 0.3–0.6 `maybe`, else `unknown`. Ranked again when the event
+   changes, and `rerank(now)` for running events.
+5. **Replay** (`live.replay`) streams a stored day (the raw histories of `analyze`) reading
+   by reading through the whole pipeline, with the night's meter interval by default.
+
+Tests (`tests/test_live.py`): the samples of the stream equal those of `build_samples`
+(PV dropouts, import/export, kW, several meters, battery, sub-meters); replayed synthetic
+days give exactly the steps of `detect_steps` (noise, overlapping loads, multi-phase
+appliances, motor bursts, solar with dropouts, recorder gaps, irregular readings, 2 s
+meters); closed events equal `pair_steps`; a hob is one session with the night's cycle
+count; on 60 uses of 6 steady appliances the right one is first in ≥ 80 % and in the top 3
+in ≥ 95 %. A day of a 10 s meter replays in about 0.1 s.
+
 ## 5. Using the Energy dashboard
 
 `energy_config.derive()` turns `energy/get_prefs`, `get_states` and
@@ -723,7 +789,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `200 {"status": "ok", "version": "0.11.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
+| `GET /api/health` | `200 {"status": "ok", "version": "0.12.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
 | `GET /api/days` | `200 {"days": [...], "summary_days": [...], "generated": {day: <unix time>}}`: days with a full report, and older days with only a summary, ascending; `generated`: when each full report was made (`generated_at`) |
 | `GET /api/report/YYYY-MM-DD` | `200` the report with registry ids; `400 {"error": "invalid_day"}`; `404 {"error": "not_found"}` |
 | `GET /api/hourly/YYYY-MM-DD` | `200` the hourly breakdown of the day (`nilm_core/hourly.py`, § 8.1); `400 invalid_day`; `404 not_found` when the day has no per-minute curve |
