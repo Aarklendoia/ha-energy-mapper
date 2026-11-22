@@ -143,6 +143,12 @@ class EnergyMapperClient:
         taught by a measured device (add-on 0.11.0+)."""
         return await self._request("GET", "/api/teaching")
 
+    async def self_test(self) -> dict[str, Any]:
+        """The nightly self-test (add-on 0.11.0+): ``{"enabled",
+        "devices_per_night", "window_days", "min_uses", "last_day",
+        "devices": [...]}``."""
+        return await self._request("GET", "/api/self_test")
+
     async def apply_teaching(self, key: str) -> dict[str, Any]:
         """The signature learned for an appliance, created when needed:
         ``{"signature", "created", "learned"}``; errors ``not_found`` (404),

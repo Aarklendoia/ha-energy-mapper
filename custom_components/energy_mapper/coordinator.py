@@ -477,6 +477,19 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise
         return {"supported": True, "teachers": listing.get("teachers") or []}
 
+    # -- nightly self-test (#15) ------------------------------------------------
+    async def async_self_test(self) -> dict[str, Any]:
+        """The success rate of the measured devices the add-on hides from its
+        analysis at night (``GET /api/self_test``); ``supported`` is false for
+        an add-on before 0.11.0."""
+        try:
+            listing = await self.client.self_test()
+        except EnergyMapperApiError as err:
+            if self._no_endpoint(err):
+                return {"supported": False, "enabled": False, "devices": []}
+            raise
+        return {**listing, "supported": True, "devices": listing.get("devices") or []}
+
     def _target(self, key: str) -> tuple[str, Appliance]:
         current = self.appliances_by_subentry()
         found = next(((i, a) for i, a in current.items() if a.key == key), None)

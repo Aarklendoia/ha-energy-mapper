@@ -82,10 +82,12 @@
               "backfill_days": "Past days analysed on start",
               "half_life_days": "Signature half-life (days)",
               "report_retention_days": "Keep full reports (days)",
-              "peak_window_days": "Peak reference window (days)"
+              "peak_window_days": "Peak reference window (days)",
+              "self_test_devices": "Self-test: measured devices per night"
             },
             "data_description": {
               "analysis_time": "A new time applies after the next analysis.",
+              "self_test_devices": "After the nightly analysis, this many sub-meters are hidden in a copy of the analysis to check that the curve finds them again (shown on the Appliances tab). 0 disables it.",
               "half_life_days": "Age at which a past use counts half in the signature registry."
             }
           },

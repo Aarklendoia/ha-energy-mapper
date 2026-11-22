@@ -59,6 +59,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_teaching,
         ws_teach,
         ws_stop_teaching,
+        ws_self_test,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -551,3 +552,16 @@ async def ws_stop_teaching(
         }
 
     await _review(hass, connection, msg, stop)
+
+
+# ---------------------------------------------------------------------------
+# nightly self-test (#15): every user
+# ---------------------------------------------------------------------------
+@websocket_api.websocket_command({vol.Required("type"): "energy_mapper/self_test"})
+@websocket_api.async_response
+async def ws_self_test(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The success rate of the measured devices hidden from the nightly
+    analysis (``GET /api/self_test``), and whether the add-on supports it."""
+    await _review(hass, connection, msg, lambda coordinator: coordinator.async_self_test())

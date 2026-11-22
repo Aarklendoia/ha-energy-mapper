@@ -23,6 +23,12 @@ configuration:
     description: >-
       A peak is notable above 80 % of the highest power of this many past
       days, to follow the seasons.
+  self_test_devices:
+    name: Self-test devices per night
+    description: >-
+      After the nightly analysis, this many measured devices (sub-meters) are
+      hidden in a copy of the analysis to check that the curve finds them
+      again. 0 disables the self-test.
   grid_entity:
     name: Grid power sensor
     description: >-

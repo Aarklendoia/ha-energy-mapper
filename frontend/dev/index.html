@@ -180,6 +180,8 @@
           case "energy_mapper/tracking":
             return tracking();
           // learning from a measured device (#14): the dryer learns from its plug
+          case "energy_mapper/self_test":
+            return SELF_TEST;
           case "energy_mapper/teaching":
             return { supported: true, teachers: APPLIANCE_LIST.filter((a) => a.teacher).map(teachingOf) };
           case "energy_mapper/teach": {
@@ -451,6 +453,22 @@
         entity_id: "sensor.dryer_power",
         since: NOW - 9 * 86400,
       };
+      // the nightly self-test (#15): synthetic sub-meters
+      const SELF_TEST = {
+        supported: true,
+        enabled: true,
+        devices_per_night: 1,
+        window_days: 60,
+        min_uses: 5,
+        last_day: "2026-01-14",
+        devices: [
+          { entity_id: "sensor.water_heater_power", name: "Water heater", state: "ok", tests: 9, uses: 11, found: 10, precision: 0.91, energy_ratio: 0.96, rate: 0.909, trend: "stable", last_day: "2026-01-14", learned: { power_w: 2400 } },
+          { entity_id: "sensor.heat_pump_power", name: "Heat pump", state: "ok", tests: 8, uses: 14, found: 8, precision: 0.73, energy_ratio: 0.81, rate: 0.571, trend: "up", last_day: "2026-01-13", learned: { power_w: 1200 } },
+          { entity_id: "sensor.dryer_power", name: "Tumble dryer", state: "not_enough_data", tests: 2, uses: 2, found: 1, precision: 1, energy_ratio: 0.9, rate: null, trend: null, last_day: "2026-01-12", learned: { power_w: 2100 } },
+          { entity_id: "sensor.freezer_power", name: "Freezer", state: "not_recognisable", tests: 0, uses: 0, found: 0, precision: null, energy_ratio: null, rate: null, trend: null, last_day: "2026-01-11", learned: { power_w: 90 } },
+        ],
+      };
+
       function teachingOf(a) {
         const fresh = a.teacher.since > NOW - 86400;
         return {

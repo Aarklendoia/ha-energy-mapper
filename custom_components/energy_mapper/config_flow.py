@@ -82,6 +82,7 @@ INT_KEYS = (
     "review_min_days",
     "review_wait_days",
     "review_suggest_score",
+    "self_test_devices",
 )
 
 
@@ -294,6 +295,7 @@ OPTIONS_SCHEMA = vol.Schema(
                     vol.Optional("half_life_days"): _number(1, 365),
                     vol.Optional("report_retention_days"): _number(7, 3650),
                     vol.Optional("peak_window_days"): _number(1, 365),
+                    vol.Optional("self_test_devices"): _number(0, 10),
                 }
             ),
             {"collapsed": True},

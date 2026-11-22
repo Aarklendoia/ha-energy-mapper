@@ -31,6 +31,7 @@ import {
 } from "./appliances.ts";
 import { energyState, pickList, preselected, type TrackingListing } from "./takeover.ts";
 import { sensorChoices, teachingLines, teachState, type TeachingListing } from "./teaching.ts";
+import { selfTestHint, selfTestRows, showSelfTest, type SelfTestListing } from "./selftest.ts";
 import "./chart.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
@@ -230,6 +231,7 @@ export class EnergyMapperPanel extends LitElement {
     _takeover: { state: true },
     _teaching: { state: true },
     _teach: { state: true },
+    _selfTest: { state: true },
   };
 
   static override styles = panelStyles;
@@ -295,6 +297,8 @@ export class EnergyMapperPanel extends LitElement {
   declare _takeover: { key: string; mode: "take" | "undo"; stat: string; busy: boolean; error: string | null } | null;
   /** learning from a measured device (#14; null: not available) */
   declare _teaching: TeachingListing | null;
+  /** the nightly self-test (#15; null: not available) */
+  declare _selfTest: SelfTestListing | null;
   /** the confirmation open on an appliance card: start learning (with the
    * sensor picked), finish with the learned signature, or stop */
   declare _teach: {
@@ -354,6 +358,7 @@ export class EnergyMapperPanel extends LitElement {
     this._takeover = null;
     this._teaching = null;
     this._teach = null;
+    this._selfTest = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -468,6 +473,7 @@ export class EnergyMapperPanel extends LitElement {
         this.loadAppliances(),
         this.loadTracking(),
         this.loadTeaching(),
+        this.loadSelfTest(),
       ]);
       this._days = days;
       this._registry = registry;
@@ -531,6 +537,16 @@ export class EnergyMapperPanel extends LitElement {
       this._teaching = await this.ws<TeachingListing>({ type: "energy_mapper/teaching" });
     } catch {
       this._teaching = null;
+    }
+  }
+
+  /** The nightly self-test (#15, every user; integration 0.9.0+, else
+   * nothing is shown). */
+  private async loadSelfTest(): Promise<void> {
+    try {
+      this._selfTest = await this.ws<SelfTestListing>({ type: "energy_mapper/self_test" });
+    } catch {
+      this._selfTest = null;
     }
   }
 
@@ -1006,7 +1022,41 @@ export class EnergyMapperPanel extends LitElement {
   /** Appliances (#54): one card per appliance, then every signature of the
    * registry and the switched loads, collapsed under "All signatures". */
   private renderAppliances(t: Translate): TemplateResult {
-    return html`${this.renderApplianceCards(t)} ${this.renderAllSignatures(t)}`;
+    return html`${this.renderApplianceCards(t)} ${this.renderSelfTest(t)} ${this.renderAllSignatures(t)}`;
+  }
+
+  /** Self-test (#15, every user): how often the curve finds each hidden
+   * measured device again. */
+  private renderSelfTest(t: Translate): TemplateResult | typeof nothing {
+    const listing = this._selfTest;
+    if (!listing || !showSelfTest(listing)) return nothing;
+    const info = this.info;
+    const rows = selfTestRows(listing, t, info, (e) => this.friendlyName(e) ?? null);
+    return html`<section class="card self-test" aria-labelledby="self-test-title">
+      <div class="card-header"><h2 id="self-test-title">${t("selftest_title")}</h2></div>
+      <div class="card-hint">${selfTestHint(listing, t, info)}</div>
+      <ul class="self-test-list">
+        ${rows.map(
+          (r) => html`<li class="self-test-row">
+            <div class="self-test-main">
+              <span class="self-test-name">${r.name}</span>
+              ${r.rate != null
+                ? html`<span class="self-test-rate tone-${r.tone}">${formatPercent(r.rate, info)}</span>`
+                : nothing}
+            </div>
+            <div class="self-test-headline">
+              ${r.headline}${r.trendText
+                ? html` · <span class="self-test-trend trend-${r.trend}"
+                      ><span aria-hidden="true">${r.trend === "up" ? "↗" : r.trend === "down" ? "↘" : "→"}</span>
+                      ${r.trendText}</span
+                    >`
+                : nothing}
+            </div>
+            ${r.detail ? html`<div class="self-test-detail">${r.detail}</div>` : nothing}
+          </li>`,
+        )}
+      </ul>
+    </section>`;
   }
 
   private get applianceCardList(): ApplianceCard[] {

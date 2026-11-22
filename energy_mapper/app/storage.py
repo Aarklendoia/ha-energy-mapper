@@ -90,6 +90,7 @@ class ReportStore:
         self.settings_path = self.root / "settings.json"
         self.statistic_ids_path = self.root / "statistic_ids.json"
         self.appliances_path = self.root / "appliances.json"
+        self.self_test_path = self.root / "self_test.json"
         # summaries already read, for the nightly registry update (read-only)
         self._cache: dict[str, dict] = {}
         self.migrate()
@@ -203,7 +204,13 @@ class ReportStore:
                 continue
             with os.scandir(folder) as it:
                 total += sum(e.stat().st_size for e in it if e.is_file())
-        for path in (self.registry_path, self._state_path, self.statistic_ids_path, self.suggestions_path):
+        for path in (
+            self.registry_path,
+            self._state_path,
+            self.statistic_ids_path,
+            self.suggestions_path,
+            self.self_test_path,
+        ):
             with contextlib.suppress(OSError):
                 total += path.stat().st_size
         return total
@@ -238,6 +245,20 @@ class ReportStore:
 
     def save_suggestions(self, data: dict) -> None:
         _write_atomic(self.suggestions_path, data)
+
+    # -- nightly self-test (selftest.py, #15) ----------------------------------
+    def load_self_test(self) -> dict | None:
+        """The stored self-test results, or None when missing or corrupt."""
+        try:
+            data = json.loads(self.self_test_path.read_text())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("tests"), list):
+            return None
+        return data
+
+    def save_self_test(self, data: dict) -> None:
+        _write_atomic(self.self_test_path, data)
 
     # -- signature registry ---------------------------------------------------
     def load_registry(self) -> dict | None:
