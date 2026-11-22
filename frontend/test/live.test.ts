@@ -5,6 +5,7 @@ import {
   applyMessage,
   clockOffset,
   curveRise,
+  effectiveThreshold,
   emptyStore,
   FEED_KEEP_S,
   feedEntries,
@@ -48,6 +49,23 @@ test("a snapshot replaces the curve and fills the feed, tagged with its session"
       [1, 3],
     ],
   );
+});
+
+test("the effective threshold: the night one only while PV produces nothing", () => {
+  // off: the step threshold, whatever PV does
+  let s = applyMessage(emptyStore(), snapshot(), T0 + 5);
+  assert.equal(s.night_threshold_w, null);
+  assert.equal(effectiveThreshold(s), 300);
+  // on, PV quiet now: the night threshold
+  const quiet = { ts: T0 + 5, house_w: 410, running: [], unidentified_w: 0, pv_quiet: true };
+  s = applyMessage(emptyStore(), snapshot({ night_threshold_w: 150, now: quiet }), T0 + 5);
+  assert.equal(s.night_threshold_w, 150);
+  assert.equal(effectiveThreshold(s), 150);
+  // PV producing (or unknown): the step threshold
+  s = applyMessage(s, { type: "update", seq: 11, curve: [], events: [], now: { ...quiet, pv_quiet: false } }, T0 + 6);
+  assert.equal(effectiveThreshold(s), 300);
+  s = applyMessage(s, { type: "update", seq: 12, curve: [], events: [], now: { ...quiet, pv_quiet: null } }, T0 + 7);
+  assert.equal(effectiveThreshold(s), 300);
 });
 
 test("updates merge by seq: an event comes back whole, an older copy is ignored, cancelled ones go", () => {

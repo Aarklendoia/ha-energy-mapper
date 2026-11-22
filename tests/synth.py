@@ -105,3 +105,47 @@ def switch_history(periods, entity_states=("on", "off")):
         out.append((a, on))
         out.append((b, off))
     return out
+
+
+def solar_drift_day(
+    day0: float = DAY0,
+    dt: float = 10.0,
+    pv_peak_w: float = 3000.0,
+    drift_w: float = 180.0,
+    big_w: float = 2000.0,
+    evening_w: float = 170.0,
+    noise_w: float = 10.0,
+    seed: int = 7,
+    grid: str = "sensor.grid_power",
+    pv: str = "sensor.pv_power",
+) -> dict[str, list[tuple[float, str]]]:
+    """A solar day for the night threshold (#77), from 21:00 the day before.
+
+    * base load 250 W; PV from 08:00 to 18:00 (``pv_peak_w`` at 13:00);
+    * from 11:05 to 14:05 the grid meter drifts from the PV meter by
+      ``drift_w`` every other 10 minutes: small fake steps of the house load;
+    * a large load (``big_w``) from 12:30 to 12:50, during PV;
+    * a small evening load (``evening_w``) from 20:00 to 20:25.
+
+    The PV meter reports 5 s after the grid meter.
+    """
+    rnd = random.Random(seed)
+    house = House(base_w=250.0, pv_peak_w=pv_peak_w, noise_w=0.0)
+    big = Steady(day0 + 12.5 * HOUR, day0 + 12.5 * HOUR + 1200, big_w)
+    evening = Steady(day0 + 20 * HOUR, day0 + 20 * HOUR + 1500, evening_w)
+
+    def drift(t: float) -> float:
+        k = (t - (day0 + 11 * HOUR + 300)) // 600
+        if not day0 + 11 * HOUR + 300 <= t < day0 + 14 * HOUR + 300:
+            return 0.0
+        return drift_w if k % 2 == 0 else 0.0
+
+    g, p = [], []
+    t = day0 - 3 * HOUR
+    while t < day0 + 24 * HOUR:
+        use = house.base_w + big.power_at(t) + evening.power_at(t)
+        g.append((t, f"{use - house.pv_at(t) + drift(t) + rnd.gauss(0, noise_w):.1f}"))
+        tp = t + 5
+        p.append((tp, f"{house.pv_at(tp):.0f}"))
+        t += dt
+    return {grid: g, pv: p}

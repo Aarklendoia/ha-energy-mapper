@@ -100,6 +100,8 @@ export interface LiveNow {
   /** ids of the running events, newest first */
   running: number[];
   unidentified_w: number | null;
+  /** the night threshold applies now: PV produces nothing (null: unknown or off) */
+  pv_quiet?: boolean | null;
   switches?: LiveSwitch[];
 }
 
@@ -132,6 +134,8 @@ export interface LiveSnapshotMessage {
   session: number | null;
   history_s?: number;
   threshold_w?: number | null;
+  /** the night threshold (W) while PV produces nothing; null when off */
+  night_threshold_w?: number | null;
   time_zone?: string | null;
   curve: CurvePoint[];
   events: LiveEvent[];
@@ -163,6 +167,7 @@ export interface LiveStore {
   seq: number;
   history_s: number;
   threshold_w: number;
+  night_threshold_w: number | null;
   curve: CurvePoint[];
   now: LiveNow | null;
   events: Map<number, FeedEntry>;
@@ -181,6 +186,7 @@ export function emptyStore(): LiveStore {
     seq: 0,
     history_s: DEFAULT_HISTORY_S,
     threshold_w: DEFAULT_THRESHOLD_W,
+    night_threshold_w: null,
     curve: [],
     now: null,
     events: new Map(),
@@ -236,6 +242,7 @@ export function applyMessage(store: LiveStore, msg: LiveMessage, now: number): L
       seq: msg.seq,
       history_s: history,
       threshold_w: msg.threshold_w || DEFAULT_THRESHOLD_W,
+      night_threshold_w: msg.night_threshold_w || null,
       curve: trimCurve([...(msg.curve ?? [])], history),
       now: msg.now ?? null,
       events,
@@ -251,6 +258,13 @@ export function applyMessage(store: LiveStore, msg: LiveMessage, now: number): L
   prune(events, now);
   const curve = msg.curve?.length ? trimCurve([...store.curve, ...msg.curve], store.history_s) : store.curve;
   return { ...store, seq: Math.max(store.seq, msg.seq ?? 0), curve, now: msg.now ?? store.now, events };
+}
+
+/** The step threshold that applies now: the night threshold while the
+ * solar panels produce nothing (``now.pv_quiet``), else the step threshold. */
+export function effectiveThreshold(store: LiveStore): number {
+  if (store.night_threshold_w && store.now?.pv_quiet === true) return store.night_threshold_w;
+  return store.threshold_w;
 }
 
 /** The events of the feed, newest first. */

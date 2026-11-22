@@ -82,6 +82,7 @@ below (see `PUT /api/settings`).
 | `submeters` | Energy dashboard | Power sensors of measured appliances, subtracted before the analysis. |
 | `switched_loads` | Energy dashboard | Appliances driven by a switch. |
 | `step_threshold_w` | `300` | Smallest power change considered as an appliance switching. |
+| `night_step_threshold_w` | empty (off) | Smaller steps, down to this value, are also kept while the solar panels produce nothing: see [Night threshold](#night-threshold). Only with a PV sensor. |
 | `peak_threshold_w` | 80 % of the recent maximum | Fixed threshold of the notable peaks (for example the subscribed power). |
 | `live_view` | `true` | The [live view](#live-view) of the panel's *Live* tab. It runs only while the tab is open; `false` turns it off entirely (kill switch). Add-on option only. |
 | `log_level` | `info` | `debug`, `info`, `warning` or `error`. |
@@ -104,6 +105,24 @@ switched_loads:
 
 `on_states` lists the states in which the appliance runs (default `on`). A
 switch that cuts the pilot wire of a radiator lets it heat when it is `off`.
+
+### Night threshold
+
+Lowering `step_threshold_w` reveals small appliances (a TV, lighting, small
+kitchen appliances). On a solar installation it also creates false steps in
+the daytime: the PV and grid meters drift slightly apart while the sun is up.
+`night_step_threshold_w` (add-on 0.13.0+, empty by default) lowers the
+threshold only where that cannot happen:
+
+- a step of at least `step_threshold_w` is always kept, as before;
+- a smaller step, of at least `night_step_threshold_w`, is kept only when the
+  solar production is known and stays below 20 W (median) in the minute
+  before and in the minute after it.
+
+It takes a value between 50 W and `step_threshold_w` (150 W is a good start)
+and applies to the nightly analysis and to the live view alike. **It only
+applies with a PV sensor** (Energy dashboard or `pv_entity`): without one it
+has no effect, so lower `step_threshold_w` instead.
 
 ## Reports
 
@@ -229,7 +248,7 @@ announces itself to Home Assistant through Supervisor discovery.
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `{"status": "ok", "version": "0.12.0", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
+| `GET /api/health` | `{"status": "ok", "version": "0.13.0", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
 | `GET /api/days` | `{"days": [...], "summary_days": [...], "generated": {"YYYY-MM-DD": <unix time>}}`: days with a full report, and older days with only a summary, oldest first; `generated` tells when each full report was made |
 | `GET /api/report/YYYY-MM-DD` | The report with the registry ids, or 404. For a day with only a summary: `curve` is empty and `curve_pruned` is `true` |
 | `GET /api/hourly/YYYY-MM-DD` | The energy of each appliance per hour of that day (below), or 404 when the day has no per-minute curve |
@@ -339,6 +358,7 @@ Accepted keys (all optional; `null`, `""` and `[]` mean "absent"):
 | `switched_loads` | List of `{"entity_id", "name"?, "on_states"?: [...]}` (added to, or replacing, those of the Energy dashboard) |
 | `excluded_switched_loads` | List of entity ids: switches of the Energy dashboard not measured as switched loads (their estimate is subtracted like any other); a switched load of `switched_loads` or of an appliance is still measured |
 | `step_threshold_w` | 50 to 10000 |
+| `night_step_threshold_w` | 50 to the step threshold (that of the settings, else of the add-on options, else 300) |
 | `peak_threshold_w` | 100 to 100000 |
 | `analysis_time` | `HH:MM` (or `HH:MM:SS`, stored as `HH:MM`); applies after the next analysis |
 | `backfill_days` | 0 to 365 |
@@ -719,7 +739,7 @@ the running session (the view restarted, or the add-on did) gets a snapshot:
 ```json
 {
   "seq": 1800000000123, "session": 1800000000101, "available": true, "reset": false,
-  "history_s": 900, "threshold_w": 300, "time_zone": "Europe/Paris",
+  "history_s": 900, "threshold_w": 300, "night_threshold_w": null, "time_zone": "Europe/Paris",
   "curve": [[1800000000.0, 2310, 2310], [1800000002.0, 2305, 2305]],
   "events": [
     {
@@ -741,7 +761,7 @@ the running session (the view restarted, or the add-on did) gets a snapshot:
   "now": {
     "ts": 1800000002.0, "house_w": 2305, "residual_w": 2305, "grid_w": 2305,
     "pv_w": 0, "battery_w": 0, "submetered_w": 0, "submeters": [],
-    "running": [7], "unidentified_w": 295,
+    "running": [7], "unidentified_w": 295, "pv_quiet": null,
     "switches": [{"entity_id": "switch.water_heater", "name": "Water heater",
                   "appliance": null, "on": false}]
   }
@@ -769,6 +789,11 @@ the running session (the view restarted, or the add-on did) gets a snapshot:
   running events (newest first) and the power they do not explain
   (`unidentified_w`). `null` before the first sample.
 - `threshold_w`: the step threshold; smaller steps are not seen.
+- `night_threshold_w`: the [night threshold](#night-threshold), `null` when it
+  does not apply (option empty, or no PV sensor). `now.pv_quiet` tells
+  whether it applies now (the solar production of the last minute is below
+  20 W; `null` when it is off or unknown). With it, a step is confirmed once
+  the minute of solar production after it is known (about a minute later).
 
 When the view cannot run: `{"seq", "available": false, "reason"}` with
 `reason` `disabled` (option off), `starting` (the first snapshot is not ready
@@ -812,7 +837,8 @@ the integration is set up with the address of the service.
   reports every 10 seconds is much better than one every minute.
 - The analysis needs the full history of the grid power sensor: do not
   exclude it from the recorder.
-- Appliances below `step_threshold_w` and loads whose power varies
+- Appliances below `step_threshold_w` (or, while the solar panels produce
+  nothing, below `night_step_threshold_w`) and loads whose power varies
   continuously (EV chargers, inverter heat pumps) are not recognised well yet.
   Multi-phase appliances have a first version: two of them running at once,
   or a low load running next to a cycle, blur their cycles. See the

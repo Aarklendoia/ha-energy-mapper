@@ -68,10 +68,12 @@
             "name": "Seuils",
             "data": {
               "step_threshold_w": "Plus petit appareil",
+              "night_step_threshold_w": "Plus petit appareil la nuit",
               "peak_threshold_w": "Seuil fixe des pics"
             },
             "data_description": {
               "step_threshold_w": "Plus petite variation de puissance considérée comme un appareil qui s'allume ou s'éteint.",
+              "night_step_threshold_w": "Facultatif : des variations plus petites, jusqu'à cette valeur, sont aussi retenues quand les panneaux solaires ne produisent rien (moins de 20 W la minute avant et après). Entre 50 W et le plus petit appareil. Seulement avec un capteur de production solaire ; sans, baissez plutôt le plus petit appareil. Vide : désactivé.",
               "peak_threshold_w": "Les pics au-dessus de cette puissance sont signalés (par exemple la puissance souscrite). Vide : 80 % du maximum récent."
             }
           },

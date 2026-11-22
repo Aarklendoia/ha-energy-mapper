@@ -30,6 +30,7 @@ from nilm_core.registry import (
     peak_reference,
 )
 from nilm_core.registry import update as update_registry
+from nilm_core.steps import night_threshold
 from review import Criteria
 from review import annotated as annotated_review
 from review import decide as decide_review
@@ -122,7 +123,7 @@ def derive_options(options: dict) -> dict:
     if excluded:
         out["excluded_switched_loads"] = excluded
     out = analysis_options(out, options.get("appliances") or [])
-    for key in ("step_threshold_w", "peak_threshold_w"):
+    for key in ("step_threshold_w", "night_step_threshold_w", "peak_threshold_w"):
         if options.get(key):
             out[key] = float(options[key])
     return out
@@ -204,7 +205,7 @@ class Analyzer:
         # add-on options, and the settings pushed by the integration on top
         self.base_options = options
         try:
-            self.settings = validate_settings(store.load_settings())
+            self.settings = validate_settings(store.load_settings(), options)
         except SettingsError as err:
             _LOGGER.warning("stored settings ignored: %s", err)
             self.settings = {}
@@ -218,6 +219,8 @@ class Analyzer:
         self._registry_lock = threading.Lock()
         self.tz: dt.tzinfo = local_tz(None)
         self._maxima: dict[str, float | None] = {}  # daily maxima already read
+        # a PV meter in the last derived configuration (None: not derived yet)
+        self._has_pv: bool | None = None
 
     @property
     def options(self) -> dict:
@@ -400,6 +403,7 @@ class Analyzer:
             raise AnalysisError(
                 "no_grid", "no grid power sensor: configure the Energy dashboard or grid_entity"
             )
+        self._has_pv = bool(derived.config.pv_entity)
         # switched loads: the power learned on previous days is used when a
         # day has no transition to measure it
         memory = {x["entity_id"]: x for x in (self.store.load_registry() or {}).get("switched_loads", [])}
@@ -576,7 +580,7 @@ class Analyzer:
                 selftest.previous_runs(data, entity),
                 self.clock(),
                 appliance_of.get(entity),
-                self.step_threshold_w,
+                cfg.smallest_step_w(),
                 self.registry_config,
             )
             tests.append(test)
@@ -615,6 +619,20 @@ class Analyzer:
         except (TypeError, ValueError):
             return 300.0
 
+    @property
+    def smallest_step_w(self) -> float:
+        """The smallest step the analysis can keep: the night threshold when
+        it applies (#77), else the step threshold. What "too low for the
+        whole-house curve" means for teaching and the labelled examples."""
+        step = self.step_threshold_w
+        try:
+            night = float(self.options.get("night_step_threshold_w") or 0.0) or None
+        except (TypeError, ValueError):
+            night = None
+        has_pv = self._has_pv if self._has_pv is not None else bool(self.options.get("pv_entity"))
+        low = night_threshold(step, night, has_pv)
+        return low if low is not None else step
+
     def teaching(self) -> dict:
         """The learning status of each appliance with a teacher."""
         summaries = self.store.summaries_all()
@@ -622,7 +640,7 @@ class Analyzer:
         now = self.clock()
         return {
             "teachers": [
-                teaching_status(a, summaries, registry, now, self.step_threshold_w, self.registry_config)
+                teaching_status(a, summaries, registry, now, self.smallest_step_w, self.registry_config)
                 for a, _ in teachers(self.appliances)
             ]
         }
@@ -638,7 +656,7 @@ class Analyzer:
         with self._registry_lock:
             registry = self.store.load_registry() or empty_registry(self.registry_config)
             sig, created, learned = apply_teaching(
-                appliance, summaries, registry, self.clock(), self.step_threshold_w, self.registry_config
+                appliance, summaries, registry, self.clock(), self.smallest_step_w, self.registry_config
             )
             if created:
                 self.store.save_registry(registry)
@@ -655,7 +673,7 @@ class Analyzer:
         return {
             "last_day": next(reversed(summaries), None) if summaries else None,
             "appliances": [
-                examples_status(a, summaries, registry, self.step_threshold_w, matcher)
+                examples_status(a, summaries, registry, self.smallest_step_w, matcher)
                 for a, _ in examples_of(self.appliances)
             ],
         }

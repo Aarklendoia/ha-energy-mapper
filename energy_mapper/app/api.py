@@ -305,7 +305,7 @@ def route(
         except ValueError:
             return 400, {"error": "invalid_json", "message": "the body is not JSON"}
         try:
-            settings = validate_settings(data)
+            settings = validate_settings(data, analyzer.base_options)
         except SettingsError as err:
             return 400, {"error": "invalid_settings", "message": str(err)}
         analyzer.set_settings(settings)

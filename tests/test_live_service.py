@@ -227,6 +227,8 @@ class LiveServiceTest(unittest.TestCase):
         self.assertEqual(h.client.history_calls[0], (T0 - HISTORY_S, T0))
         self.assertEqual(answer["history_s"], HISTORY_S)
         self.assertEqual(answer["threshold_w"], 300.0)
+        self.assertIsNone(answer["night_threshold_w"])  # off (#77)
+        self.assertIsNone(answer["now"]["pv_quiet"])
         curve = answer["curve"]
         self.assertGreater(len(curve), 400)  # 15 min of a 2 s meter, minus the delay
         self.assertLessEqual(curve[0][0], T0 - HISTORY_S + STEP_S)

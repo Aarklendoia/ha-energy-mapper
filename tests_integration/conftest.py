@@ -41,6 +41,7 @@ DEFAULTS = {
     "grid_invert": False,
     "battery_invert": False,
     "step_threshold_w": 300.0,
+    "night_step_threshold_w": None,
     "peak_threshold_w": None,
     "review_min_uses": 5,
     "review_min_days": 3,

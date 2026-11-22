@@ -405,7 +405,15 @@ class _Session:
             if s.get("entity_id")
         }
         svc._begin(
-            det, {"history_s": HISTORY_S, "threshold_w": config.step_threshold_w, "time_zone": str(tz)}
+            det,
+            {
+                "history_s": HISTORY_S,
+                "threshold_w": config.step_threshold_w,
+                # the night threshold (#77), None when off; "now" says
+                # whether it applies (pv_quiet)
+                "night_threshold_w": det.night_threshold_w,
+                "time_zone": str(tz),
+            },
         )
         self.sub = svc._subscribe(det.entities)
         now = svc.clock()
@@ -541,6 +549,7 @@ class _Session:
                 }
             )
         out["running"] = [e.id for e in running]
+        out["pv_quiet"] = det.pv_quiet_now()
         residual = out.get("residual_w")
         out["unidentified_w"] = (
             None if residual is None else max(0, round(residual - sum(e.power_w for e in running)))

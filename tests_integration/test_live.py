@@ -58,6 +58,7 @@ SNAPSHOT = {
     "reset": True,
     "history_s": 900.0,
     "threshold_w": 300.0,
+    "night_threshold_w": 150.0,
     "time_zone": "UTC",
     "curve": [[T0 - 4, 2300, 2300], [T0 - 2, 2300, 2300]],
     "events": [event(1, SEQ + 1)],
@@ -135,6 +136,7 @@ async def test_stream_to_every_user(
     assert snap["curve"] == SNAPSHOT["curve"]
     assert [e["id"] for e in snap["events"]] == [1]
     assert snap["threshold_w"] == 300.0
+    assert snap["night_threshold_w"] == 150.0
     assert fake_live.queries[0] == {"wait": "25"}  # first: a snapshot
 
     # an update: a new sample, the event completed, a new provisional one

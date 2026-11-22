@@ -7,9 +7,9 @@ running) and keeps a merged copy of what it answered: the curve of the last
 15 minutes, the events, the "now" summary. Each subscriber gets:
 
 * ``{"type": "snapshot", "available": true, "seq", "session", "history_s",
-  "threshold_w", "time_zone", "curve", "events", "now"}`` first, and again
-  whenever the add-on starts a new session (``reset``): the panel replaces
-  what it shows;
+  "threshold_w", "night_threshold_w", "time_zone", "curve", "events", "now"}``
+  first, and again whenever the add-on starts a new session (``reset``): the
+  panel replaces what it shows;
 * ``{"type": "update", "seq", "curve", "events", "now"}`` then: the new
   samples and the events that appeared or changed (an event comes back
   whole, with a new ``seq``, when it is confirmed, cancelled or completed);
@@ -172,6 +172,7 @@ class LiveHub:
             "session": body.get("session"),
             "history_s": body.get("history_s") or DEFAULT_HISTORY_S,
             "threshold_w": body.get("threshold_w"),
+            "night_threshold_w": body.get("night_threshold_w"),
             "time_zone": body.get("time_zone"),
             "curve": list(body.get("curve") or []),
             "events": {e["id"]: e for e in body.get("events") or [] if e.get("state") != "cancelled"},

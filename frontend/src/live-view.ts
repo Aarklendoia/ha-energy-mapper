@@ -29,6 +29,7 @@ import { type StringKey, type Translate, translator } from "./i18n.ts";
 import {
   applyMessage,
   clockOffset,
+  effectiveThreshold,
   emptyStore,
   type FeedEntry,
   feedEntries,
@@ -437,7 +438,7 @@ export class EnergyMapperLive extends LitElement {
     const g = this._guided;
     if (!["wait", "confirm", "pick", "running"].includes(g.step)) return;
     const store = this._store;
-    const next = guidedTick(g, store.events.values(), store.curve, store.threshold_w, this.streamNow);
+    const next = guidedTick(g, store.events.values(), store.curve, effectiveThreshold(store), this.streamNow);
     if (next !== g) this._guided = next;
     if (next.step === "save") void this.saveGuided();
   }
@@ -574,7 +575,7 @@ export class EnergyMapperLive extends LitElement {
     const rows = this.rows();
     const todo = rows.filter((r) => r.todo).length;
     const shown = this._filter === "todo" ? rows.filter((r) => r.todo || r.id === this._form?.id) : rows;
-    const threshold = formatPower(this._store.threshold_w, this.info);
+    const threshold = formatPower(effectiveThreshold(this._store), this.info);
     return html`<section class="card live-feed" aria-labelledby="live-feed-title">
       <div class="live-feed-head">
         <h2 id="live-feed-title">${t("live_feed_title")}</h2>
@@ -868,7 +869,7 @@ export class EnergyMapperLive extends LitElement {
     const g = this._guided;
     const info = this.info;
     const store = this._store;
-    const threshold = formatPower(store.threshold_w, info);
+    const threshold = formatPower(effectiveThreshold(store), info);
     const open = g.step !== "idle";
     const ev = (id: number | undefined) => (id !== undefined ? store.events.get(id)?.ev : undefined);
     const active = { name: 0, wait: 1, weak: 1, none: 1, confirm: 2, pick: 2, running: 3, save: 3, saving: 3, error: 3, done: 4, idle: -1 }[g.step];
@@ -1009,12 +1010,17 @@ export class EnergyMapperLive extends LitElement {
 
   private renderKnow(t: Translate): TemplateResult {
     const threshold = formatPower(this._store.threshold_w, this.info);
+    const night = this._store.night_threshold_w;
     return html`<section class="card live-know" aria-labelledby="live-know-title">
       <h2 id="live-know-title">${t("live_know_title")}</h2>
       <ul>
         <li>${t("live_know_cycles")}</li>
         <li>${t("live_know_together")}</li>
-        <li>${t("live_know_small", { threshold })}</li>
+        <li>
+          ${night
+            ? t("live_know_small_night", { threshold, night: formatPower(night, this.info) })
+            : t("live_know_small", { threshold })}
+        </li>
         <li>${t("live_know_panel")}</li>
       </ul>
     </section>`;

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.13.0
+
+- Night threshold (#77): the new option `night_step_threshold_w` (empty by
+  default: off) lowers the step threshold only while the solar panels produce
+  nothing. A step of at least `step_threshold_w` is kept as before; a smaller
+  one, of at least `night_step_threshold_w`, only when the PV production is
+  known and its median stays below 20 W in the minute before and after the
+  step. It removes the false midday steps that come from the PV and grid
+  meters drifting apart, and still reveals small evening appliances. No
+  effect without a PV sensor; between 50 W and `step_threshold_w`, checked by
+  the settings (`PUT /api/settings`).
+- The nightly analysis (`detect_steps`, `report.find_steps`) and the live view
+  (`StepStream`, `LiveDetector`) apply the same rule, so a replayed day still
+  gives exactly the steps of the night. With the option, a live step is
+  confirmed once the minute of PV after it is known.
+- `GET /api/live`: `night_threshold_w` (null when off) and `now.pv_quiet`
+  (whether it applies now), for the panel's guided mode ("too weak").
+- Teaching, self-test and labelled examples call an appliance "too low for
+  the whole-house curve" below the smallest threshold that applies (the night
+  one when it applies).
+
 ## 0.12.0
 
 - Live view, core (#17, part 1 of 4): the engine can now run on a stream of
