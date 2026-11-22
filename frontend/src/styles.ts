@@ -488,16 +488,156 @@ export const panelStyles = css`
     text-align: center;
   }
 
-  .columns {
+  /* Today, under the chart: what used energy on the left, the peaks and the
+     things to check on the right; stacked when narrow */
+  .today-columns {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
     gap: var(--ha-space-4, 16px);
     align-items: start;
   }
-  .narrow .columns,
-  .single .columns {
-    grid-template-columns: minmax(0, 1fr);
+  .today-side {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ha-space-4, 16px);
+    min-width: 0;
+  }
+  .narrow .today-columns,
+  .narrow .today-side {
     gap: var(--ha-space-2, 8px);
+  }
+  .card-header h2 {
+    margin: 0;
+    font: inherit;
+    letter-spacing: inherit;
+  }
+
+  /* what used energy (#50) */
+  .usage-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 8px;
+  }
+  .usage-item {
+    display: flex;
+    align-items: center;
+    border-top: 1px solid var(--divider-color);
+  }
+  .usage-item.selected {
+    background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12);
+  }
+  .usage-list.has-selection .usage-item:not(.selected) .usage-row {
+    opacity: 0.55;
+  }
+  .usage-row {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 12px minmax(0, 1fr) 80px 72px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    font: inherit;
+    color: inherit;
+    text-align: start;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+  .usage-row:hover {
+    background: rgba(127, 127, 127, 0.08);
+  }
+  .usage-row:focus-visible,
+  .usage-review:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+  }
+  .dot.unnamed {
+    border: 2px dashed;
+    box-sizing: border-box;
+    background: transparent;
+  }
+  .usage-text {
+    min-width: 0;
+  }
+  .usage-name {
+    display: block;
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .usage-name.unnamed {
+    font-style: italic;
+  }
+  .usage-detail {
+    display: block;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-s, 12px);
+  }
+  .usage-bar {
+    display: block;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: var(--secondary-background-color, #e5e5e5);
+  }
+  .usage-bar > span {
+    display: block;
+    height: 100%;
+    min-width: 2px;
+  }
+  .usage-energy {
+    text-align: end;
+    font-weight: var(--ha-font-weight-medium, 500);
+    white-space: nowrap;
+  }
+  .usage-review {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    margin-inline-end: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--secondary-text-color);
+    cursor: pointer;
+  }
+  .usage-review-space {
+    flex: none;
+    width: 48px;
+  }
+  .usage-review:hover {
+    background: rgba(127, 127, 127, 0.12);
+  }
+  .usage-review svg {
+    width: 22px;
+    height: 22px;
+    fill: currentColor;
+  }
+  /* phones: the bar goes under the name, which keeps the width */
+  .narrow .usage-row {
+    grid-template-columns: 12px minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    padding: 10px 12px;
+  }
+  .narrow .usage-bar {
+    grid-row: 2;
+    grid-column: 2 / 4;
+  }
+  .narrow .usage-review {
+    margin-inline-end: 4px;
+  }
+  .narrow .usage-review-space {
+    width: 44px;
+  }
+  .review li.targeted {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+  }
+  .review li:focus {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
   }
 
   /* peaks */
@@ -570,19 +710,23 @@ export const panelStyles = css`
   .chip .chip-value {
     color: var(--secondary-text-color);
   }
-  .chip.unexplained {
-    border-style: dashed;
+  .peak-parts {
+    margin-top: 4px;
+    font-size: var(--ha-font-size-s, 13px);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 12px;
   }
-  .share {
-    margin-top: 8px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--secondary-background-color, #e5e5e5);
-    overflow: hidden;
+  .peak-part {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
-  .share > div {
-    height: 100%;
-    background: var(--disabled-color, #bdbdbd);
+  .peak-part .secondary {
+    color: var(--secondary-text-color);
+  }
+  .peak-part.secondary {
+    color: var(--secondary-text-color);
   }
 
   /* tables */

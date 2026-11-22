@@ -1,5 +1,7 @@
 // Pure data shaping of the reports for the panel (unit tested, no DOM).
 
+import { formatDuration, formatNumber, formatPower, formatTime, type LocaleInfo } from "./format.ts";
+import type { Translate } from "./i18n.ts";
 import type { NameSource } from "./names.ts";
 import type { CurvePoint, Days, Peak, PeakPart, Registry, RegistrySignature, Report } from "./types.ts";
 
@@ -199,7 +201,7 @@ export function namedSignatureIds(registry: Registry | null): Set<string> {
 /** Category of the split bar a stacked series belongs to: switched loads and
  * labelled signatures are named appliances, the other signatures (and the
  * unclassified cluster) are still to name. */
-export function seriesCategory(series: StackSeries, named: Set<string>): SplitKey {
+export function seriesCategory(series: Pick<StackSeries, "id" | "kind">, named: Set<string>): SplitKey {
   switch (series.kind) {
     case "base":
       return "base";
@@ -237,6 +239,156 @@ export function splitParts(report: Report, registry: Registry | null): SplitPart
 export function categorySeries(stack: StackSeries[], key: SplitKey, registry: Registry | null): string[] {
   const named = namedSignatureIds(registry);
   return stack.filter((s) => seriesCategory(s, named) === key).map((s) => s.id);
+}
+
+/** One row of the "What used energy" list of the Today tab (#50). */
+export interface UsageRow {
+  /** the id of its chart series (same colour, same highlight) */
+  id: string;
+  kind: SeriesKind;
+  /** display name (translated by the panel for the fixed kinds) */
+  name: string;
+  energy_kwh: number;
+  /** energy relative to the largest row (0..1), for the bar */
+  ratio: number;
+  /** a signature that has no name yet (no label, not merged into an
+   * appliance), the unclassified cluster included */
+  unnamed: boolean;
+  /** signatures: the registry id (for the review), when there is one */
+  registry_id: string | null;
+  /** signatures: activations; switched loads: on periods */
+  runs: number | null;
+  cycling: boolean;
+  /** first and last second with some power, null when unknown */
+  span: [number, number] | null;
+  /** switched loads: time on (s) */
+  on_s: number | null;
+  /** base load: its power (W) */
+  power_w: number | null;
+}
+
+/** Spacing of the curve points (s): the smallest gap, 60 s by default. */
+function curveStep(curve: CurvePoint[]): number {
+  let step = Infinity;
+  for (let i = 1; i < curve.length; i++) {
+    const d = curve[i].t - curve[i - 1].t;
+    if (d > 0 && d < step) step = d;
+  }
+  return Number.isFinite(step) ? step : 60;
+}
+
+/** The periods (s) where a series has some power in the curve: consecutive
+ * points with power make one period, a gap in the curve ends it. */
+export function seriesPeriods(curve: CurvePoint[], series: StackSeries): [number, number][] {
+  const step = curveStep(curve);
+  const out: [number, number][] = [];
+  let prev: number | null = null;
+  for (const p of curve) {
+    if (seriesValue(p, series) > 0) {
+      if (prev !== null && p.t - prev <= step * 1.5) out[out.length - 1][1] = p.t + step;
+      else out.push([p.t, p.t + step]);
+      prev = p.t;
+    } else prev = null;
+  }
+  return out;
+}
+
+/** The rows of the list: one per stacked series with some energy, by
+ * decreasing energy, the unexplained rest last. */
+export function usageRows(report: Report, registry: Registry | null, namer?: Namer): UsageRow[] {
+  const named = namedSignatureIds(registry);
+  const curve = report.curve ?? [];
+  const rows: UsageRow[] = [];
+  for (const s of stackSeries(report, registry, namer)) {
+    if (!(s.energy_kwh >= 0.0005)) continue;
+    const periods = s.kind === "base" || s.kind === "other" ? [] : seriesPeriods(curve, s);
+    const curveSpan: [number, number] | null = periods.length ? [periods[0][0], periods[periods.length - 1][1]] : null;
+    const row: UsageRow = {
+      id: s.id,
+      kind: s.kind,
+      name: s.name,
+      energy_kwh: s.energy_kwh,
+      ratio: 0,
+      unnamed: false,
+      registry_id: null,
+      runs: null,
+      cycling: false,
+      span: curveSpan,
+      on_s: null,
+      power_w: null,
+    };
+    if (s.kind === "base") row.power_w = report.energy_kwh.base_w ?? null;
+    if (s.kind === "known") {
+      row.runs = periods.length || null;
+      row.on_s = report.known_loads?.find((k) => k.name === s.name)?.on_s ?? null;
+    }
+    if (s.kind === "signature") {
+      const rid = s.id.slice("sig:".length);
+      const keys = new Set(s.keys);
+      const daily = (report.signatures ?? []).filter((d) => keys.has(d.id));
+      row.registry_id = daily.some((d) => d.registry_id) ? rid : null;
+      row.unnamed = !named.has(rid);
+      const acts = (report.activations ?? []).filter((a) => keys.has(a.signature));
+      row.cycling = acts.length ? acts.some((a) => a.cycling) : daily.some((d) => d.kind === "cycling");
+      if (acts.length) {
+        row.runs = acts.length;
+        row.span = [Math.min(...acts.map((a) => a.start)), Math.max(...acts.map((a) => a.end))];
+      } else {
+        const count = daily.reduce((n, d) => n + (d.count ?? 0), 0);
+        row.runs = count || null;
+      }
+    }
+    rows.push(row);
+  }
+  rows.sort(
+    (a, b) =>
+      Number(a.kind === "other") - Number(b.kind === "other") ||
+      b.energy_kwh - a.energy_kwh ||
+      a.name.localeCompare(b.name),
+  );
+  const max = Math.max(0, ...rows.map((r) => r.energy_kwh));
+  for (const r of rows) r.ratio = max > 0 ? r.energy_kwh / max : 0;
+  return rows;
+}
+
+/** "19:02 – 19:53", one time when both are the same minute. */
+export function timeSpan(span: [number, number], info: LocaleInfo): string {
+  const [a, b] = [formatTime(span[0], info), formatTime(span[1], info)];
+  return a === b ? a : `${a} – ${b}`;
+}
+
+/** The short detail of a row: "1 run · 19:02 – 19:53", "to name · in cycles ·
+ * 18:00 – 22:30", "2 runs · on 2 h 25", "measured · 09:00 – 15:00", "221 W
+ * always on"; empty when there is nothing to say. */
+export function usageDetail(row: UsageRow, t: Translate, info: LocaleInfo): string {
+  const span = row.span ? timeSpan(row.span, info) : null;
+  const runs =
+    row.runs == null
+      ? null
+      : row.runs === 1
+        ? t("usage_runs_one")
+        : t("usage_runs", { count: formatNumber(row.runs, info) });
+  const parts: (string | null)[] = [];
+  switch (row.kind) {
+    case "base":
+      parts.push(row.power_w != null ? t("always_on", { power: formatPower(row.power_w, info) }) : null);
+      break;
+    case "submetered":
+      parts.push(t("usage_measured"), span);
+      break;
+    case "estimated":
+      parts.push(t("usage_estimated"), span);
+      break;
+    case "other":
+      break;
+    case "known":
+      parts.push(runs, row.on_s ? t("usage_on", { duration: formatDuration(row.on_s, info) }) : span);
+      break;
+    case "signature":
+      parts.push(row.unnamed ? t("usage_to_name") : null, row.cycling ? t("usage_cycles") : runs, span);
+      break;
+  }
+  return parts.filter((p): p is string => Boolean(p)).join(" · ");
 }
 
 /** Time (s) of the highest house power of the day: the curve point at the
