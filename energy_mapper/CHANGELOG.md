@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- Settings (#33): `submeters_mode` `manual` makes `submeters` the exact list
+  of sub-meters, possibly empty: "no sub-meters" now subtracts nothing
+  instead of falling back to the Energy dashboard (it also overrides the
+  add-on option). A `submeters` list alone is stored with the mode.
+- Settings (#33): new `excluded_submeters`, automatic sub-meters (Energy
+  dashboard or add-on option) that are not subtracted; their power stays in
+  the residual and the tracked device gets the role `excluded`. Not accepted
+  together with manual sub-meters.
+- Integration 0.8.0 uses them: the options show which sub-meters and switched
+  loads come from the Energy dashboard and which are user changes, and
+  removing an automatic one from a list excludes it.
+
 ## 0.9.0
 
 - Signature registry: each signature keeps its `occurrences` of the last 60

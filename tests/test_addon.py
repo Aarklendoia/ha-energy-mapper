@@ -32,7 +32,7 @@ from service import (  # noqa: E402
     next_run,
     parse_hhmm,
 )
-from settings import SettingsError, defaults, validate  # noqa: E402
+from settings import SettingsError, defaults, merge, validate  # noqa: E402
 from storage import ReportStore, parse_day  # noqa: E402
 from synth import House, Steady  # noqa: E402
 from ws_client import OP_TEXT, encode_frame, read_frame  # noqa: E402
@@ -390,6 +390,7 @@ class SettingsTests(unittest.TestCase):
                 "grid_entity": "sensor.grid_power",
                 "grid_invert": True,
                 "submeters": ["sensor.pump_power", "sensor.ev_power"],
+                "submeters_mode": "manual",
                 "switched_loads": [
                     {"entity_id": "switch.heater", "name": "Heater", "on_states": ["on"]},
                     {"entity_id": "switch.radiator", "on_states": ["off"]},
@@ -424,10 +425,44 @@ class SettingsTests(unittest.TestCase):
             {"switched_loads": [{"entity_id": "switch.a", "on_states": [""]}]},
             {"switched_loads": [{"entity_id": "switch.a"}, {"entity_id": "switch.a"}]},
             {"submeters": [f"sensor.s{i}" for i in range(101)]},
+            {"submeters_mode": "none"},
+            {"submeters_mode": "automatic", "submeters": ["sensor.a"]},
+            {"submeters_mode": "manual", "excluded_submeters": ["sensor.a"]},
+            {"submeters": ["sensor.a"], "excluded_submeters": ["sensor.b"]},
+            {"excluded_submeters": ["switch.a"]},
         ]
         for data in bad:
             with self.subTest(data=data), self.assertRaises(SettingsError):
                 validate(data)
+
+    def test_submeters_modes(self):
+        """#33: "no sub-meters" and excluded automatic sub-meters."""
+        self.assertEqual(
+            validate({"submeters_mode": "manual", "submeters": []}), {"submeters_mode": "manual"}
+        )
+        self.assertEqual(validate({"submeters_mode": "automatic"}), {})
+        self.assertEqual(
+            validate({"submeters_mode": "automatic", "excluded_submeters": ["sensor.a", "sensor.a"]}),
+            {"excluded_submeters": ["sensor.a"]},
+        )
+        # no sub-meters wins over those of the add-on option
+        merged = merge({"submeters": ["sensor.a"]}, {"submeters_mode": "manual"})
+        self.assertEqual(derive_options(merged)["submeters"], [])
+        # without settings, the add-on option stays
+        self.assertEqual(derive_options(merge({"submeters": ["sensor.a"]}, {}))["submeters"], ["sensor.a"])
+        out = derive_options(merge({}, {"excluded_submeters": ["sensor.a"]}))
+        self.assertEqual(out["excluded_submeters"], ["sensor.a"])
+        self.assertNotIn("submeters", out)
+
+    def test_no_submeters_drive_the_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            analyzer, _ = make_analyzer(tmp, FakeHA(0), {"submeters": ["sensor.pump_power"]})
+            self.assertEqual(analyzer.automatic()["submeters"], ["sensor.pump_power"])
+            analyzer.set_settings(validate({"submeters_mode": "manual"}))
+            ctx = analyzer.prepare()
+            self.assertEqual(ctx.derived.config.submeters, [])
+            # automatic: what the add-on uses without the settings
+            self.assertEqual(analyzer.automatic()["submeters"], ["sensor.pump_power"])
 
     def test_defaults_follow_the_options(self):
         out = defaults({"backfill_days": 7, "step_threshold_w": 200, "analysis_time": ""})

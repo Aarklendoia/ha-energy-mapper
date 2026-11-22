@@ -230,6 +230,55 @@ class DeriveTests(unittest.TestCase):
         self.assertEqual(c.switched_loads[0].on_states, ("off",))
         self.assertEqual(c.step_threshold_w, 200.0)
 
+    def _plug_and_relay(self):
+        """A measured plug and a water heater estimated from its relay."""
+        h = meter_with_channels()
+        h.add(energy("sensor.fridge_plug_energy"), "plug")
+        h.add(power("sensor.fridge_plug_power"), "plug")
+        h.add(energy("sensor.water_heater_energy", source_entity="switch.water_heater"), "est", "powercalc")
+        h.add(
+            power("sensor.water_heater_power", "0.5", source_entity="switch.water_heater"), "est", "powercalc"
+        )
+        h.devices = [
+            {"stat_consumption": "sensor.fridge_plug_energy", "name": "Fridge"},
+            {"stat_consumption": "sensor.water_heater_energy", "name": "Water heater"},
+        ]
+        return h
+
+    def test_no_submeters(self):
+        """An empty sub-meter list subtracts nothing (#33)."""
+        h = self._plug_and_relay()
+        d = derive(h.prefs(), h.states, h.registry, {"submeters": []})
+        self.assertEqual(d.config.submeters, [])
+        self.assertEqual([s.entity_id for s in d.config.switched_loads], ["switch.water_heater"])
+
+    def test_excluded_submeter_and_switched_load(self):
+        """Excluded automatic items (#33): the plug is not subtracted; the
+        relay is not measured, its estimate is subtracted instead."""
+        h = self._plug_and_relay()
+        d = derive(h.prefs(), h.states, h.registry, {"excluded_submeters": ["sensor.fridge_plug_power"]})
+        self.assertEqual(d.config.submeters, [])
+        self.assertEqual({t.name: t.role for t in d.tracked}["Fridge"], "excluded")
+        d = derive(
+            h.prefs(),
+            h.states,
+            h.registry,
+            {"excluded_switched_loads": ["switch.water_heater"]},
+        )
+        self.assertEqual(d.config.switched_loads, [])
+        self.assertEqual(
+            [s.entity_id for s in d.config.submeters],
+            ["sensor.fridge_plug_power", "sensor.water_heater_power"],
+        )
+        # an exclusion also applies to a sub-meter of the add-on option
+        d = derive(
+            h.prefs(),
+            h.states,
+            h.registry,
+            {"submeters": ["sensor.fridge_plug_power"], "excluded_submeters": ["sensor.fridge_plug_power"]},
+        )
+        self.assertEqual(d.config.submeters, [])
+
     def test_power_for_ignores_power_factor(self):
         h = meter_with_channels()
         idx = _Index(h.states, h.registry)

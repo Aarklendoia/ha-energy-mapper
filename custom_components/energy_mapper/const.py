@@ -19,7 +19,10 @@ ISSUE_REVIEW: Final = "signatures_to_review"
 # opens the "To review" tab of the panel
 PANEL_REVIEW_PATH: Final = "/energy-mapper?review=1"
 
-DEFAULT_URL: Final = "http://local-energy-mapper:8099"
+# the add-on: its slug is "<repository>_energy_mapper" ("local_energy_mapper" for
+# a local copy) and its host name the slug with dashes (#32)
+ADDON_SLUG: Final = "energy_mapper"
+ADDON_PORT: Final = 8099
 UPDATE_INTERVAL: Final = timedelta(minutes=5)
 
 # hourly statistics: days fetched at once from the add-on

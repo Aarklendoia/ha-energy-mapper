@@ -93,8 +93,15 @@ def derive_options(options: dict) -> dict:
     for key in ("grid_invert", "battery_invert"):
         out[key] = bool(options.get(key))
     submeters = [s.strip() for s in options.get("submeters") or [] if s and s.strip()]
-    if submeters:
+    if options.get("submeters_mode") == "manual":
+        # the exact list, possibly empty: "no sub-meters" (#33)
         out["submeters"] = submeters
+    else:
+        if submeters:
+            out["submeters"] = submeters
+        excluded_meters = [s.strip() for s in options.get("excluded_submeters") or [] if s and s.strip()]
+        if excluded_meters:
+            out["excluded_submeters"] = excluded_meters
     loads = []
     for item in options.get("switched_loads") or []:
         entity = (item.get("entity_id") or "").strip()

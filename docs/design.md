@@ -485,6 +485,7 @@ read.
 | `estimated` | Estimated device (has a `source_entity`) not driven by a switch, with a power sensor (lights…) | Subtracted like a sub-meter |
 | `switched` | Estimated from a `switch` or `input_boolean` | A switched load: measured from the steps at its transitions |
 | `estimated` (excluded) | Estimated from a switch listed in `excluded_switched_loads` | Subtracted like any estimate (§ 8.2) |
+| `excluded` | Sub-meter or estimate whose power sensor is listed in `excluded_submeters` | Not subtracted: its power stays in the residual (§ 9) |
 | `nested` | `included_in_stat` points to another tracked device | Not subtracted (never twice) |
 | `energy_only` | No power sensor found | Not used; finding `no_power_sensor` |
 | `unavailable` | Energy sensor unavailable | Not used; finding `unavailable` |
@@ -625,9 +626,12 @@ already a source of an appliance) and `not_found` (no such signature or applianc
 Other parts of the integration:
 
 - **Config flow**: `async_step_hassio` (discovery, then a confirmation) or `async_step_user`
-  (manual URL, default `http://local-energy-mapper:8099`), both validated by
+  (manual URL), both validated by
   `GET /api/health`. Single instance (unique id `energy_mapper`). On rediscovery an entry
-  created by discovery follows the new URL; a manual URL is kept.
+  created by discovery follows the new URL; a manual URL is kept. The manual step proposes the
+  address of the installed add-on when the Supervisor is there (`addons.list()`, slug
+  `energy_mapper` or `<repository>_energy_mapper`, host name the slug with dashes, port 8099),
+  else an empty field whose hint gives the standalone form `http://<host>:8099` (#32).
 - **Coordinator**: polls `/api/health` every 5 minutes; setup raises `ConfigEntryNotReady`
   while the add-on does not answer.
 - **Panel**: `panel_custom` registration (`/energy-mapper`, element `energy-mapper-panel`,
@@ -772,10 +776,11 @@ entry's update listener (`async_subentries_changed`):
 | Merge | *Reconfigure → Merge another appliance into this one* | Under the synchronisation lock: every hour of the other appliance's statistic is added to this one's (read from the recorder, so the whole history, not only the retained days; sums recomputed), its sources join this one's, then its subentry is removed (device, entities, statistic). Merging is a union of sources, not a merge of registry clusters: two clusters at different powers would split again at the next nightly re-clustering |
 | Delete | Home Assistant's own *Delete* on the subentry | Home Assistant removes the device and entities; the listener clears the statistic, excludes the relays no appliance uses any more (`excluded_switched_loads`, removed from the manual `switched_loads`), the push clears the labels. No comeback: discovery skips excluded relays and labels with `appliance` |
 
-**Exclusions** (`excluded_switched_loads`, a setting, #33 minimal): the add-on does not
+**Exclusions** (`excluded_switched_loads`, a setting, #33): the add-on does not
 measure an Energy dashboard estimate driven by an excluded switch as a switched load (it is
 subtracted like any estimate); a manual or appliance switched load is still measured. The
-options flow shows the list; removing a switch from it lets it be found again. Adding an
+options flow shows the list; removing a switch from it lets it be found again. Removing an
+automatic switched load from the options' list of switched loads excludes it. Adding an
 appliance on an excluded switch removes the exclusion.
 
 **Migration** (entry 1.1 → 1.2, `async_migrate_entry`): each device of the entry with an
@@ -1101,14 +1106,29 @@ flowchart LR
    inverted, relative peak threshold) and, for the sensors, the Energy dashboard.
 
 Accepted keys and ranges: `grid_entity`, `grid_export_entity`, `pv_entity`, `battery_entity`
-(`sensor.*`), `grid_invert`, `battery_invert` (bool), `submeters` (`sensor.*` list),
+(`sensor.*`), `grid_invert`, `battery_invert` (bool), `submeters_mode` (`automatic` or
+`manual`), `submeters` (`sensor.*` list), `excluded_submeters` (`sensor.*` list),
 `switched_loads` (`{entity_id, name?, on_states?}` list), `excluded_switched_loads` (entity id
 list, § 8.2), `step_threshold_w` 50–10000,
 `peak_threshold_w` 100–100000, `analysis_time` `HH:MM`, `backfill_days` 0–365,
 `half_life_days` and `peak_window_days` 1–365, `report_retention_days` 7–3650,
 `review_min_uses` 2–1000, `review_min_days` and `review_wait_days` 1–365, `review_wait_factor`
 1.2–10, `review_suggest_score` 50–100 (%, § 8.4). `null`, `""`
-and `[]` mean absent; unknown keys refuse the whole request. A new `analysis_time` applies
+and `[]` mean absent; unknown keys refuse the whole request.
+
+**Lists** (#33). Sub-meters: `submeters_mode: manual` makes `submeters` the exact list,
+possibly empty ("no sub-meters", which also overrides the add-on option); a `submeters` list
+alone means the same (older settings; stored with the mode). Otherwise they are automatic
+(Energy dashboard, or the add-on option) minus `excluded_submeters`; the two are exclusive.
+Switched loads: automatic minus `excluded_switched_loads`, plus or changed by
+`switched_loads`. The options flow shows a mode (*Automatic* / *Only the sensors of the list* /
+*None*) above the sub-meter list, which shows what is used: in automatic mode, an automatic
+sub-meter removed from it is excluded (new ones of the Energy dashboard still come) and a
+sensor the Energy dashboard does not list turns it into the user's own list. The list of
+switched loads shows the automatic ones not excluded plus the user's; removing an automatic one
+excludes it. The step description lists what is automatic (`automatic` of `GET /api/settings`)
+and the user's changes (exclusions, own entries). When Home Assistant cannot be read
+(`automatic: null`), the stored exclusions are kept. A new `analysis_time` applies
 after the next pass; everything else applies to the next analysis.
 
 `GET /api/settings` answers `settings` (as stored), `options` (add-on options among these

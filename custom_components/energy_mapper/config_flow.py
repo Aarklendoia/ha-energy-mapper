@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -19,6 +20,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.hassio import is_hassio
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -51,11 +53,12 @@ from .appliances import (
 )
 from .appliances import signature as signature_source
 from .const import (
+    ADDON_PORT,
+    ADDON_SLUG,
     ANALYSIS_KEYS,
     BOOL_KEYS,
     CONF_DISCOVERED,
     CONF_URL,
-    DEFAULT_URL,
     DOMAIN,
     OPT_REVIEW_REPAIR,
     OPT_SETTINGS,
@@ -87,6 +90,30 @@ def _normalize_url(url: str) -> str | None:
     if parts.scheme not in ("http", "https") or not parts.hostname:
         return None
     return url
+
+
+def addon_url(slugs: list[str]) -> str | None:
+    """Address of the Energy Mapper add-on among the slugs of the installed
+    add-ons, whatever repository it comes from (#32)."""
+    for slug in slugs:
+        if slug == ADDON_SLUG or slug.endswith(f"_{ADDON_SLUG}"):
+            return f"http://{slug.replace('_', '-')}:{ADDON_PORT}"
+    return None
+
+
+async def _installed_addon_url(hass) -> str | None:
+    """The address of the installed add-on, asked to the Supervisor; None
+    without a Supervisor (standalone container) or when it cannot tell."""
+    if not is_hassio(hass):
+        return None
+    try:
+        from homeassistant.components.hassio import get_supervisor_client
+
+        addons = await get_supervisor_client(hass).addons.list()
+    except Exception as err:  # only a suggestion: never fail the form
+        _LOGGER.debug("Cannot list the add-ons: %s", err)
+        return None
+    return addon_url([a.slug for a in addons])
 
 
 async def _validate(hass, url: str) -> dict[str, str]:
@@ -136,12 +163,18 @@ class EnergyMapperConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors = await _validate(self.hass, url)
                 if not errors:
                     return self.async_create_entry(title=TITLE, data={CONF_URL: url, CONF_DISCOVERED: False})
+        if user_input is None:
+            # the installed add-on when the Supervisor knows it, else empty
+            found = await _installed_addon_url(self.hass)
+            suggested = {CONF_URL: found} if found else {}
+        else:
+            suggested = user_input
         schema = vol.Schema(
             {vol.Required(CONF_URL): TextSelector(TextSelectorConfig(type=TextSelectorType.URL))}
         )
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(schema, user_input or {CONF_URL: DEFAULT_URL}),
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
             errors=errors,
         )
 
@@ -189,6 +222,12 @@ def _number(low: float, high: float, step: float = 1, unit: str | None = None) -
     return NumberSelector(config)
 
 
+# sub-meters (#33): from the Energy dashboard minus those removed, the user's
+# own list, or none at all
+SUBMETERS_MODE = "submeters_mode"
+MODE_AUTOMATIC, MODE_MANUAL, MODE_NONE = "automatic", "manual", "none"
+SUBMETERS_MODES = [MODE_AUTOMATIC, MODE_MANUAL, MODE_NONE]
+
 SWITCHED_LOADS = ObjectSelector(
     ObjectSelectorConfig(
         multiple=True,
@@ -214,6 +253,13 @@ OPTIONS_SCHEMA = vol.Schema(
                     vol.Optional("pv_entity"): _power_sensor(),
                     vol.Optional("battery_entity"): _power_sensor(),
                     vol.Optional("battery_invert", default=False): BooleanSelector(),
+                    vol.Optional(SUBMETERS_MODE, default=MODE_AUTOMATIC): SelectSelector(
+                        SelectSelectorConfig(
+                            options=SUBMETERS_MODES,
+                            translation_key=SUBMETERS_MODE,
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
                     vol.Optional("submeters"): _power_sensor(multiple=True),
                 }
             ),
@@ -267,7 +313,7 @@ OPTIONS_SCHEMA = vol.Schema(
     }
 )
 SECTIONS = {
-    "sensors": (*SENSOR_KEYS, *BOOL_KEYS, "submeters"),
+    "sensors": (*SENSOR_KEYS, *BOOL_KEYS, SUBMETERS_MODE, "submeters"),
     "loads": ("switched_loads", "excluded_switched_loads"),
     "thresholds": THRESHOLD_KEYS,
     "analysis": ANALYSIS_KEYS,
@@ -285,23 +331,46 @@ def _load(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _manual_submeters(settings: dict[str, Any]) -> bool:
+    return settings.get("submeters_mode") == MODE_MANUAL or bool(settings.get("submeters"))
+
+
+def _excluded_loads(settings: dict[str, Any]) -> list[str]:
+    return list(settings.get("excluded_switched_loads") or [])
+
+
 def suggested_values(addon: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Values shown in the form: the settings, else what the add-on uses
-    without them (Energy dashboard, add-on options, defaults)."""
+    without them (Energy dashboard, add-on options, defaults). The lists show
+    what the analysis uses: excluded automatic items are left out."""
     settings = addon.get("settings") or {}
     automatic = addon.get("automatic") or {}
     defaults = addon.get("defaults") or {}
     flat: dict[str, Any] = {}
-    for key in (*SENSOR_KEYS, "submeters"):
+    for key in SENSOR_KEYS:
         value = settings.get(key) or automatic.get(key)
         if value:
             flat[key] = value
-    loads = {x["entity_id"]: _load(x) for x in automatic.get("switched_loads") or []}
+    if _manual_submeters(settings):
+        submeters = list(settings.get("submeters") or [])
+        flat[SUBMETERS_MODE] = MODE_MANUAL if submeters else MODE_NONE
+    else:
+        flat[SUBMETERS_MODE] = MODE_AUTOMATIC
+        excluded = set(settings.get("excluded_submeters") or [])
+        submeters = [e for e in automatic.get("submeters") or [] if e not in excluded]
+    if submeters:
+        flat["submeters"] = submeters
+    excluded_loads = _excluded_loads(settings)
+    loads = {
+        x["entity_id"]: _load(x)
+        for x in automatic.get("switched_loads") or []
+        if x["entity_id"] not in excluded_loads
+    }
     loads.update({x["entity_id"]: _load(x) for x in settings.get("switched_loads") or []})
     if loads:
         flat["switched_loads"] = list(loads.values())
-    if settings.get("excluded_switched_loads"):
-        flat["excluded_switched_loads"] = list(settings["excluded_switched_loads"])
+    if excluded_loads:
+        flat["excluded_switched_loads"] = excluded_loads
     for key in (*BOOL_KEYS, *THRESHOLD_KEYS, *ANALYSIS_KEYS, *REVIEW_KEYS):
         value = settings.get(key, defaults.get(key))
         if value is not None:
@@ -309,6 +378,49 @@ def suggested_values(addon: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if "analysis_time" in flat:
         flat["analysis_time"] = f"{flat['analysis_time'][:5]}:00"
     return {name: {k: flat[k] for k in keys if k in flat} for name, keys in SECTIONS.items()}
+
+
+def _submeter_settings(flat: dict[str, Any], addon: dict[str, Any]) -> dict[str, Any]:
+    """Sub-meters (#33). Automatic: an automatic sub-meter removed from the
+    list is excluded, so that new ones of the Energy dashboard still come;
+    adding a sensor the Energy dashboard does not list makes the list the
+    user's own. Manual: the exact list. None: subtract nothing."""
+    mode = flat.get(SUBMETERS_MODE) or MODE_AUTOMATIC
+    submeters = list(dict.fromkeys(flat.get("submeters") or []))
+    automatic = addon.get("automatic")
+    auto = list((automatic or {}).get("submeters") or [])
+    if mode == MODE_NONE or (mode == MODE_MANUAL and not submeters):
+        return {"submeters_mode": MODE_MANUAL}
+    if mode == MODE_MANUAL or set(submeters) - set(auto):
+        return {"submeters_mode": MODE_MANUAL, "submeters": submeters}
+    # automatic; when Home Assistant could not be read, the exclusions stay
+    settings = addon.get("settings") or {}
+    candidates = auto if automatic else list(settings.get("excluded_submeters") or [])
+    excluded = [e for e in candidates if e not in submeters]
+    return {"excluded_submeters": excluded} if excluded else {}
+
+
+def _load_settings(flat: dict[str, Any], addon: dict[str, Any]) -> dict[str, Any]:
+    """Switched loads: those of the Energy dashboard, plus or changed by the
+    user's entries, minus the excluded ones. An automatic load removed from
+    the list is excluded; one put back in the list is not any more."""
+    settings = addon.get("settings") or {}
+    previous = _excluded_loads(settings)
+    known = [_load(x) for x in (addon.get("automatic") or {}).get("switched_loads") or []]
+    loads = [_load(x) for x in flat.get("switched_loads") or [] if x.get("entity_id")]
+    listed = {x["entity_id"] for x in loads}
+    shown = [x["entity_id"] for x in known if x["entity_id"] not in previous]
+    removed = [e for e in shown if e not in listed]
+    excluded = list(dict.fromkeys([*(flat.get("excluded_switched_loads") or []), *removed]))
+    excluded = [e for e in excluded if e not in listed]
+    out: dict[str, Any] = {}
+    own = [x for x in loads if x not in known]
+    if own:
+        out["switched_loads"] = list({x["entity_id"]: x for x in own}.values())
+    # never measured nor proposed again (#33)
+    if excluded:
+        out["excluded_switched_loads"] = excluded
+    return out
 
 
 def settings_from_form(user_input: dict[str, Any], addon: dict[str, Any]) -> dict[str, Any]:
@@ -323,19 +435,8 @@ def settings_from_form(user_input: dict[str, Any], addon: dict[str, Any]) -> dic
         value = flat.get(key)
         if value and value != automatic.get(key):
             out[key] = value
-    submeters = list(dict.fromkeys(flat.get("submeters") or []))
-    if submeters and set(submeters) != set(automatic.get("submeters") or []):
-        out["submeters"] = submeters
-    # switched loads are added to (or replace) those of the Energy dashboard
-    known = [_load(x) for x in automatic.get("switched_loads") or []]
-    loads = [_load(x) for x in flat.get("switched_loads") or [] if x.get("entity_id")]
-    loads = [x for x in loads if x not in known]
-    if loads:
-        out["switched_loads"] = list({x["entity_id"]: x for x in loads}.values())
-    # switched loads the user removed: never measured nor proposed again (#33)
-    excluded = list(dict.fromkeys(flat.get("excluded_switched_loads") or []))
-    if excluded:
-        out["excluded_switched_loads"] = excluded
+    out.update(_submeter_settings(flat, addon))
+    out.update(_load_settings(flat, addon))
     for key in (*BOOL_KEYS, *THRESHOLD_KEYS, *ANALYSIS_KEYS, *REVIEW_KEYS):
         value = flat.get(key)
         if value is None or value == "":
@@ -351,6 +452,32 @@ def settings_from_form(user_input: dict[str, Any], addon: dict[str, Any]) -> dic
     return out
 
 
+def origin(addon: dict[str, Any], name_of: Callable[[str], str]) -> dict[str, str]:
+    """What comes from the Energy dashboard and what the user changed, for
+    the description of the form (placeholders)."""
+    settings = addon.get("settings") or {}
+    automatic = addon.get("automatic")
+
+    def text(names: list[str]) -> str:
+        return ", ".join(dict.fromkeys(names)) or "—"
+
+    if automatic is None:
+        auto_submeters = auto_loads = "?"
+    else:
+        auto_submeters = text([name_of(e) for e in automatic.get("submeters") or []])
+        loads = automatic.get("switched_loads") or []
+        auto_loads = text([x.get("name") or name_of(x["entity_id"]) for x in loads])
+    excluded = [*(settings.get("excluded_submeters") or []), *_excluded_loads(settings)]
+    own = [name_of(e) for e in settings.get("submeters") or []]
+    own += [x.get("name") or name_of(x["entity_id"]) for x in settings.get("switched_loads") or []]
+    return {
+        "auto_submeters": auto_submeters,
+        "auto_loads": auto_loads,
+        "excluded": text([name_of(e) for e in excluded]),
+        "own": text(own),
+    }
+
+
 class EnergyMapperOptionsFlow(OptionsFlow):
     """The settings of the analysis, pushed to the add-on on save."""
 
@@ -362,7 +489,7 @@ class EnergyMapperOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
-        placeholders = {"error": ""}
+        error = ""
         if self._addon is None:
             try:
                 self._addon = await self._client().get_settings()
@@ -380,7 +507,7 @@ class EnergyMapperOptionsFlow(OptionsFlow):
                 errors["base"] = "cannot_connect"
             except EnergyMapperApiError as err:
                 errors["base"] = "invalid_settings"
-                placeholders["error"] = err.message
+                error = err.message
             else:
                 if self.config_entry.state is ConfigEntryState.LOADED:
                     self.config_entry.runtime_data.coordinator.settings_synced = True
@@ -397,8 +524,12 @@ class EnergyMapperOptionsFlow(OptionsFlow):
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(OPTIONS_SCHEMA, values),
             errors=errors,
-            description_placeholders=placeholders,
+            description_placeholders={"error": error, **origin(self._addon, self._name_of)},
         )
+
+    def _name_of(self, entity_id: str) -> str:
+        state = self.hass.states.get(entity_id)
+        return state.name if state else entity_id
 
 
 # ---------------------------------------------------------------------------

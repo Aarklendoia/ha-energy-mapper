@@ -9,7 +9,7 @@
           "url": "Adresse du module complémentaire"
         },
         "data_description": {
-          "url": "Adresse de l'API du module complémentaire, par exemple http://local-energy-mapper:8099."
+          "url": "Proposée quand le module complémentaire est installé sur ce Home Assistant (l'adresse figure aussi sur sa page Informations). Pour un conteneur autonome : http:// suivi de l'adresse de la machine et de :8099, par exemple http://192.168.1.20:8099."
         }
       },
       "hassio_confirm": {
@@ -30,7 +30,7 @@
     "step": {
       "init": {
         "title": "Réglages d'Energy Mapper",
-        "description": "Les champs reprennent ce qu'utilise le module complémentaire : le tableau Énergie, puis ses options. Ne changez que ce qui est faux ; un champ laissé tel quel continue de suivre le tableau Énergie.",
+        "description": "Les champs montrent ce qu'utilise l'analyse : le tableau Énergie, puis les options du module complémentaire. Ne changez que ce qui est faux ; un champ laissé tel quel continue de suivre le tableau Énergie.\n\n**Du tableau Énergie**\n- Sous-compteurs : {auto_submeters}\n- Appareils pilotés par un interrupteur : {auto_loads}\n\n**Vos changements**\n- Exclus : {excluded}\n- Ajoutés ou modifiés : {own}",
         "sections": {
           "sensors": {
             "name": "Capteurs",
@@ -41,6 +41,7 @@
               "pv_entity": "Puissance solaire",
               "battery_entity": "Puissance de la batterie",
               "battery_invert": "Le capteur de la batterie est positif en charge",
+              "submeters_mode": "Sous-compteurs à retirer",
               "submeters": "Sous-compteurs"
             },
             "data_description": {
@@ -48,7 +49,8 @@
               "grid_export_entity": "Seulement pour les compteurs qui donnent soutirage et injection en deux capteurs.",
               "pv_entity": "Puissance de la production solaire.",
               "battery_entity": "Puissance de la batterie de la maison, positive en décharge.",
-              "submeters": "Capteurs de puissance d'appareils mesurés : leur puissance est retirée avant l'analyse."
+              "submeters": "Capteurs de puissance d'appareils mesurés : leur puissance est retirée avant l'analyse.",
+              "submeters_mode": "Automatique : ceux du tableau Énergie ; retirez-en un de la liste pour l'ignorer. Ajouter un capteur que le tableau Énergie ne liste pas fait de la liste la vôtre."
             }
           },
           "loads": {
@@ -58,8 +60,8 @@
               "excluded_switched_loads": "Interrupteurs exclus"
             },
             "data_description": {
-              "switched_loads": "Appareils dont l'état indique quand ils fonctionnent. Ceux du tableau Énergie sont toujours repris ; une ligne ici en ajoute un ou le modifie. États de marche : les états dans lesquels il fonctionne (on par défaut ; off pour le relais du fil pilote d'un radiateur).",
-              "excluded_switched_loads": "Interrupteurs jamais mesurés ni proposés comme appareils, par exemple le relais d'un appareil supprimé. Retirez-en un pour le mesurer à nouveau."
+              "switched_loads": "Appareils dont l'état indique quand ils fonctionnent, avec ceux du tableau Énergie. Ajoutez-en un ou modifiez-le ici ; retirez de la liste un appareil venu du tableau Énergie pour l'exclure. États de marche : les états dans lesquels il fonctionne (on par défaut ; off pour le relais du fil pilote d'un radiateur).",
+              "excluded_switched_loads": "Interrupteurs jamais mesurés ni proposés comme appareils : ceux retirés de la liste ci-dessus, ou le relais d'un appareil supprimé. Retirez-en un pour le mesurer à nouveau."
             }
           },
           "thresholds": {
@@ -226,6 +228,13 @@
         "medium": "Moyenne (10 min à 1 h)",
         "long": "Longue (plus d'1 h)",
         "cycling": "Marche/arrêt en cycles (plaque, four)"
+      }
+    },
+    "submeters_mode": {
+      "options": {
+        "automatic": "Automatique, depuis le tableau Énergie",
+        "manual": "Seulement les capteurs de la liste",
+        "none": "Aucun : ne rien retirer"
       }
     }
   },

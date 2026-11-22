@@ -6,6 +6,12 @@ A key present there takes precedence over the add-on option of the same name;
 a key absent falls back to the add-on option, then to the built-in default
 (or, for the sensors, to the Energy dashboard). With no settings pushed, the
 add-on behaves exactly as configured by its options.
+
+Sub-meters (#33): ``submeters_mode`` "manual" makes ``submeters`` the exact
+list to subtract, possibly empty ("no sub-meters"); a ``submeters`` list alone
+means the same. Otherwise the sub-meters are automatic (Energy dashboard, or
+the add-on option) minus ``excluded_submeters``. Switched loads are automatic
+minus ``excluded_switched_loads``, plus or changed by ``switched_loads``.
 """
 
 from __future__ import annotations
@@ -37,10 +43,13 @@ NUMBER_KEYS = {
     # entity suggestions (#41): share of the steps (%) an entity must match
     "review_suggest_score": (50, 100, True),
 }
+SUBMETERS_MODES = ("automatic", "manual")
 KEYS = (
     *SENSOR_KEYS,
     *BOOL_KEYS,
+    "submeters_mode",
     "submeters",
+    "excluded_submeters",
     "switched_loads",
     "excluded_switched_loads",
     *NUMBER_KEYS,
@@ -155,15 +164,39 @@ def validate(data) -> dict:
             if len(set(seen)) != len(seen):
                 raise SettingsError("switched_loads: the same entity is listed twice")
             out[key] = loads
+        elif key == "submeters_mode":
+            if value not in SUBMETERS_MODES:
+                raise SettingsError(f"{key}: expected one of {', '.join(SUBMETERS_MODES)}")
+            if value == "manual":
+                out[key] = value
+        elif key == "excluded_submeters":
+            items = [_entity(f"{key}[{i}]", v, "sensor") for i, v in enumerate(_list(key, value))]
+            out[key] = list(dict.fromkeys(items))
         elif key == "excluded_switched_loads":
             items = [_entity(f"{key}[{i}]", v) for i, v in enumerate(_list(key, value))]
             out[key] = list(dict.fromkeys(items))
+    if data.get("submeters_mode") == "automatic" and "submeters" in out:
+        raise SettingsError("submeters: a list of sub-meters needs submeters_mode manual")
+    if "submeters" in out:
+        out["submeters_mode"] = "manual"
+    if out.get("submeters_mode") == "manual" and "excluded_submeters" in out:
+        raise SettingsError("excluded_submeters: only with automatic sub-meters")
     return out
 
 
+def manual_submeters(settings: dict) -> bool:
+    """The settings give the exact list of sub-meters (possibly none)."""
+    return settings.get("submeters_mode") == "manual" or bool(settings.get("submeters"))
+
+
 def merge(options: dict, settings: dict) -> dict:
-    """The add-on options with the settings on top."""
-    return {**options, **settings}
+    """The add-on options with the settings on top. Manual sub-meters replace
+    the add-on option, even with an empty list."""
+    out = {**options, **settings}
+    if manual_submeters(settings):
+        out["submeters_mode"] = "manual"
+        out["submeters"] = list(settings.get("submeters") or [])
+    return out
 
 
 def defaults(options: dict) -> dict:
