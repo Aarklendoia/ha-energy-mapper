@@ -6,6 +6,7 @@ import {
   mdiArrowExpandHorizontal,
   mdiChevronLeft,
   mdiChevronRight,
+  mdiCogOutline,
   mdiFormatListChecks,
   mdiLightbulbOutline,
   mdiMenu,
@@ -14,6 +15,20 @@ import {
 import { html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 import { html as staticHtml, unsafeStatic } from "lit/static-html.js";
 
+import {
+  type ApplianceCard,
+  applianceCards,
+  type ApplianceListing,
+  type DailyEnergy,
+  dailyEnergy,
+  type Period,
+  PERIOD_DAYS,
+  PERIODS,
+  type StatRow,
+  statisticIds,
+  statsRequest,
+  type Tracking,
+} from "./appliances.ts";
 import "./chart.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
@@ -155,6 +170,9 @@ interface TimelineSelection {
 }
 
 /** One bar of the house strip (in the strip's viewBox units). */
+/** The integration's page, where an appliance's subentry is reconfigured. */
+const SETTINGS_PATH = "/config/integrations/integration/energy_mapper";
+
 const svgBar = (x: number, y: number, h: number) =>
   svg`<rect x=${x + 0.1} y=${y} width="0.8" height=${h}></rect>`;
 
@@ -192,6 +210,9 @@ export class EnergyMapperPanel extends LitElement {
     _window: { state: true },
     _category: { state: true },
     _appliance: { state: true },
+    _appliances: { state: true },
+    _period: { state: true },
+    _applianceStats: { state: true },
   };
 
   static override styles = panelStyles;
@@ -241,6 +262,13 @@ export class EnergyMapperPanel extends LitElement {
   declare _dayView: "timeline" | "stacked";
   /** the window (s) shown by the timeline, null: the whole day */
   declare _window: [number, number] | null;
+  /** the appliances (integration 0.7.0+; null: not available) */
+  declare _appliances: ApplianceListing | null;
+  /** the period of the Appliances tab (#54) */
+  declare _period: Period;
+  /** daily energy of the appliances, 30 days to the selected day (energy
+   * null: the statistics could not be read) */
+  declare _applianceStats: { key: string; energy: DailyEnergy | null } | null;
 
   private started = false;
   private requestId = 0;
@@ -284,6 +312,9 @@ export class EnergyMapperPanel extends LitElement {
     this._appliance = null;
     this._dayView = "timeline";
     this._window = null;
+    this._appliances = null;
+    this._period = "day";
+    this._applianceStats = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -378,6 +409,7 @@ export class EnergyMapperPanel extends LitElement {
 
   protected override updated(): void {
     this.loadExampleCurves();
+    void this.loadApplianceStats();
   }
 
   private async load(day?: string | null): Promise<void> {
@@ -394,9 +426,12 @@ export class EnergyMapperPanel extends LitElement {
         this.ws<Days>({ type: "energy_mapper/days" }),
         this.ws<Registry>({ type: "energy_mapper/signatures" }),
         this.loadReview(),
+        this.loadAppliances(),
       ]);
       this._days = days;
       this._registry = registry;
+      // read the statistics again (a new analysis imports some)
+      if (this._applianceStats) this._applianceStats = { ...this._applianceStats, key: "" };
       const entries = dayEntries(days);
       void this.loadStats(entries);
       const wanted = day ?? this._day ?? new URLSearchParams(location.search).get("day");
@@ -422,6 +457,36 @@ export class EnergyMapperPanel extends LitElement {
     } catch {
       this._review = null;
     }
+  }
+
+  /** The appliances (an integration before 0.7.0 has no such command: the
+   * tab keeps the signatures only). */
+  private async loadAppliances(): Promise<void> {
+    try {
+      this._appliances = await this.ws<ApplianceListing>({ type: "energy_mapper/appliances" });
+    } catch {
+      this._appliances = null;
+    }
+  }
+
+  /** The daily energy of the appliances (recorder statistics, one request
+   * for the 30 days ending on the selected day), while the Appliances tab is shown. */
+  private async loadApplianceStats(): Promise<void> {
+    const day = this._day;
+    if (this.shownTab !== "appliances" || !day || !this._appliances) return;
+    const ids = statisticIds(this._appliances.appliances);
+    const tz = this.hass?.config?.time_zone ?? "UTC";
+    const key = JSON.stringify([day, tz, ids]);
+    if (this._applianceStats?.key === key) return;
+    this._applianceStats = { key, energy: ids.length ? (this._applianceStats?.energy ?? null) : {} };
+    if (!ids.length) return;
+    let energy: DailyEnergy | null = null;
+    try {
+      energy = dailyEnergy(await this.ws<Record<string, StatRow[]>>(statsRequest(ids, day, tz)), tz);
+    } catch {
+      energy = null; // the cards show the day of the report only
+    }
+    if (this._applianceStats?.key === key) this._applianceStats = { key, energy };
   }
 
   // -- tabs (#47) ------------------------------------------------------------
@@ -800,7 +865,7 @@ export class EnergyMapperPanel extends LitElement {
     const entries = dayEntries(this._days);
     const tab = this.shownTab;
     return html`
-      ${tab === "today" ? this.renderDayBar(entries, t) : nothing}
+      ${tab !== "review" ? this.renderDayBar(entries, t, tab === "today") : nothing}
       ${this._error ? this.alert("error", this._error, t("error")) : nothing}
       ${this._notice ? this.alert("success", this._notice) : nothing}
       ${tab === "today" ? this.renderToday(entries, t) : tab === "appliances" ? this.renderAppliances(t) : this.renderReview(t)}
@@ -819,14 +884,193 @@ export class EnergyMapperPanel extends LitElement {
     `;
   }
 
-  /** Appliances: the signatures and the switched loads (redone by #54). */
+  /** Appliances (#54): one card per appliance, then every signature of the
+   * registry and the switched loads, collapsed under "All signatures". */
   private renderAppliances(t: Translate): TemplateResult {
+    return html`${this.renderApplianceCards(t)} ${this.renderAllSignatures(t)}`;
+  }
+
+  private get applianceCardList(): ApplianceCard[] {
+    const report = this._report && this._report.day === this._day ? this._report : null;
+    return applianceCards(this._appliances?.appliances ?? [], {
+      day: this._day,
+      period: this.periodShown,
+      report,
+      rows: report ? usageRows(report, this._registry, this.namer) : [],
+      registry: this._registry,
+      stats: this._applianceStats?.energy ?? null,
+    });
+  }
+
+  /** Periods of several days need the statistics; without them: the day. */
+  private get periodShown(): Period {
+    return this._applianceStats?.energy ? this._period : "day";
+  }
+
+  private trackingText(tracking: Tracking[], estimated: boolean, t: Translate): string {
+    const label = (k: Tracking) => t(`tracked_${k}` as StringKey);
+    const how =
+      tracking.length > 1
+        ? t("tracked_merged", { list: tracking.map((k) => label(k).toLocaleLowerCase(this.info.language)).join(" + ") })
+        : tracking.length
+          ? label(tracking[0])
+          : "";
+    return [how, estimated ? t("tracked_estimated") : t("tracked_measured")].filter(Boolean).join(" · ");
+  }
+
+  /** Go to the appliance's settings: the integration page, where its
+   * subentry is reconfigured (Home Assistant's own navigation). */
+  private openSettings = (ev: MouseEvent) => {
+    if (ev.defaultPrevented || ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
+    history.pushState(null, "", SETTINGS_PATH);
+    window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
+  };
+
+  /** Select the appliance on the Today tab (its timeline row and list row). */
+  private async showApplianceDay(card: ApplianceCard): Promise<void> {
+    if (!card.series) return;
+    this._appliance = card.series;
+    this._category = null;
+    await this.selectTab("today", false, true);
+  }
+
+  private renderApplianceCards(t: Translate): TemplateResult | typeof nothing {
+    const listing = this._appliances;
+    if (!listing) return nothing;
+    const info = this.info;
+    const cards = this.applianceCardList;
+    const period = this.periodShown;
+    const stats = this._applianceStats;
+    const model = this._report && this._report.day === this._day && this._themeKey ? this.chartModel(this._report) : null;
+    const missing = stats !== null && stats.energy === null && cards.some((c) => c.estimated);
+    const chips = stats?.energy && cards.some((c) => c.bars.length);
+    return html`<section class="card appliances" aria-labelledby="appliances-title">
+      <div class="card-header">
+        <h2 id="appliances-title">${t("appliances_title")}</h2>
+        <div class="spacer"></div>
+        ${chips
+          ? html`<div class="view-toggle" role="group" aria-label=${t("period_label")}>
+              ${PERIODS.map(
+                (p) => html`<button
+                  class="chip link view ${period === p ? "selected" : ""}"
+                  aria-pressed=${period === p ? "true" : "false"}
+                  @click=${() => (this._period = p)}
+                >
+                  ${t(`period_${p}` as StringKey)}
+                </button>`,
+              )}
+            </div>`
+          : nothing}
+      </div>
+      ${cards.length ? html`<div class="card-hint">${t("appliances_hint")}</div>` : nothing}
+      ${missing ? html`<div class="card-hint">${t("appliances_stats_missing")}</div>` : nothing}
+      ${cards.length
+        ? html`<ul class="appliance-grid">
+            ${cards.map((c) => this.renderApplianceCard(c, model, period, t, info))}
+          </ul>`
+        : html`<div class="message">${this.isAdmin ? t("appliances_none") : t("appliances_none_user")}</div>`}
+    </section>`;
+  }
+
+  private renderApplianceCard(
+    c: ApplianceCard,
+    model: ChartModel | null,
+    period: Period,
+    t: Translate,
+    info: LocaleInfo,
+  ): TemplateResult {
+    const color = (c.series && model?.colors.get(c.series)) || "var(--disabled-color, #bdbdbd)";
+    const selected = c.series !== null && c.series === this._appliance;
+    const facts: string[] = [];
+    if (period === "day") {
+      if (c.runs != null && c.runs > 0) {
+        facts.push(c.runs === 1 ? t("usage_runs_one") : t("usage_runs", { count: formatNumber(c.runs, info) }));
+      }
+    } else if (c.used_days) {
+      facts.push(
+        t("appliance_used_days", { count: formatNumber(c.used_days, info), total: formatNumber(PERIOD_DAYS[period], info) }),
+      );
+    }
+    const energy =
+      c.energy_kwh == null
+        ? html`<span class="appliance-energy none">${c.estimated ? t("appliance_no_data") : t("appliance_sensor")}</span>`
+        : c.energy_kwh < 0.0005
+          ? html`<span class="appliance-energy none"
+              >${period === "day"
+                ? t("appliance_not_used")
+                : t("appliance_not_used_period", { count: formatNumber(PERIOD_DAYS[period], info) })}</span
+            >`
+          : html`<span class="appliance-energy">${formatEnergy(c.energy_kwh, info)}</span>`;
+    const body = html`
+      <span class="appliance-head">
+        <span class="dot" style="background:${color}"></span>
+        <span class="appliance-name">${c.name}</span>
+      </span>
+      <span class="appliance-tracking">${this.trackingText(c.tracking, c.estimated, t)}</span>
+      <span class="appliance-figures">${energy}${facts.length ? html`<span class="appliance-facts">${facts.join(" · ")}</span>` : nothing}</span>
+      ${c.bars.length ? this.renderApplianceBars(c, period, t, info) : nothing}
+      ${c.last_use ? html`<span class="appliance-last">${t("appliance_last_use", { day: formatDay(c.last_use, info, "brief") })}</span>` : nothing}
+    `;
+    return html`<li class="appliance-card ${selected ? "selected" : ""}">
+      ${c.series
+        ? html`<button
+            class="appliance-main"
+            title=${t("appliance_show_day", { name: c.name })}
+            @click=${() => void this.showApplianceDay(c)}
+          >
+            ${body}
+          </button>`
+        : html`<div class="appliance-main">${body}</div>`}
+      ${this.isAdmin
+        ? html`<div class="appliance-actions">
+            <a
+              class="appliance-settings"
+              href=${SETTINGS_PATH}
+              title=${t("appliance_settings_label", { name: c.name })}
+              aria-label=${t("appliance_settings_label", { name: c.name })}
+              @click=${this.openSettings}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d=${mdiCogOutline}></path></svg>
+              <span>${t("appliance_settings")}</span>
+            </a>
+          </div>`
+        : nothing}
+    </li>`;
+  }
+
+  /** The daily energy of the last 7 (or 30) days; the selected day stands out. */
+  private renderApplianceBars(c: ApplianceCard, period: Period, t: Translate, info: LocaleInfo): TemplateResult {
+    const label = t("appliance_bars", { count: formatNumber(c.bars.length, info) });
+    const day = this._day;
+    const summaryText = c.bars
+      .map((b) => t("appliance_bar", { day: formatDay(b.day, info, "brief"), energy: formatEnergy(b.energy_kwh, info) }))
+      .join(", ");
+    return html`<span class="appliance-bars ${period === "month" ? "month" : ""}" role="img" aria-label="${label}: ${summaryText}">
+      ${c.bars.map(
+        (b) =>
+          html`<span
+            class="appliance-bar ${b.day === day ? "current" : ""} ${b.energy_kwh < 0.0005 ? "zero" : ""}"
+            title=${t("appliance_bar", { day: formatDay(b.day, info, "brief"), energy: formatEnergy(b.energy_kwh, info) })}
+            style="height:${Math.max(b.ratio * 100, 4).toFixed(1)}%"
+          ></span>`,
+      )}
+    </span>`;
+  }
+
+  /** The registry of the signatures and the switched loads, collapsed. */
+  private renderAllSignatures(t: Translate): TemplateResult {
     const registry = this.renderRegistry(t);
     const loads = this.renderSwitchedLoads(t);
+    const count = this._registry?.signatures?.length ?? 0;
     if (registry === nothing && loads === nothing) {
-      return html`<div class="card"><div class="message">${t("registry_none")}</div></div>`;
+      return this._appliances ? html`` : html`<div class="card"><div class="message">${t("registry_none")}</div></div>`;
     }
-    return html`${registry} ${loads}`;
+    // without the appliances (integration before 0.7.0): open, as before
+    return html`<details class="card all-signatures" ?open=${!this._appliances}>
+      <summary>${t("all_signatures", { count: formatNumber(count, this.info) })}</summary>
+      ${registry} ${loads}
+    </details>`;
   }
 
   private renderNoReport(t: Translate): TemplateResult {
@@ -929,7 +1173,7 @@ export class EnergyMapperPanel extends LitElement {
       ${this.iconButton(mdiChevronRight, t("next_day"), () => next && void this.selectDay(next), !next)}`;
   }
 
-  private renderDayBar(entries: DayEntry[], t: Translate): TemplateResult | typeof nothing {
+  private renderDayBar(entries: DayEntry[], t: Translate, withAnalyze = true): TemplateResult | typeof nothing {
     if (!entries.length) return nothing;
     const day = this._day;
     const hasReport = entries.some((e) => e.day === day);
@@ -938,7 +1182,7 @@ export class EnergyMapperPanel extends LitElement {
       ${this.renderDayPicker(entries, t)}
       ${summaryOnly ? html`<span class="badge neutral">${t("summary_only")}</span>` : nothing}
       <div class="spacer"></div>
-      ${this.isAdmin && day && hasReport
+      ${withAnalyze && this.isAdmin && day && hasReport
         ? this.textButton(
             this._analyzing ? t("analyzing") : t("analyze"),
             () => void this.analyze(day),
@@ -1479,8 +1723,8 @@ export class EnergyMapperPanel extends LitElement {
     const rows = loads.length
       ? loads.map((l) => ({ name: l.name, entity_id: l.entity_id, power_w: l.power_w, inverted: l.inverted, days: l.days_seen }))
       : [...today.values()].map((k) => ({ name: k.name, entity_id: k.entity_id, power_w: k.power_w, inverted: k.inverted, days: null }));
-    return html`<div class="card">
-      <div class="card-header">${t("switched_loads")}</div>
+    return html`<div class="sub-section">
+      <h3 class="sub-header">${t("switched_loads")}</h3>
       <div class="card-hint">${t("switched_hint")}</div>
       <div class="table-wrap">
         <table>
@@ -1519,8 +1763,8 @@ export class EnergyMapperPanel extends LitElement {
     const model = this._report && this._themeKey ? this.chartModel(this._report) : null;
     const seen = new Set<string>();
     for (const s of this._report?.signatures ?? []) if (s.registry_id) seen.add(s.registry_id);
-    return html`<div class="card">
-      <div class="card-header">${t("registry")}</div>
+    return html`<div class="sub-section">
+      <h3 class="sub-header">${t("registry")}</h3>
       <div class="card-hint">${t("registry_hint")}</div>
       ${all.length === 0
         ? html`<div class="message">${t("registry_none")}</div>`

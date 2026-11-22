@@ -15,7 +15,7 @@ house consumption into base load, measured devices, switch-driven appliances and
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/sylvaing/ha-energy-mapper/main/docs/images/panel-dark.png">
-  <img alt="The Energy Mapper panel: energy summary, stacked consumption chart, peaks with what was running, switched loads and the signature registry (synthetic data)" src="https://raw.githubusercontent.com/sylvaing/ha-energy-mapper/main/docs/images/panel-light.png">
+  <img alt="The Energy Mapper panel, Today tab: house consumption with its split, timeline of the appliances, what used energy and the peaks (synthetic data)" src="https://raw.githubusercontent.com/sylvaing/ha-energy-mapper/main/docs/images/panel-light.png">
 </picture>
 
 *The sidebar panel on a made-up household (synthetic data from the developer harness).*
@@ -195,8 +195,8 @@ without the integration. See the [add-on documentation](energy_mapper/DOCS.md#co
 
 The panel follows your Home Assistant theme (light and dark), language (English and French)
 and number and time formats, and adapts to narrow screens (mobile app). Three tabs split it:
-**Today** (the selected day, for the whole household), **Appliances** (the signatures and
-switched loads) and, for administrators, **To review** with the number of signatures waiting
+**Today** (the selected day, for the whole household), **Appliances** (one card per
+appliance, and every signature) and, for administrators, **To review** with the number of signatures waiting
 for a name; *Today* shows a banner while some wait. The tab and the day are kept in the
 address, so a view can be bookmarked.
 
@@ -288,13 +288,20 @@ address, so a view can be bookmarked.
 - **Peaks**: the day's top episodes (up to 5) with what was running at the maximum and the
   unexplained power. A peak is **notable** when it reaches the notable threshold (80 % of the
   highest power of the last 30 days, or your fixed threshold). Select a peak to zoom on it.
-- **Switched loads**: the power learned from the curve, the number of days seen, and
-  *Inverted* when the appliance runs while its switch is off.
 - **N things to check** (collapsed): what the analysis found in your setup, such as a device
   without a power sensor, an unavailable sensor, a battery whose sign should be checked, or a
   **tracking gap** (a switch-driven device whose declared energy is far from what was
   measured, typically an estimate configured at a few watts for a 2 kW water heater).
-- **Signatures**: the appliances recognised across days, most frequent first: steady or
+- **Appliances** (tab): one card per appliance with how it is tracked (*Recognised in the
+  curve*, *Switch*, *Power sensor*, or *Merged* sources; estimated or measured), its energy
+  and runs on the selected day (the same figures as *Today*), the last day it ran and its
+  daily energy over the last 7 days as small bars, from the appliance's energy statistics.
+  *7 days* and *30 days* sum those statistics instead. Select a card to see that appliance
+  highlighted on *Today*; administrators have a *Settings* link to the integration page, where
+  an appliance is renamed, linked or merged. Below, collapsed under **All signatures**, the
+  signature registry and the switched loads (the power learned from the curve, the number of
+  days seen, and *Inverted* when the appliance runs while its switch is off).
+- **Signatures** (under *All signatures*): the appliances recognised across days, most frequent first: steady or
   cycling (with on-time and period), typical power and duration, uses per week, last seen, the
   usual hours of the day, and *Seen this day*. A signature you have not named yet shows a
   provisional name built from what it is, such as *2.6 kW appliance, ~50 min, in the
@@ -670,7 +677,7 @@ l'add-on), utiles sans l'intégration. Voir la
 Le panneau suit le thème de Home Assistant (clair et sombre), sa langue (anglais et
 français) et ses formats de nombres et d'heures, et s'adapte aux écrans étroits (application mobile).
 Trois onglets le partagent : **Ma journée** (le jour choisi, pour tout le foyer), **Appareils**
-(les signatures et les appareils pilotés) et, pour les administrateurs, **À examiner** avec le
+(une carte par appareil, et toutes les signatures) et, pour les administrateurs, **À examiner** avec le
 nombre de signatures qui attendent un nom ; *Ma journée* affiche un bandeau tant qu'il y en a.
 L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en favori.
 
@@ -775,14 +782,23 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   maximum et la puissance non expliquée. Un pic est **notable** quand il atteint le seuil notable
   (80 % de la puissance la plus haute des 30 derniers jours, ou votre seuil fixe).
   Sélectionnez un pic pour zoomer dessus.
-- **Appareils pilotés** : la puissance apprise sur la courbe, le nombre de jours vus, et
-  *Inversé* quand l'appareil fonctionne interrupteur éteint.
 - **N points à vérifier** (repliés) : ce que l'analyse a trouvé dans votre configuration,
   comme un appareil sans capteur de puissance, un capteur indisponible, une batterie dont le
   signe est à vérifier, ou un **écart de suivi** (un appareil piloté dont l'énergie déclarée
   est loin de ce qui a été mesuré, typiquement une estimation réglée à quelques watts pour un
   chauffe-eau de 2 kW).
-- **Signatures** : les appareils reconnus au fil des jours, les plus fréquents d'abord :
+- **Appareils** (onglet) : une carte par appareil avec sa façon d'être suivi (*Reconnu dans
+  la courbe*, *Interrupteur*, *Capteur de puissance*, ou sources *Fusionné* ; estimé ou
+  mesuré), son énergie et ses utilisations le jour choisi (les mêmes chiffres que *Ma
+  journée*), le dernier jour où il a tourné et son énergie par jour sur les 7 derniers jours
+  en petites barres, d'après les statistiques d'énergie de l'appareil. *7 jours* et *30 jours*
+  font la somme de ces statistiques. Choisissez une carte pour voir l'appareil mis en évidence
+  dans *Ma journée* ; les administrateurs ont un lien *Réglages* vers la page de
+  l'intégration, où l'on renomme, relie ou fusionne un appareil. Dessous, repliés sous
+  **Toutes les signatures**, le registre des signatures et les appareils pilotés (la puissance
+  apprise sur la courbe, le nombre de jours vus, et *Inversé* quand l'appareil fonctionne
+  interrupteur éteint).
+- **Signatures** (sous *Toutes les signatures*) : les appareils reconnus au fil des jours, les plus fréquents d'abord :
   continu ou cyclique (avec durée de marche et période), puissance et durée typiques,
   utilisations par semaine, dernière fois vue, heures habituelles, et *Vue ce jour*. Une
   signature pas encore nommée porte partout dans le panneau un nom provisoire tiré de ce

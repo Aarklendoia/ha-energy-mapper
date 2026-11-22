@@ -10,6 +10,7 @@
       From the repository root:
         (cd frontend && npm run build) && python3 -m http.server 8765
       then open http://localhost:8765/frontend/dev/index.html
+      (options: theme=dark, language=fr, admin=0, scenario=empty|many, tab=, bare=1)
       The HA elements (ha-alert, ha-date-range-nav...) are not defined here:
       the panel's own fallbacks are what you see (a native date input instead
       of HA's date picker).
@@ -110,6 +111,8 @@
         if (params.has(id)) $(id).value = params.get(id);
       }
       if (params.get("admin") === "0") $("admin").checked = false;
+      // ?bare=1: without the developer bar (README screenshots)
+      if (params.get("bare") === "1") $("dev").style.display = "none";
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const sample = async (name) => (await fetch(`sample/${name}.json`)).json();
@@ -139,6 +142,11 @@
             if (scenario === "empty") return { signatures: [], switched_loads: [], peak: null };
             const reg = await signatures();
             for (const s of reg.signatures) {
+              const owner = APPLIANCE_LIST.find((a) => a.sources.some((x) => x.type === "signature" && x.id === s.id));
+              if (owner) {
+                s.label = owner.name;
+                s.appliance = owner.key;
+              }
               if (labels[s.id]) s.label = labels[s.id];
               if (decisions[s.id]?.state === "validated") s.appliance = decisions[s.id].appliance;
             }
@@ -165,6 +173,10 @@
             }
             return { days: out };
           }
+          case "energy_mapper/appliances":
+            return { entry_id: "dev-entry", appliances: scenario === "empty" ? [] : APPLIANCE_LIST };
+          case "recorder/statistics_during_period":
+            return statistics(msg);
           case "energy_mapper/analyze":
             await sleep(1500);
             return { day: msg.day, ok: true };
@@ -303,11 +315,62 @@
         on_states,
         inverted: on_states[0] === "off",
       });
+      // the appliances (config subentries, energy_mapper/appliances, #54): synthetic
+      const stat = (key) => {
+        const [prefix, id] = key.split(":");
+        return `energy_mapper:${prefix}_${id.replace(/[^a-z0-9]+/g, "_")}_energy`;
+      };
+      const load = (entity_id) => ({ type: "switched_load", entity_id });
+      const sig = (id) => ({ type: "signature", id });
+      const APPLIANCE_LIST = [
+        ["load:switch.water_heater", "Water heater", [load("switch.water_heater")], 2398],
+        ["signature:medium-2600w", "Oven", [sig("medium-2600w")], 2600],
+        ["signature:medium-2100w", "Dishwasher", [sig("medium-2100w"), load("switch.dishwasher_plug")], 2100],
+        ["load:switch.radiator_bedroom", "Bedroom radiator", [load("switch.radiator_bedroom")], 1000],
+        ["submeter:sensor.dryer_power", "Dryer", [{ type: "submeter", entity_id: "sensor.dryer_power" }], null],
+      ]
+        .map(([key, name, sources, power_w]) => ({
+          key,
+          name,
+          subentry_id: `sub-${key}`,
+          statistic_id: sources.some((x) => x.type !== "submeter") ? stat(key) : null,
+          power_w,
+          sources,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       // appliances a signature can be merged into (#43)
-      const APPLIANCES = [
-        { key: "load:switch.radiator_bedroom", name: "Bedroom radiator" },
-        { key: "load:switch.water_heater", name: "Water heater" },
-      ];
+      const APPLIANCES = APPLIANCE_LIST.map(({ key, name }) => ({ key, name }));
+
+      // recorder/statistics_during_period (period "day", change): from the sample reports
+      async function statistics(msg) {
+        const out = {};
+        const from = Date.parse(msg.start_time);
+        const to = Date.parse(msg.end_time);
+        const listing = await sample("days");
+        const days = [...listing.days, ...listing.summary_days];
+        const reports = (await Promise.all(days.map((d) => sample(`report-${d}`).catch(() => null)))).filter(Boolean);
+        for (const id of msg.statistic_ids) {
+          const a = APPLIANCE_LIST.find((x) => x.statistic_id === id);
+          if (!a) continue;
+          out[id] = reports
+            .filter((r) => r.start * 1000 >= from && r.start * 1000 < to)
+            .map((r) => {
+              let kwh = 0;
+              for (const x of a.sources) {
+                if (x.type === "switched_load") {
+                  const k = (r.known_loads ?? []).find((l) => l.entity_id === x.entity_id);
+                  if (k) kwh += r.energy_kwh.known?.[k.name] ?? 0;
+                } else if (x.type === "signature") {
+                  for (const d of r.signatures ?? []) {
+                    if ((d.registry_id ?? d.id) === x.id) kwh += r.energy_kwh.signatures?.[d.id] ?? 0;
+                  }
+                }
+              }
+              return { start: r.start * 1000, end: r.end * 1000, change: Math.round(kwh * 1000) / 1000 };
+            });
+        }
+        return out;
+      }
       // a thermostat whose hvac_action contains the uses, in the radiator's device (#43)
       const contained = {
         entity_id: "climate.bedroom",

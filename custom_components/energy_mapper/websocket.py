@@ -44,6 +44,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_analyze,
         ws_day_stats,
         ws_signatures,
+        ws_appliances,
         ws_settings,
         ws_review,
         ws_validate,
@@ -220,6 +221,42 @@ async def ws_signatures(
 ) -> None:
     """The signature registry."""
     await _relay(hass, connection, msg, lambda client: client.signatures())
+
+
+@websocket_api.websocket_command({vol.Required("type"): "energy_mapper/appliances"})
+@callback
+def ws_appliances(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The appliances (config subentries) for the panel's Appliances tab (#54):
+    read-only, for every user, without asking the add-on. ``statistic_id`` is
+    the id of its hourly energy statistic, null when none is imported (an
+    appliance measured by a power sensor only)."""
+    entry = _entry(hass)
+    if entry is None or entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Energy Mapper is not set up")
+        return
+    appliances = sorted(
+        entry.runtime_data.coordinator.appliances_by_subentry().values(),
+        key=lambda a: (a.name.casefold(), a.key),
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "entry_id": entry.entry_id,
+            "appliances": [
+                {
+                    "key": a.key,
+                    "name": a.name,
+                    "subentry_id": a.subentry_id,
+                    "statistic_id": a.statistic_id if a.estimated else None,
+                    "power_w": a.power_w,
+                    "sources": [s.as_dict() for s in a.sources],
+                }
+                for a in appliances
+            ],
+        },
+    )
 
 
 @websocket_api.websocket_command({vol.Required("type"): "energy_mapper/settings"})
