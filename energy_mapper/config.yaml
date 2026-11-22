@@ -22,6 +22,7 @@ options:
   grid_invert: false
   battery_invert: false
   switched_loads: []
+  live_view: true
   log_level: info
 schema:
   analysis_time: match(^([01][0-9]|2[0-3]):[0-5][0-9]$)
@@ -45,4 +46,5 @@ schema:
         - str?
   step_threshold_w: float(50,10000)?
   peak_threshold_w: float(100,100000)?
+  live_view: bool
   log_level: list(debug|info|warning|error)

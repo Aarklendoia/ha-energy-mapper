@@ -93,6 +93,8 @@ class ReportStore:
         self.self_test_path = self.root / "self_test.json"
         # summaries already read, for the nightly registry update (read-only)
         self._cache: dict[str, dict] = {}
+        # incremented at every registry write: the live view ranks with the new one
+        self.registry_version = 0
         self.migrate()
 
     def _report_path(self, day: str) -> pathlib.Path:
@@ -273,6 +275,7 @@ class ReportStore:
 
     def save_registry(self, registry: dict) -> None:
         _write_atomic(self.registry_path, registry)
+        self.registry_version += 1
 
     # -- user settings pushed by the integration ------------------------------
     def load_settings(self) -> dict:

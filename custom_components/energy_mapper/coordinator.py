@@ -47,6 +47,7 @@ from .const import (
     SWITCH_DOMAINS,
     UPDATE_INTERVAL,
 )
+from .live import LiveHub
 from .statistics import (
     async_clear,
     async_import,
@@ -83,6 +84,8 @@ class EnergyMapperData:
 
     client: EnergyMapperClient
     coordinator: EnergyMapperCoordinator
+    # the live view, polled while a panel watches (#17)
+    live: LiveHub | None = None
     # totals of the days already read (websocket energy_mapper/day_stats)
     day_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
 

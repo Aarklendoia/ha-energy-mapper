@@ -24,6 +24,7 @@ import time
 from api import make_server
 from const import DEFAULT_PORT, VERSION
 from ha_client import HAClient, HAError, endpoint_from_env, post_discovery
+from live_service import LiveService
 from service import Analyzer, Scheduler
 from storage import ReportStore
 
@@ -74,9 +75,13 @@ def main() -> int:
     store = ReportStore(data_dir)
     analyzer = Analyzer(HAClient(endpoint), store, options)
     scheduler = Scheduler(analyzer, options.get("analysis_time"))
+    # the live view (#17): runs only while the panel's Live tab is open
+    live = LiveService(analyzer, enabled=options.get("live_view", True) is not False)
+    if not live.enabled:
+        _LOGGER.info("live view disabled (option live_view)")
     port = int(os.environ.get("PORT", DEFAULT_PORT))
     try:
-        server = make_server(analyzer, store, "0.0.0.0", port)
+        server = make_server(analyzer, store, "0.0.0.0", port, live)
     except OSError as err:
         _LOGGER.error("cannot listen on port %d: %s", port, err)
         return 1
@@ -98,6 +103,7 @@ def main() -> int:
     worker.start()
     while worker.is_alive() and not scheduler.stop.is_set():
         time.sleep(1)
+    live.stop()
     server.shutdown()
     return 0
 

@@ -182,13 +182,14 @@ class LivePairer:
         session_gap_s: float = 120.0,
         session_tol: float = 0.2,
         session_min_steps: int = 6,
+        first_id: int = 1,
     ):
         self.tol_frac, self.tol_w, self.max_on_s = tol_frac, tol_w, max_on_s
         self.session_min_w, self.session_gap_s = session_min_w, session_gap_s
         self.session_tol, self.session_min_steps = session_tol, session_min_steps
         self.events: dict[int, LiveEvent] = {}
         self._by_step: dict[int, LiveEvent] = {}
-        self._next_id = 1
+        self._next_id = first_id  # the caller keeps ids unique across detectors
 
     def feed(self, step: LiveStep) -> list[LiveEvent]:
         """One step update; returns the events that appeared or changed."""
@@ -464,7 +465,8 @@ class LiveDetector:
     meter has reported (PV and grid are not sampled together).
 
     ``config`` is the nightly ``AnalysisConfig`` (meters, sub-meters,
-    switched loads, step threshold). ``interval_s``: the meter's reporting
+    switched loads, step threshold). ``first_event_id``: the id of the first
+    event (a live service keeps them unique across its sessions). ``interval_s``: the meter's reporting
     interval that sizes the detector windows (the night's is the median of
     the day; None estimates it from the last readings). A step is marked
     ``pv_moved`` when the PV median moved by at least ``pv_moved_w``
@@ -481,12 +483,13 @@ class LiveDetector:
         local_hour: Callable[[float], int] | None = None,
         interval_s: float | None = None,
         pv_moved_w: float | None = None,
+        first_event_id: int = 1,
     ):
         self.config = config
         self.local_hour = local_hour
         self.builder = SampleBuilder.from_config(config)
         self.stream = StepStream(threshold=config.step_threshold_w, interval_s=interval_s)
-        self.pairer = LivePairer()
+        self.pairer = LivePairer(first_id=first_event_id)
         self.ranker = CandidateRanker(registry, local_hour)
         self.pv_moved_w = pv_moved_w if pv_moved_w is not None else 0.5 * config.step_threshold_w
         self.switched = {s.entity_id: s for s in config.switched_loads}

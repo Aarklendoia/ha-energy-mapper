@@ -385,24 +385,19 @@ class Analyzer:
                 _LOGGER.warning("statistic ids not stored: %s", err)
         return mapping
 
-    def prepare(self) -> Context:
-        """Read the Energy dashboard, states and registry; derive the configuration."""
-        snap = self.client.snapshot()
-        self.tz = local_tz((snap.get("config") or {}).get("time_zone"))
+    def _derive(self, snap: dict, save: bool = True) -> DerivedConfig:
+        """The configuration of the analysis from a snapshot of Home Assistant."""
         derived = derive(
             snap["prefs"],
             snap["states"],
             snap["registry"],
             derive_options(self.options),
-            self.known_statistics(),
+            self.known_statistics(save),
         )
         if derived.config is None:
             raise AnalysisError(
                 "no_grid", "no grid power sensor: configure the Energy dashboard or grid_entity"
             )
-        entities = list(derived.config.entities())
-        entities += [t.energy_entity for t in derived.tracked if t.role == "switched"]
-        entities += derived.teachers  # the ground truth of the taught appliances (#14)
         # switched loads: the power learned on previous days is used when a
         # day has no transition to measure it
         memory = {x["entity_id"]: x for x in (self.store.load_registry() or {}).get("switched_loads", [])}
@@ -410,6 +405,29 @@ class Analyzer:
             learned = memory.get(load.entity_id, {}).get("power_w")
             if learned and not load.power_w:
                 load.power_w = float(learned)
+        return derived
+
+    def live_config(self) -> tuple:
+        """The live view's configuration (#17): ``(AnalysisConfig, time zone)``,
+        the meters, sub-meters and switched loads of the night. Reads Home
+        Assistant; raises ``HAError`` and ``AnalysisError('no_grid')``."""
+        snap = self.client.snapshot()
+        tz = local_tz((snap.get("config") or {}).get("time_zone"))
+        return self._derive(snap, save=False).config, tz
+
+    def live_options(self) -> dict:
+        """What the live configuration is derived from, besides Home Assistant:
+        the live view restarts when it changes (settings, appliances' sources)."""
+        return derive_options(self.options)
+
+    def prepare(self) -> Context:
+        """Read the Energy dashboard, states and registry; derive the configuration."""
+        snap = self.client.snapshot()
+        self.tz = local_tz((snap.get("config") or {}).get("time_zone"))
+        derived = self._derive(snap)
+        entities = list(derived.config.entities())
+        entities += [t.energy_entity for t in derived.tracked if t.role == "switched"]
+        entities += derived.teachers  # the ground truth of the taught appliances (#14)
         # entities that may be a signature: not the meters the analysis uses;
         # switched loads and the entities linked to an appliance are (#43): a
         # signature matching one is part of its appliance (a merge)

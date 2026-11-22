@@ -68,6 +68,12 @@ configuration:
     description: >-
       Fixed threshold of the notable peaks. Default 80 % of the highest power
       of the peak window (or of the day, when higher).
+  live_view:
+    name: Live view
+    description: >-
+      The Live tab of the panel: steps and events as they happen. It runs only
+      while someone has the tab open (no cost otherwise); turn it off to
+      disable it entirely.
   log_level:
     name: Log level
     description: Verbosity of the add-on log.

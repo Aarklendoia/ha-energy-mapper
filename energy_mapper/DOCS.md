@@ -83,6 +83,7 @@ below (see `PUT /api/settings`).
 | `switched_loads` | Energy dashboard | Appliances driven by a switch. |
 | `step_threshold_w` | `300` | Smallest power change considered as an appliance switching. |
 | `peak_threshold_w` | 80 % of the recent maximum | Fixed threshold of the notable peaks (for example the subscribed power). |
+| `live_view` | `true` | The [live view](#live-view) of the panel's *Live* tab. It runs only while the tab is open; `false` turns it off entirely (kill switch). Add-on option only. |
 | `log_level` | `info` | `debug`, `info`, `warning` or `error`. |
 
 Example of manual settings:
@@ -244,6 +245,8 @@ announces itself to Home Assistant through Supervisor discovery.
 | `GET /api/teaching` | The learning status of the appliances taught by a sensor (see [Learning from a measured device](#learning-from-a-measured-device)) |
 | `POST /api/teaching` | `{"appliance": <key>}`: the signature learned for it, `{"signature", "created", "learned"}` |
 | `GET /api/self_test` | The success rate of each measured device hidden by the nightly self-test (see [Self-test](#self-test)) |
+| `GET /api/live?since=<seq>&wait=<s>` | The [live view](#live-view), a long-poll: a snapshot without `since`, else what changed after it |
+| `GET /api/live/stats` | The live view's state and timings (does not start it) |
 
 `GET /api/signatures` answers:
 
@@ -616,6 +619,102 @@ suggested entity that belongs to an appliance (one of its sources, or in the
 same Home Assistant device as one) has `appliance`: the panel proposes to
 merge the signature into it. `suggest.unrecorded_domains` lists the
 candidate domains none of whose entities is recorded (recorder exclusions).
+
+### Live view
+
+The panel's *Live* tab shows the house power of the last 15 minutes and every
+step as it happens, so that you can say which appliance it was. The add-on
+runs the nightly detector on a stream of readings: what you see live is what
+the night sees.
+
+It costs nothing while nobody looks. The first `GET /api/live` starts a
+`live` thread that reads the configuration of the night (meters, sub-meters,
+switched loads), subscribes to the state changes of those entities only, and
+replays the last 15 minutes of the recorder history (an appliance switched on
+just before is seen). Readings are turned into samples 5 seconds behind the
+clock (PV and grid are not reported together). It reconnects when Home
+Assistant goes away and fills the gap from the history, ranks the candidates
+again when the signature registry changes (nightly update, review decision),
+and starts again when the settings or the appliances' sources change. After
+**2 minutes without a request** it unsubscribes and frees its buffers. If
+processing falls more than **30 seconds behind** it stops, logs it, and
+refuses to start again for 5 minutes (`overloaded`). The nightly analysis
+runs in its own thread and is never affected. The option `live_view: false`
+disables it.
+
+`GET /api/live` takes `since` (the `seq` of the previous answer; none for a
+snapshot) and `wait` (seconds, at most 25, the default). It answers as soon
+as something is new, or after `wait` with nothing new (same `seq`, empty
+lists); it is also the "someone is watching" signal. A `since` from before
+the running session (the view restarted, or the add-on did) gets a snapshot:
+`reset: true`. `seq` is opaque and only increases, across restarts too.
+
+```json
+{
+  "seq": 1800000000123, "session": 1800000000101, "available": true, "reset": false,
+  "history_s": 900, "threshold_w": 300, "time_zone": "Europe/Paris",
+  "curve": [[1800000000.0, 2310, 2310], [1800000002.0, 2305, 2305]],
+  "events": [
+    {
+      "id": 7, "seq": 1800000000123, "t_on": 1799999950.0, "delta_w": 2010,
+      "state": "confirmed", "running": true, "t_off": null, "off_w": null,
+      "duration_s": null, "power_w": 2010, "session": null, "pv_moved": false,
+      "confidence": "likely", "steps": [[1799999950.0, 2010]],
+      "candidates": [
+        {
+          "source": "signature", "signature_id": "short-2000w", "label": "Kettle",
+          "appliance": "signature:short-2000w", "kind": "steady", "band": "short",
+          "power_w": 2000, "score": 0.97, "confidence": "likely",
+          "reason": {"power_w": 2000, "distance": 0.04, "usual_hour": true,
+                     "per_week": 6.9, "expected": false, "pv_moved": false}
+        }
+      ]
+    }
+  ],
+  "now": {
+    "ts": 1800000002.0, "house_w": 2305, "residual_w": 2305, "grid_w": 2305,
+    "pv_w": 0, "battery_w": 0, "submetered_w": 0, "submeters": [],
+    "running": [7], "unidentified_w": 295,
+    "switches": [{"entity_id": "switch.water_heater", "name": "Water heater",
+                  "appliance": null, "on": false}]
+  }
+}
+```
+
+- `curve`: `[time, house W, residual W]` per sample (the residual is the
+  house minus the sub-meters: what the detector looks at); `null` when the
+  solar production is unknown. The snapshot holds the last 15 minutes, a
+  later answer only the new samples.
+- `events`: the lines of the feed. A snapshot holds the events of the last
+  15 minutes and those still running (not the cancelled ones); a later answer
+  the events that appeared or changed, each whole, with the `seq` of its last
+  change: a provisional step confirmed or `cancelled` (a spike: remove the
+  line), an off-step that completes it (`t_off`, `off_w`, `duration_s`), a
+  new cycle of a `session`, new candidates (the registry changed, or the
+  elapsed time ruled a duration band out). `id` stays the same for the whole
+  life of an event and is never reused by the add-on process. `delta_w` is
+  negative for an off-step whose switch-on was not seen. `candidates`: the 3
+  best, from registry signatures (`signature_id`) or switched loads that
+  changed within 30 s (`source: "switch"`, `entity_id`); `confidence` is
+  `likely` (score ≥ 0.6), `maybe` (≥ 0.3) or `unknown`.
+- `now`: the last sample, the sub-meters (`appliance`: the key of the
+  appliance it is a source of), the switched loads and their state, the
+  running events (newest first) and the power they do not explain
+  (`unidentified_w`). `null` before the first sample.
+- `threshold_w`: the step threshold; smaller steps are not seen.
+
+When the view cannot run: `{"seq", "available": false, "reason"}` with
+`reason` `disabled` (option off), `starting` (the first snapshot is not ready
+within `wait`: ask again), `overloaded` (with `retry_at`) or `error` (with
+`error`: `{"code", "message"}`, codes `ha_error`, `no_grid`, `internal`, and
+`retry_at`, 30 s later).
+
+`GET /api/live/stats` answers `{"enabled", "state"` (`idle`, `starting`,
+`running`, `overloaded`, `error`, `disabled`), `"error", "retry_at", "seq",
+"session", "started_at", "last_request", "entities", "interval_s",
+"readings", "readings_per_s", "samples", "steps", "events", "reconnects",
+"lag_s", "max_lag_s", "process_ms": {"median", "p99", "max"}` (per processing
+round, about once a second), `"buffers": {"curve", "events", "readings"}}`.
 
 Error codes: `invalid_day` (400: not a date, or a day that is not over),
 `no_grid` (422: no grid power sensor found), `no_data` (422: no grid data in

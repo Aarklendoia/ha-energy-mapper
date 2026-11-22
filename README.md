@@ -419,6 +419,10 @@ on/off states come with real-time detection
 - The add-on only **reads** Home Assistant (states, entity registry, Energy dashboard settings
   and recorder history); it never calls a service. The integration writes only its own
   devices, sensors and statistics.
+- The live view (the coming *Live* tab, #17) follows the state changes of the meters and
+  switched loads the analysis already reads, **only while the tab is open**, keeps 15 minutes
+  in memory and stores nothing; it stops 2 minutes after the tab is closed. The add-on option
+  `live_view: false` turns it off entirely.
 - Its data (daily reports, day summaries, the signature registry, the settings) lives in the
   add-on's `/data` folder, is **included in Home Assistant backups**, and stays bounded (a few
   MB) whatever the age of the installation.
@@ -461,8 +465,11 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
   hourly energy statistics, "take
   over tracking" in the Energy dashboard, learning from measured devices, a nightly self-test with a success rate (done), variable loads, and
   a benchmark on public NILM datasets ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
-- [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): real-time
-  detection, per-phase analysis, recognition of multi-phase appliance cycles.
+- [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): a *Live* tab to
+  see steps as they happen and label appliances by hand
+  ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), in progress: the streamed
+  detector and the on-demand add-on service are done, labelled examples and the tab come
+  next), per-phase analysis, recognition of multi-phase appliance cycles.
 - [**v3 – Publish**](https://github.com/sylvaing/ha-energy-mapper/milestone/4): release
   process, default HACS and add-on store listing, standalone Docker image for Container/Core.
 
@@ -971,6 +978,10 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
 - L'add-on ne fait que **lire** Home Assistant (états, registre des entités, réglages du
   tableau Énergie et historique du *recorder*) ; il n'appelle jamais de service.
   L'intégration n'écrit que ses propres appareils, capteurs et statistiques.
+- La vue en direct (le futur onglet *En direct*, #17) suit les changements d'état des
+  compteurs et interrupteurs que l'analyse lit déjà, **seulement quand l'onglet est ouvert**,
+  garde 15 minutes en mémoire et n'enregistre rien ; elle s'arrête 2 minutes après la
+  fermeture de l'onglet. L'option `live_view: false` de l'add-on la coupe complètement.
 - Ses données (rapports quotidiens, résumés, registre des signatures, réglages) sont dans le
   dossier `/data` de l'add-on, **incluses dans les sauvegardes de Home Assistant**, et restent
   bornées (quelques Mo) quel que soit l'âge de l'installation.
@@ -1016,8 +1027,11 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
   charge le suivi » dans le tableau Énergie, apprentissage à partir des appareils mesurés,
   auto-test de nuit avec un taux de réussite (faits), charges variables, et évaluation
   sur des jeux de données NILM publics ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
-- [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : détection en
-  temps réel, analyse par phase, reconnaissance des cycles des appareils à plusieurs phases.
+- [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : un onglet
+  *En direct* pour voir les marches au moment où elles arrivent et étiqueter les appareils à la
+  main ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), en cours : le détecteur
+  en flux et le service à la demande de l'add-on sont faits, les exemples étiquetés et l'onglet
+  suivent), analyse par phase, reconnaissance des cycles des appareils à plusieurs phases.
 - [**v3 – Publication**](https://github.com/sylvaing/ha-energy-mapper/milestone/4) : processus
   de version, référencement par défaut dans HACS et la boutique d'add-ons, image Docker
   autonome pour Container/Core.

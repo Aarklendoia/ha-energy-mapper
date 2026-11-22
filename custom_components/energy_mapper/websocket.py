@@ -60,6 +60,7 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_teach,
         ws_stop_teaching,
         ws_self_test,
+        ws_live_subscribe,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -565,3 +566,23 @@ async def ws_self_test(
     """The success rate of the measured devices hidden from the nightly
     analysis (``GET /api/self_test``), and whether the add-on supports it."""
     await _review(hass, connection, msg, lambda coordinator: coordinator.async_self_test())
+
+
+@websocket_api.websocket_command({vol.Required("type"): "energy_mapper/live/subscribe"})
+@callback
+def ws_live_subscribe(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The live view (#17), for every user, read-only: a subscription that
+    streams ``snapshot``, ``update`` and ``status`` messages (``live.py``)."""
+    entry = _entry(hass)
+    if entry is None or entry.state is not ConfigEntryState.LOADED or entry.runtime_data.live is None:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Energy Mapper is not set up")
+        return
+
+    @callback
+    def forward(message: dict[str, Any]) -> None:
+        connection.send_message(websocket_api.event_message(msg["id"], message))
+
+    connection.send_result(msg["id"])
+    connection.subscriptions[msg["id"]] = entry.runtime_data.live.subscribe(forward)
