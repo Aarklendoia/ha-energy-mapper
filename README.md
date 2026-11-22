@@ -181,7 +181,7 @@ precedence over the add-on options.
 | | Signature half-life | 30 days | Age at which a past use counts half in the signature registry. Shorter forgets replaced appliances faster; longer keeps rare ones known longer. |
 | | Keep full reports | 90 days | Full reports keep the per-minute curve; older days keep a summary (totals, peaks, activations). |
 | | Peak reference window | 30 days | Notable peaks are relative to the highest power of these days, to follow the seasons. |
-| Review of the signatures | Notify in Repairs | on | One notice in **Settings → Repairs** while signatures wait in the *To review* section of the panel. |
+| Review of the signatures | Notify in Repairs | on | One notice in **Settings → Repairs** while signatures wait in the *To review* tab of the panel. |
 | | Uses / different days before a signature is proposed | 5 / 3 | A signature is proposed once it was seen that many times on that many different days. |
 | | *Wait*: propose again after | 14 days | A signature put on hold comes back after these days, or once its uses reached… |
 | | *Wait*: or after this many times more uses | 2 | …twice the number it had (6 uses: back at 12). |
@@ -193,7 +193,11 @@ without the integration. See the [add-on documentation](energy_mapper/DOCS.md#co
 ## Reading the panel
 
 The panel follows your Home Assistant theme (light and dark), language (English and French)
-and number and time formats, and adapts to narrow screens (mobile app).
+and number and time formats, and adapts to narrow screens (mobile app). Three tabs split it:
+**Today** (the selected day, for the whole household), **Appliances** (the signatures and
+switched loads) and, for administrators, **To review** with the number of signatures waiting
+for a name; *Today* shows a banner while some wait. The tab and the day are kept in the
+address, so a view can be bookmarked.
 
 - **Day picker**: Home Assistant's date picker, with presets *Yesterday*, *Day before
   yesterday*, *Highest use (30 days)* and *Last notable peak*. Administrators can **analyse a
@@ -289,7 +293,7 @@ curve.
 Each **appliance** is an entry of its own on the integration page (**Settings → Devices &
 services → Energy Mapper**, under *Appliances*), with a device under the *Energy Mapper*
 service device. Appliances are created automatically for the **switched loads** (once their
-power has been learned) and, from the *To review* section of the panel, for the **signatures
+power has been learned) and, from the *To review* tab of the panel, for the **signatures
 you validate**. From the integration page you can:
 
 - **add** one by hand (*Add appliance*): driven by a switch (a relay, a pilot wire), or not
@@ -631,7 +635,7 @@ options de l'add-on.
 | | Demi-vie des signatures | 30 jours | Âge auquel une utilisation passée compte pour moitié dans le registre des signatures. Plus court oublie plus vite un appareil remplacé ; plus long garde plus longtemps les appareils rares. |
 | | Conservation des rapports complets | 90 jours | Les rapports complets gardent la courbe minute par minute ; les jours plus anciens gardent un résumé (totaux, pics, utilisations). |
 | | Fenêtre de référence des pics | 30 jours | Les pics notables sont relatifs à la puissance la plus haute de ces jours, pour suivre les saisons. |
-| Examen des signatures | Signaler dans Réparations | oui | Un seul avis dans **Paramètres → Réparations** tant que des signatures attendent dans la section *À examiner* du panneau. |
+| Examen des signatures | Signaler dans Réparations | oui | Un seul avis dans **Paramètres → Réparations** tant que des signatures attendent dans l'onglet *À examiner* du panneau. |
 | | Utilisations / jours différents avant de proposer une signature | 5 / 3 | Une signature est proposée dès qu'elle a été vue ce nombre de fois sur ce nombre de jours différents. |
 | | *Attendre* : proposer de nouveau après | 14 jours | Une signature mise en attente revient après ces jours, ou quand ses utilisations ont atteint… |
 | | *Attendre* : ou après ce multiple d'utilisations | 2 | …le double de son nombre (6 utilisations : retour à 12). |
@@ -645,6 +649,10 @@ l'add-on), utiles sans l'intégration. Voir la
 
 Le panneau suit le thème de Home Assistant (clair et sombre), sa langue (anglais et
 français) et ses formats de nombres et d'heures, et s'adapte aux écrans étroits (application mobile).
+Trois onglets le partagent : **Ma journée** (le jour choisi, pour tout le foyer), **Appareils**
+(les signatures et les appareils pilotés) et, pour les administrateurs, **À examiner** avec le
+nombre de signatures qui attendent un nom ; *Ma journée* affiche un bandeau tant qu'il y en a.
+L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en favori.
 
 - **Choix du jour** : le sélecteur de date de Home Assistant, avec les raccourcis *Hier*,
   *Avant-hier*, *Conso. max. (30 j)* et *Dernier pic notable*. Les administrateurs peuvent
@@ -748,7 +756,7 @@ signatures, sans la courbe.
 Chaque **appareil** est une entrée à part sur la page de l'intégration (**Paramètres →
 Appareils et services → Energy Mapper**, sous *Appareils*), avec son appareil Home Assistant
 rattaché à l'appareil de service *Energy Mapper*. Les appareils sont créés automatiquement
-pour les **appareils pilotés** (dès que leur puissance a été apprise) et, depuis la section
+pour les **appareils pilotés** (dès que leur puissance a été apprise) et, depuis l'onglet
 *À examiner* du panneau, pour les **signatures que vous validez**. Depuis la page de l'intégration, vous pouvez :
 
 - en **ajouter** un à la main (*Ajouter un appareil*) : piloté par un interrupteur (relais, fil

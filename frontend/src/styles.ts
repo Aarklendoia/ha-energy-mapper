@@ -48,6 +48,128 @@ export const panelStyles = css`
     margin-inline-start: var(--ha-space-2, 8px);
   }
 
+  /* tabs (#47), as HA's ha-tab: under the toolbar, the active one underlined;
+     on phones they share the width */
+  .tabs {
+    display: flex;
+    gap: var(--ha-space-1, 4px);
+    padding: 0 var(--ha-space-4, 16px);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tab {
+    position: relative;
+    height: 48px;
+    min-width: 0;
+    padding: 0 var(--ha-space-4, 16px);
+    border: none;
+    background: none;
+    color: inherit;
+    opacity: 0.8;
+    font: inherit;
+    font-size: var(--ha-font-size-m, 14px);
+    font-weight: var(--ha-font-weight-medium, 500);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--ha-space-2, 8px);
+    white-space: nowrap;
+    overflow-wrap: normal;
+  }
+  .tab::after {
+    content: "";
+    position: absolute;
+    left: var(--ha-space-2, 8px);
+    right: var(--ha-space-2, 8px);
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+  }
+  .tab:hover {
+    opacity: 1;
+  }
+  .tab[aria-selected="true"] {
+    opacity: 1;
+    color: var(--app-header-selection-bar-color, var(--primary-color, #03a9f4));
+  }
+  .tab[aria-selected="true"]::after {
+    background: currentColor;
+  }
+  .tab:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -4px;
+    border-radius: var(--ha-border-radius-md, 8px);
+  }
+  .tab-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab-badge {
+    flex: none;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    box-sizing: border-box;
+    border-radius: var(--ha-border-radius-pill, 9999px);
+    background: var(--primary-color, #03a9f4);
+    color: var(--text-primary-color, #fff);
+    font-size: var(--ha-font-size-s, 12px);
+    line-height: 20px;
+    text-align: center;
+  }
+  .narrow .tabs {
+    padding: 0;
+    gap: 0;
+  }
+  .narrow .tab {
+    flex: 1 1 0;
+    padding: 0 var(--ha-space-1, 4px);
+    font-size: var(--ha-font-size-s, 13px);
+    gap: 6px;
+  }
+
+  /* admin banner of Today: signatures waiting for a name */
+  .review-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ha-space-2, 8px) var(--ha-space-4, 16px);
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 16px;
+    font: inherit;
+    text-align: start;
+    color: var(--primary-text-color);
+    background: color-mix(in srgb, var(--primary-color, #03a9f4) 10%, var(--card-background-color, #fff));
+    border: 1px solid color-mix(in srgb, var(--primary-color, #03a9f4) 35%, transparent);
+    border-radius: var(--ha-card-border-radius, 12px);
+    cursor: pointer;
+  }
+  .review-banner:hover {
+    background: color-mix(in srgb, var(--primary-color, #03a9f4) 16%, var(--card-background-color, #fff));
+  }
+  .review-banner:focus-visible {
+    outline: 2px solid var(--primary-color, #03a9f4);
+    outline-offset: 2px;
+  }
+  .review-banner svg {
+    flex: none;
+    width: 24px;
+    height: 24px;
+    fill: var(--primary-color, #03a9f4);
+  }
+  .review-banner-text {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-weight: var(--ha-font-weight-medium, 500);
+  }
+  .review-banner-action {
+    font-weight: var(--ha-font-weight-medium, 500);
+    color: var(--primary-color, #03a9f4);
+    white-space: nowrap;
+  }
+
   .content {
     max-width: 1440px;
     margin: 0 auto;
