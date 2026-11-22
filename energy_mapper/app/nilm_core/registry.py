@@ -799,6 +799,21 @@ class Matcher:
             return None
         return _nearest(self.centers.get(group, []), power, self.tol)
 
+    def near(self, kind: str, band: str, power_w: float, within: float = 2.0) -> list[tuple[str, float]]:
+        """The signatures of a group whose power is within ``within`` times
+        the tolerance, as ``(id, distance)`` with the distance in tolerances
+        (``|power - center| / (tol x center)``), nearest in watts first:
+        the first one within a distance of 1 is the one :meth:`match` gives
+        (the live candidates rank all of them)."""
+        out = []
+        for center, sid in self.centers.get(_group_of(kind, band), []):
+            if center > 0:
+                d = abs(power_w - center) / (self.tol * center)
+                if d <= within:
+                    out.append((abs(power_w - center), sid, d))
+        out.sort(key=lambda x: x[0])
+        return [(sid, d) for _, sid, d in out]
+
 
 def cycle_templates(registry: Mapping | None, validated_only: bool = True) -> dict[str, list[dict]]:
     """``{id: phases}`` of the multiphase signatures the daily analysis

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.0
+
+- Live view, core (#17, part 1 of 4): the engine can now run on a stream of
+  readings, for the coming *Live* tab of the panel. Nothing changes for the
+  user yet: no new API, option or behaviour.
+- `nilm_core/signal.py`: `SampleBuilder` builds the samples of the night one
+  reading at a time (same hold rules for PV, battery and sub-meters, shared
+  through `sample_at`), up to a time bound so that meters reported at
+  different times are combined as the night combines them.
+- `nilm_core/steps.py`: `StepStream` is the step detector of the night,
+  streamed. Fed with the same points and meter interval, its confirmed steps
+  are exactly those of `detect_steps`; a provisional step comes after 3
+  readings (or 10 s), then is confirmed or cancelled (a spike).
+- `nilm_core/live.py`: live events (a switch-on completed by its off-step with
+  the night's pairing rule, alternating steps grouped into a session with the
+  night's cycling rule, an off-step whose switch-on was not seen), the 3 best
+  candidates of each event among the registry signatures and the switches that
+  just changed, with a confidence score from 0 to 1, a "solar moved at the
+  same time" flag, and `replay`, which streams a stored day.
+- `Matcher.near` lists the registry signatures near a power, with the
+  registry's tolerance, for the candidates.
+
 ## 0.11.0
 
 - Findings (#34): each finding keeps its stable `kind` and gets structured
