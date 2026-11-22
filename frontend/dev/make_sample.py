@@ -105,6 +105,7 @@ def findings(i: int) -> list[dict]:
             "kind": "no_power_sensor",
             "entity_id": "sensor.dryer_energy",
             "detail": "Dryer: no power sensor, not subtracted",
+            "params": {"source": "device", "name": "Dryer"},
         }
     ]
     if i == N_DAYS - 1:
@@ -113,6 +114,7 @@ def findings(i: int) -> list[dict]:
                 "kind": "tracking_gap",
                 "entity_id": "sensor.water_heater_energy",
                 "detail": "Water heater: declared 0.80 kWh, measured 6.10 kWh",
+                "params": {"name": "Water heater", "declared_kwh": 0.8, "measured_kwh": 6.1},
             }
         )
     return out

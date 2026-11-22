@@ -40,14 +40,37 @@ _SUFFIXES = re.compile(
 
 @dataclass
 class Finding:
-    """Something worth telling the user (shown in the report)."""
+    """Something worth telling the user (shown in the report).
 
-    kind: str  # grid_ignored | no_power_sensor | unavailable | battery_sign | ...
+    ``kind`` is stable and ``params`` carries what the sentence is made of, so
+    the panel builds it in the user's language (#34); ``detail`` is the
+    English sentence, kept as a fallback for older panels.
+
+    Kinds and their ``params``:
+
+    * ``grid_ignored``: ``{}`` (entity: the grid energy meter);
+    * ``no_power_sensor``: ``{"source": "grid" | "solar"}``, or
+      ``{"source": "device", "name"}`` (entity: the energy sensor);
+    * ``battery_sign``: ``{}`` (entity: the battery power sensor);
+    * ``unavailable``: ``{"name"}`` (entity: the energy sensor);
+    * ``unknown_statistic``: ``{"name"}`` (entity: the statistic id);
+    * ``no_grid``: ``{}`` (no entity);
+    * ``tracking_gap``: ``{"name", "declared_kwh", "measured_kwh"}``
+      (entity: the energy sensor).
+    """
+
+    kind: str
     entity_id: str
     detail: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, str]:
-        return {"kind": self.kind, "entity_id": self.entity_id, "detail": self.detail}
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "entity_id": self.entity_id,
+            "detail": self.detail,
+            "params": dict(self.params),
+        }
 
 
 @dataclass
@@ -228,6 +251,7 @@ def _own_statistic(
             stat_id,
             f"{label}: Energy Mapper statistic of an appliance it no longer knows "
             "(not used by the analysis; remove it from the Energy dashboard if it is obsolete)",
+            {"name": label},
         ),
     )
 
@@ -265,11 +289,13 @@ def derive(
             continue
         energy = imports[0]
         if _number(idx.state(energy)) == 0:
-            out.findings.append(Finding("grid_ignored", energy, "grid meter that has never counted"))
+            out.findings.append(Finding("grid_ignored", energy, "grid meter that has never counted", {}))
             continue
         power = power_for(energy, idx)
         if not power:
-            out.findings.append(Finding("no_power_sensor", energy, "grid meter without power sensor"))
+            out.findings.append(
+                Finding("no_power_sensor", energy, "grid meter without power sensor", {"source": "grid"})
+            )
             continue
         grids.append(power)
         for exp in _flows(src, "stat_energy_to"):
@@ -285,14 +311,16 @@ def derive(
             if p:
                 pvs.append(p)
             else:
-                out.findings.append(Finding("no_power_sensor", energy, "solar without power sensor"))
+                out.findings.append(
+                    Finding("no_power_sensor", energy, "solar without power sensor", {"source": "solar"})
+                )
     battery = None
     for src in (s for s in sources if s.get("type") == "battery"):
         energy = (_flows(src, "stat_energy_from") or _flows(src, "stat_energy_to") or [None])[0]
         battery = power_for(energy, idx) if energy else None
         if battery:
             out.findings.append(
-                Finding("battery_sign", battery, "check the sign: positive must mean discharging")
+                Finding("battery_sign", battery, "check the sign: positive must mean discharging", {})
             )
         break
 
@@ -329,7 +357,7 @@ def derive(
         power = power_for(energy, idx)
         if not idx.available(energy):
             out.tracked.append(TrackedDevice(name, energy, power, "unavailable", src))
-            out.findings.append(Finding("unavailable", energy, f"{name}: sensor unavailable"))
+            out.findings.append(Finding("unavailable", energy, f"{name}: sensor unavailable", {"name": name}))
             continue
         if parent and parent in parents:
             # counted inside another tracked device: never subtract twice
@@ -343,7 +371,12 @@ def derive(
         if not power:
             out.tracked.append(TrackedDevice(name, energy, None, "energy_only", src))
             out.findings.append(
-                Finding("no_power_sensor", energy, f"{name}: no power sensor, not subtracted")
+                Finding(
+                    "no_power_sensor",
+                    energy,
+                    f"{name}: no power sensor, not subtracted",
+                    {"source": "device", "name": name},
+                )
             )
             continue
         if power in excluded_meters:
@@ -360,7 +393,7 @@ def derive(
     # --- manual options win --------------------------------------------------
     grid = options.get("grid_entity") or (grids[0] if grids else None)
     if not grid:
-        out.findings.append(Finding("no_grid", "", "no grid power sensor: choose one in the settings"))
+        out.findings.append(Finding("no_grid", "", "no grid power sensor: choose one in the settings", {}))
         return out
     extra_grids = [] if options.get("grid_entity") else grids[1:]
     export = options.get("grid_export_entity") or (exports[0] if exports and len(grids) == 1 else None)
@@ -435,6 +468,7 @@ def tracking_gaps(
                     "tracking_gap",
                     t.energy_entity,
                     f"{t.name}: declared {declared:.2f} kWh, measured {got:.2f} kWh",
+                    {"name": t.name, "declared_kwh": round(declared, 3), "measured_kwh": round(got, 3)},
                 )
             )
     return out

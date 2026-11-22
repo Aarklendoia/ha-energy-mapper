@@ -129,7 +129,10 @@ Each report is a JSON document with:
 - `quality`: number of samples, longest gap, computing time;
 - `config`: the sensors used, derived from the Energy dashboard;
 - `findings`: what is worth checking (sensor without power sensor,
-  unavailable device, estimated device far from what was measured...).
+  unavailable device, estimated device far from what was measured...):
+  `{kind, entity_id, detail, params}`. `kind` is stable and `params` holds
+  what the sentence is made of (add-on 0.11.0+), so the panel writes it in
+  the user's language; `detail` is the English sentence.
 
 ## Signature registry
 
@@ -215,7 +218,7 @@ announces itself to Home Assistant through Supervisor discovery.
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `{"status": "ok", "version": "0.10.0", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
+| `GET /api/health` | `{"status": "ok", "version": "0.11.0", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
 | `GET /api/days` | `{"days": [...], "summary_days": [...], "generated": {"YYYY-MM-DD": <unix time>}}`: days with a full report, and older days with only a summary, oldest first; `generated` tells when each full report was made |
 | `GET /api/report/YYYY-MM-DD` | The report with the registry ids, or 404. For a day with only a summary: `curve` is empty and `curve_pruned` is `true` |
 | `GET /api/hourly/YYYY-MM-DD` | The energy of each appliance per hour of that day (below), or 404 when the day has no per-minute curve |

@@ -259,7 +259,8 @@ filter that lists it) and focuses its title. On a `narrow` screen the bar goes u
 On the right (stacked below on narrow widths), **Peaks**, compact: per peak, the power, the
 time window and "notable", then what ran with the names of the list and their power, and
 the unexplained power; selecting a peak zooms the timeline (or the chart) on it. Below, the findings,
-collapsed under "N things to check" (`<details>`). The switched loads card is on
+collapsed under "N things to check" (`<details>`), written in the user's language from their
+`kind` and `params` (§ 5). The switched loads card is on
 *Appliances* only.
 
 **Appliances tab** (`frontend/src/appliances.ts`, unit tested, #54). The day picker
@@ -588,6 +589,25 @@ for each switch-driven device, the energy declared by its sensor over the day wi
 measured for its switched load; a ratio of 2 or more (with at least 0.5 kWh on one side) is
 reported, typically an estimate configured at a few watts for a 2 kW water heater.
 
+Each finding has a stable `kind`, the `entity_id` it is about, an English `detail` and, since
+add-on 0.11.0 (#34), the `params` the panel builds its own sentence from (EN/FR,
+`frontend/src/findings.ts`, unit tested):
+
+| Kind | Entity | `params` |
+|---|---|---|
+| `grid_ignored` | Grid energy meter | `{}` |
+| `no_power_sensor` | Energy sensor | `{source: grid\|solar}`, or `{source: device, name}` |
+| `battery_sign` | Battery power sensor | `{}` |
+| `unavailable` | Energy sensor | `{name}` |
+| `unknown_statistic` | Statistic id | `{name}` |
+| `no_grid` | – | `{}` |
+| `tracking_gap` | Energy sensor | `{name, declared_kwh, measured_kwh}` |
+
+The panel names the device with `params.name` (the Energy dashboard's name), else the entity's
+friendly name in Home Assistant, else the entity id, formats energies with the profile's
+number format, and adds the entity id in parentheses. A kind it does not know (a newer add-on)
+or a finding without the parameters it needs (an older add-on) shows `detail`.
+
 **Manual settings always win**: grid sensor (then no extra grid meters are summed), export,
 PV, battery, signs, sub-meters (replace the derived list), switched loads (added, or
 replacing the one with the same entity), thresholds. Then the **user's appliances** (§ 8.2)
@@ -635,7 +655,7 @@ summary with `curve: []` and `curve_pruned: true`.
 | `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
 | `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}` |
 | `config` | Sensors used: `grid_entity`, `extra_grid_entities`, `grid_export_entity`, `pv_entity`, `extra_pv_entities`, `battery_entity`, `tracked` (`{name, energy_entity, power_entity, role, source_entity}`), `findings` |
-| `findings` | `{kind, entity_id, detail}` (derive findings and tracking gaps) |
+| `findings` | `{kind, entity_id, detail, params}` (derive findings and tracking gaps); `params` (add-on 0.11.0+) per kind in § 5 *Findings*, `detail` the English fallback |
 
 ## 7. Add-on HTTP API
 
@@ -645,7 +665,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `200 {"status": "ok", "version": "0.10.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
+| `GET /api/health` | `200 {"status": "ok", "version": "0.11.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
 | `GET /api/days` | `200 {"days": [...], "summary_days": [...], "generated": {day: <unix time>}}`: days with a full report, and older days with only a summary, ascending; `generated`: when each full report was made (`generated_at`) |
 | `GET /api/report/YYYY-MM-DD` | `200` the report with registry ids; `400 {"error": "invalid_day"}`; `404 {"error": "not_found"}` |
 | `GET /api/hourly/YYYY-MM-DD` | `200` the hourly breakdown of the day (`nilm_core/hourly.py`, § 8.1); `400 invalid_day`; `404 not_found` when the day has no per-minute curve |

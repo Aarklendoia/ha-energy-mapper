@@ -284,7 +284,19 @@ const en = {
   finding_battery_sign: "Battery sign",
   finding_tracking_gap: "Tracking gap",
   finding_no_grid: "No grid power sensor",
+  finding_unknown_statistic: "Unknown statistic",
   finding_other: "Note",
+  // finding sentences, built from the finding's parameters (#34)
+  finding_text_grid_ignored: "{name}: grid meter that has never counted, ignored.",
+  finding_text_no_power_sensor_grid: "{name}: grid meter without power sensor, ignored.",
+  finding_text_no_power_sensor_solar: "{name}: solar production without power sensor, ignored.",
+  finding_text_no_power_sensor_device: "{name}: no power sensor, not subtracted.",
+  finding_text_battery_sign: "{name}: check the sign, positive must mean discharging.",
+  finding_text_unavailable: "{name}: sensor unavailable.",
+  finding_text_unknown_statistic:
+    "{name}: Energy Mapper statistic of an appliance it no longer knows (not used by the analysis; remove it from the Energy dashboard if it is obsolete).",
+  finding_text_no_grid: "No grid power sensor: choose one in the settings.",
+  finding_text_tracking_gap: "{name}: declared {declared}, measured {measured}.",
   // quality
   quality: "{samples} readings, longest gap {gap}, analysed in {time}",
 };
@@ -562,7 +574,18 @@ const fr: Table = {
   finding_battery_sign: "Signe de la batterie",
   finding_tracking_gap: "Écart de suivi",
   finding_no_grid: "Pas de capteur de puissance réseau",
+  finding_unknown_statistic: "Statistique inconnue",
   finding_other: "Remarque",
+  finding_text_grid_ignored: "{name} : compteur réseau qui n'a jamais compté, ignoré.",
+  finding_text_no_power_sensor_grid: "{name} : compteur réseau sans capteur de puissance, ignoré.",
+  finding_text_no_power_sensor_solar: "{name} : production solaire sans capteur de puissance, ignorée.",
+  finding_text_no_power_sensor_device: "{name} : pas de capteur de puissance, non soustrait.",
+  finding_text_battery_sign: "{name} : vérifiez le signe, positif doit signifier décharge.",
+  finding_text_unavailable: "{name} : capteur indisponible.",
+  finding_text_unknown_statistic:
+    "{name} : statistique Energy Mapper d'un appareil qu'il ne connaît plus (non utilisée par l'analyse ; retirez-la du tableau de bord Énergie si elle est obsolète).",
+  finding_text_no_grid: "Pas de capteur de puissance réseau : choisissez-en un dans les réglages.",
+  finding_text_tracking_gap: "{name} : {declared} déclarés, {measured} mesurés.",
   quality: "{samples} mesures, plus grand trou {gap}, analysé en {time}",
 };
 

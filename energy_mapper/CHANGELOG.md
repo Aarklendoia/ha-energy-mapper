@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- Findings (#34): each finding keeps its stable `kind` and gets structured
+  `params` (the device `name`, the `source` of a missing power sensor:
+  `grid`, `solar` or `device`, the `declared_kwh` and `measured_kwh` of a
+  tracking gap), so the panel (integration 0.9.0) writes it in the user's
+  language. `detail` stays, in English, as the fallback for older panels.
+
 ## 0.10.0
 
 - Settings (#33): `submeters_mode` `manual` makes `submeters` the exact list

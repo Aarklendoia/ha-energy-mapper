@@ -73,6 +73,7 @@ import {
   localeInfo,
   previousDay,
 } from "./format.ts";
+import { findingView } from "./findings.ts";
 import { adaptCalendar, definedPicker, type HaPickerTag, loadHaDatePicker } from "./ha-date-picker.ts";
 import { type StringKey, type Translate, translator } from "./i18n.ts";
 import { distinctNames, phasesSummary, provisionalName } from "./names.ts";
@@ -1347,11 +1348,7 @@ export class EnergyMapperPanel extends LitElement {
       <summary>${n === 1 ? t("findings_count_one") : t("findings_count", { count: formatNumber(n, this.info) })}</summary>
       <ul>
         ${findings.map((f) => {
-          const key = `finding_${f.kind}` as StringKey;
-          const title = t(key) === key ? t("finding_other") : t(key);
-          const text = [f.detail, f.entity_id && !f.detail.includes(f.entity_id) ? `(${f.entity_id})` : ""]
-            .filter(Boolean)
-            .join(" ");
+          const { title, text } = findingView(f, t, this.info, (id) => this.friendlyName(id));
           return html`<li><strong>${title}</strong> ${text}</li>`;
         })}
       </ul>
