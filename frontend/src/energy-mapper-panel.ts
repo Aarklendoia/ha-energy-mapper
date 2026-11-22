@@ -106,6 +106,16 @@ import {
   usualHours,
   validateMessage,
 } from "./review.ts";
+import {
+  type BlockPos,
+  firstBlock,
+  moveBlock,
+  type RasterBlock,
+  rasterDayLabel,
+  rasterLastDay,
+  rasterRows,
+  rasterTicks,
+} from "./raster.ts";
 import { panelStyles } from "./styles.ts";
 import {
   axisTicks,
@@ -250,6 +260,8 @@ export class EnergyMapperPanel extends LitElement {
   declare _reviewChecked: string[];
   /** the whole queue shown, not only its first rows */
   declare _queueAll: boolean;
+  /** the block of the day raster that takes the focus (roving tabindex) */
+  private rasterPos: { sig: string; pos: BlockPos } | null = null;
   /** the house curves of the days of the examples (null: none) */
   declare _exampleCurves: Record<string, ExampleCurve | null>;
   /** the tab asked for (URL ``?tab=``); the one shown may differ (#47) */
@@ -2143,7 +2155,8 @@ export class EnergyMapperPanel extends LitElement {
           ${this.iconButton(mdiChevronRight, t("rq_next"), () => this.step(1), i >= queue.length - 1)}
         </span>
       </div>
-      ${this.renderFacts(s, t)} ${this.renderHistogram(s, t)} ${this.renderExamples(s, t)} ${this.renderSuggestion(s, t)}
+      ${this.renderFacts(s, t)} ${s.occurrences ? this.renderRaster(s, t) : this.renderHistogram(s, t)}
+      ${this.renderExamples(s, t)} ${this.renderSuggestion(s, t)}
       ${this.renderValidateForm(s, t)}`;
   }
 
@@ -2180,6 +2193,103 @@ export class EnergyMapperPanel extends LitElement {
       </div>
       <div class="rq-hist-axis secondary"><span>0 h</span><span>6 h</span><span>12 h</span><span>18 h</span><span>24 h</span></div>
     </div>`;
+  }
+
+  /** The day raster (#65): one row per day, the most recent on top, each use
+   * a block (width: its duration, shade: its power), under a thin strip of
+   * the usual hours. A click, or Enter, opens the day zoomed on the use; the
+   * arrow keys move between the uses. Needs the add-on 0.9.0+ (otherwise the
+   * histogram is shown). */
+  private renderRaster(s: ReviewSignature, t: Translate): TemplateResult {
+    const info = this.info;
+    const tz = info.time_zone;
+    const rows = rasterRows(s.occurrences, tz, {
+      lastDay: rasterLastDay(Date.now(), tz),
+      firstDay: s.first_seen,
+    });
+    const available = new Set(dayEntries(this._days).map((e) => e.day));
+    const remembered = this.rasterPos?.sig === s.id ? this.rasterPos.pos : null;
+    const focusPos =
+      remembered && rows[remembered[0]]?.blocks[remembered[1]] ? remembered : firstBlock(rows);
+    const profile = hourProfile(s.hours);
+    const hours = formatHours(usualHours(s.hours));
+    const pct = (v: number) => `${(v * 100).toFixed(3)}%`;
+    const block = (day: string, b: RasterBlock, r: number, i: number) => {
+      const label = t("rq_raster_use", {
+        day: formatDay(day, info, "brief"),
+        from: formatTime(b.from, info),
+        to: formatTime(b.to, info),
+        duration: formatDuration(b.to - b.from, info),
+        power: formatPower(b.power_w, info),
+      });
+      const open = available.has(day);
+      const focused = focusPos?.[0] === r && focusPos?.[1] === i;
+      return html`<button
+        type="button"
+        class="rq-block ${b.cut_before ? "cut-before" : ""} ${b.cut_after ? "cut-after" : ""}"
+        data-pos="${r}:${i}"
+        tabindex=${focused ? 0 : -1}
+        style="left:${pct(b.x)};width:${pct(b.w)};opacity:${(0.45 + 0.55 * b.shade).toFixed(2)}"
+        title=${open ? `${label}\n${t("show_on_chart")}` : label}
+        aria-label=${label}
+        aria-disabled=${open ? "false" : "true"}
+        @focus=${() => (this.rasterPos = { sig: s.id, pos: [r, i] })}
+        @click=${() => {
+          if (open) void this.showExample({ day, start: b.start, end: b.end, power_w: b.power_w });
+        }}
+      ></button>`;
+    };
+    return html`<div class="rq-raster-wrap">
+      <div class="secondary rq-label">${t("rq_raster")}</div>
+      <div class="rq-raster" role="group" aria-label=${t("rq_raster_hint")} @keydown=${(ev: KeyboardEvent) => this.rasterKeydown(ev, s.id, rows)}>
+        <div class="rq-raster-row rq-raster-head">
+          <span></span>
+          <div class="rq-strip" role="img" aria-label=${hours ? t("review_hours", { hours }) : t("rq_usual_hours")} title=${formatHours(usualHours(s.hours, 0.01, 24))}>
+            ${profile.map((v) => html`<div class=${v > 0 ? "" : "zero"} style=${v > 0 ? `opacity:${(0.2 + 0.8 * v).toFixed(2)}` : ""}></div>`)}
+          </div>
+        </div>
+        <div class="rq-raster-row rq-raster-axis secondary" aria-hidden="true">
+          <span></span>
+          <div class="rq-axis-track">
+            ${rasterTicks(false).map(
+              (h) => html`<span class="${h % 6 ? "minor" : ""} ${h === 0 ? "first" : h === 24 ? "last" : ""}" style="left:${pct(h / 24)}">${h} h</span>`,
+            )}
+          </div>
+        </div>
+        <div class="rq-raster-body">
+          ${rows.map(
+            (row, r) => html`<div class="rq-raster-row ${row.weekend ? "weekend" : ""}">
+              <span class="rq-day secondary">${rasterDayLabel(row.day, info.language)}</span>
+              <div class="rq-track">
+                ${rasterTicks(true).slice(1, -1).map((h) => html`<i class="rq-hour-line" style="left:${pct(h / 24)}"></i>`)}
+                ${row.blocks.map((b, i) => block(row.day, b, r, i))}
+              </div>
+            </div>`,
+          )}
+        </div>
+      </div>
+      ${s.occurrences?.length ? nothing : html`<div class="secondary small">${t("rq_raster_empty")}</div>`}
+    </div>`;
+  }
+
+  /** Arrow keys, Home and End in the raster: move the focus between uses
+   * (and keep the review shortcuts for the signatures out of the way). */
+  private rasterKeydown(ev: KeyboardEvent, sig: string, rows: ReturnType<typeof rasterRows>): void {
+    const target = (ev.target as HTMLElement | null)?.closest?.(".rq-block") as HTMLElement | null;
+    if (!target || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const [r, b] = (target.dataset.pos ?? "").split(":").map(Number);
+    const next = moveBlock(rows, [r, b], ev.key);
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(ev.key)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!next) return;
+    const raster = target.closest(".rq-raster");
+    const el = raster?.querySelector<HTMLElement>(`.rq-block[data-pos="${next[0]}:${next[1]}"]`);
+    if (!el) return;
+    target.tabIndex = -1;
+    el.tabIndex = 0;
+    this.rasterPos = { sig, pos: next };
+    el.focus();
   }
 
   /** Up to three uses drawn on the house curve; a click opens the day, zoomed. */

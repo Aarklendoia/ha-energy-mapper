@@ -651,10 +651,16 @@ class Analyzer:
             _LOGGER.exception("registry update or pruning failed")
 
     def _needs_maintenance(self) -> bool:
-        return (
-            self.store.state().get("last_maintenance") != self.today().isoformat()
-            or self.store.load_registry() is None
-        ) and bool(self.store.summary_days())
+        if not self.store.summary_days():
+            return False
+        if self.store.state().get("last_maintenance") != self.today().isoformat():
+            return True
+        registry = self.store.load_registry()
+        # a registry written before 0.9.0 has no occurrences (the day raster):
+        # updated at once from the stored days rather than the next night
+        return registry is None or any(
+            "occurrences" not in s for s in registry.get("signatures") or [] if not s.get("expected")
+        )
 
     def catch_up(self) -> dict:
         """Analyse yesterday and the missing days of the backfill window,

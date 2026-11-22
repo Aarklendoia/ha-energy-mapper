@@ -146,6 +146,7 @@ Each signature keeps:
 | `hours` | Weighted uses per local hour (24 values). |
 | `energy_kwh`, `weighted_energy_kwh` | Energy of the stored uses, raw and weighted. |
 | `examples` | The most recent uses: `day`, `start`, `end` (unix time), `power_w`. |
+| `occurrences` | Every use of the last 60 days as `[start, duration_s, power_w]` (unix time, seconds, watts), sorted by start, at most 600 (the most recent ones): the day raster of the panel (add-on 0.9.0+). |
 | `created_at` | When the id was given (unix time). |
 | `expected` | `true` for a signature declared by the user before it is seen ("Kettle, 2000 W"): no use yet; the first cluster of its group within 12 % of its power takes its id and name. |
 | `review` | The user's decision in the review of the panel, when there is one (see [Review](#review)). |
@@ -194,7 +195,7 @@ announces itself to Home Assistant through Supervisor discovery.
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `{"status": "ok", "version": "0.8.1", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
+| `GET /api/health` | `{"status": "ok", "version": "0.9.0", "last_run": <unix time or null>, "days": <number of full reports>, "signatures": <registry size>, "storage_bytes": <size of /data>}` |
 | `GET /api/days` | `{"days": [...], "summary_days": [...], "generated": {"YYYY-MM-DD": <unix time>}}`: days with a full report, and older days with only a summary, oldest first; `generated` tells when each full report was made |
 | `GET /api/report/YYYY-MM-DD` | The report with the registry ids, or 404. For a day with only a summary: `curve` is empty and `curve_pruned` is `true` |
 | `GET /api/hourly/YYYY-MM-DD` | The energy of each appliance per hour of that day (below), or 404 when the day has no per-minute curve |
@@ -228,6 +229,7 @@ announces itself to Home Assistant through Supervisor discovery.
       "hours": [0, 0, 0, 0, 0, 0, 0, 4.1, 3.2, 0.5, 0, 0, 0, 0, 0, 0, 0, 0, 1.2, 2.6, 0.8, 0, 0, 0],
       "energy_kwh": 9.9, "weighted_energy_kwh": 1.8,
       "examples": [{"day": "2027-05-09", "start": 1810000000.0, "end": 1810000150.0, "power_w": 2004}],
+      "occurrences": [[1809740000, 140, 2016], [1809913000, 155, 1998], [1810000000, 150, 2004]],
       "created_at": 1789000000.0
     }
   ],

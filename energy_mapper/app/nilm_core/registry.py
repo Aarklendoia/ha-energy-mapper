@@ -26,6 +26,13 @@ but only the registry id is an identity: :func:`annotate_report` adds it to
 a daily report (``registry_id`` on activations, daily signatures and peak
 parts) with :func:`match`, the same rule as the clustering.
 
+Each signature also keeps its occurrences of the last ``occurrence_days``
+days (60 by default, at most ``max_occurrences``, the most recent ones) as
+compact ``[start, duration_s, power_w]`` arrays, sorted by start: the day
+raster of the panel (#65). They come from the stored activations; those of
+days no longer stored are kept from the previous registry (and those of a
+signature merged into a neighbour go to the neighbour), pruned to the window.
+
 Everything here is pure (no I/O, no clock): the caller passes the day
 summaries, the previous registry and ``now``.
 """
@@ -65,6 +72,8 @@ class RegistryConfig:
     peak_relative: float = 0.8
     examples: int = 3
     max_iterations: int = 8
+    occurrence_days: int = 60  # rolling window of the occurrences (the day raster)
+    max_occurrences: int = 600  # per signature, the most recent ones
 
 
 def decay(age_s: float, half_life_days: float) -> float:
@@ -276,6 +285,11 @@ def update(
     days = sorted(summaries)
     day_weight = {d: decay(now - _midday(summaries[d], now), hl) for d in days}
     days_w = sum(day_weight.values())
+    # occurrences: the window, and from when the stored days cover it (the
+    # older ones of the previous registry are kept)
+    since = now - config.occurrence_days * DAY_S
+    covered_from = min((t for d in days if (t := _day_start(summaries[d])) is not None), default=None)
+    occ = _Occurrences(since, covered_from, config.max_occurrences)
 
     # 1. activations, weighted by age
     groups: dict[tuple[str, str], list[_Act]] = {}
@@ -318,10 +332,13 @@ def update(
         for _, _, i, sid in pairs:
             if i not in ids and sid not in ids.values():
                 ids[i] = sid
+        made: dict[int, dict] = {}
         for i, members in enumerate(clusters):
             sid = ids.get(i) or _new_id(g, members, used_ids)
             used_ids.add(sid)
             sig = _stats(sid, g, members, prev_sigs.get(sid), now, days_w, config, local_hour)
+            sig["occurrences"] = occ.of(members, prev_sigs.get(sid))
+            made[i] = sig
             if sig["weight"] >= config.forget_weight or is_ignored(sig):
                 out.append(sig)
         # previous signatures without a cluster: carried forward, decaying,
@@ -330,8 +347,19 @@ def update(
         for s in olds:
             if s["id"] in ids.values():
                 continue
-            absorbed = any(abs(c - s["power_w"]) <= tol * s["power_w"] for c in centers)
+            near = [
+                (abs(c - s["power_w"]), i)
+                for i, c in enumerate(centers)
+                if abs(c - s["power_w"]) <= tol * s["power_w"]
+            ]
+            absorbed = bool(near)
+            if near:
+                # merged into its nearest neighbour: the occurrences of the
+                # days no longer stored follow
+                target = made[min(near)[1]]
+                target["occurrences"] = occ.union(target["occurrences"], occ.old(s))
             sig = _carried(s, carry, days_w)
+            sig["occurrences"] = occ.window(s)
             if sig.get("label") or (
                 not absorbed and (sig["weight"] >= config.forget_weight or is_ignored(sig))
             ):
@@ -384,6 +412,71 @@ def _midday(summary: Mapping, default: float) -> float:
         return (float(summary["start"]) + float(summary["end"])) / 2
     except (KeyError, TypeError, ValueError):
         return default
+
+
+def _day_start(summary: Mapping) -> float | None:
+    """Start of a stored day (None when unknown: the day covers nothing)."""
+    try:
+        return float(summary["start"])
+    except (KeyError, TypeError, ValueError):
+        starts = [
+            a.get("start")
+            for a in summary.get("activations") or []
+            if isinstance(a.get("start"), int | float)
+        ]
+        return float(min(starts)) if starts else None
+
+
+class _Occurrences:
+    """The occurrences of the signatures: ``[start, duration_s, power_w]``
+    (integers), sorted by start, within the window, the most recent ``cap``."""
+
+    def __init__(self, since: float, covered_from: float | None, cap: int):
+        self.since = since
+        self.covered_from = covered_from
+        self.cap = max(int(cap), 0)
+
+    def _valid(self, sig: Mapping | None) -> list[list[int]]:
+        out = []
+        for o in (sig or {}).get("occurrences") or []:
+            try:
+                start, duration, power = (round(float(v)) for v in o[:3])
+            except (TypeError, ValueError):
+                continue
+            if start >= self.since:
+                out.append([start, duration, power])
+        return out
+
+    def window(self, sig: Mapping | None) -> list[list[int]]:
+        """The stored occurrences of ``sig`` still in the window."""
+        return self._finish({o[0]: o for o in self._valid(sig)})
+
+    def old(self, sig: Mapping | None) -> list[list[int]]:
+        """The occurrences of ``sig`` in the window on days no longer stored."""
+        cut = self.covered_from
+        return [o for o in self._valid(sig) if cut is None or o[0] < cut]
+
+    def of(self, members: Iterable[_Act], old: Mapping | None) -> list[list[int]]:
+        """From the stored activations, and the previous signature's of the
+        days no longer stored."""
+        found = {
+            round(a.start): [round(a.start), round(a.duration), round(a.power)]
+            for a in members
+            if a.start >= self.since
+        }
+        for o in self.old(old):
+            found.setdefault(o[0], o)
+        return self._finish(found)
+
+    def union(self, a: Iterable[list[int]], b: Iterable[list[int]]) -> list[list[int]]:
+        found = {o[0]: o for o in a}
+        for o in b:
+            found.setdefault(o[0], o)
+        return self._finish(found)
+
+    def _finish(self, found: Mapping[int, list[int]]) -> list[list[int]]:
+        out = sorted(found.values())
+        return out[len(out) - self.cap :] if len(out) > self.cap else out
 
 
 def _next_day(day: str) -> str:
@@ -636,6 +729,7 @@ def expected_signature(
         "energy_kwh": 0.0,
         "weighted_energy_kwh": 0.0,
         "examples": [],
+        "occurrences": [],
         "created_at": now,
         "expected": True,
     }
