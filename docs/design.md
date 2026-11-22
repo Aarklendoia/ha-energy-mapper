@@ -331,7 +331,8 @@ flowchart TD
   K --> C[find_cycling_sessions: alternating steps of similar size]
   C --> P[pair_steps: on-step closest in size]
   P --> V[validate_activations: drop phantom pairings]
-  V --> MC[find_cycles: candidate multi-phase cycles]
+  V --> B[group_bursts: a thermostat's regular bursts are one cycling use]
+  B --> MC[find_cycles: candidate multi-phase cycles]
   MC --> MA[attribute: recognised cycles replace their activations]
   MA --> G[cluster: daily signatures]
   G --> R[curve, totals, peaks, quality: report]
@@ -467,13 +468,75 @@ that can be paired with the other appliance.
 The result is a list of **activations** (one use of one appliance): start, end, power, and
 for sessions duty, on-time and period.
 
+**Burst series** (`group_bursts`, #87). A heater regulating on its own thermostat switches on
+for some tens of seconds every few minutes, for hours. Its steps are too far apart for a
+session (§ 4.4), so each burst was one short activation: on the reference installation a
+930 W radiator gave a "42 s appliance" used 151 times in 29 days, next to 88 short sessions of
+the same radiator. Measured there, the bursts come at two levels: 40 s every 80 s while the
+radiator's pilot-wire relay allows heating, and the relay itself opens for 1 to 9 minutes every
+10 minutes, so that single bursts come back every 10 minutes at the end of a heating period.
+After the validation, the regular bursts of the same power become one cycling use:
+
+- a **burst** is a simple activation of at least 600 W (the sessions' minimum: a heating
+  element) on for less than 5 minutes, or a cycling session. Longer, a use is one of its own,
+  and may be a heating phase of a multi-phase cycle (§ 4.9, whose anchors last at least
+  5 minutes: a tumble dryer's heater cycling for minutes at a time is left alone);
+- bursts of the same power (20 % of the median of the series, the sessions' tolerance) less
+  than 120 s apart (off to on) are one **block**: a train of bursts while the relay allows it;
+- a block follows the previous one when it starts at most **15 minutes** after its start and,
+  from the third block, within **25 %** of the median of the last five periods (a thermostat's
+  period drifts slowly as the room warms). Start to start, so that the duty does not matter;
+- a series has at least **4 blocks**. Once it has them, it may miss one block (a period of
+  twice the usual one: a burst hidden by another appliance switching at the same time), and
+  another short use of the same power in its middle does not end it;
+- the pass is causal (each decision from the bursts before), so that the live view can follow
+  the same rule (§ 4.11). A burst goes to the series it continues, the closest in power (the
+  longest of those within 5 %).
+
+Why these values, measured on the 1,165 activations of 29 stored days of the reference
+installation. The rule finds 21 series: 20 of the radiator and a 2.9 kW load on for 70 s every
+200 s (a thermostat by its look). The radiator's single bursts go from 151 to 72 and its short
+sessions from 88 to 20; the activations shorter than 90 s from 398 to 311.
+
+| Variant | Series | Not the radiator | Radiator's single bursts left |
+|---|---|---|---|
+| **The rule** (15 min, 25 %, 4 blocks, one missed) | 21 | 1 | 72 |
+| No missed block | 21 | 1 | 81 |
+| No regularity | 29 | 8, on 7 days (the short uses around a meal) | 58 |
+| 3 blocks | 30 | 6 | 62 |
+| 5 blocks | 12 | 1 | 96 |
+| Period up to 10 min / 12 min / 20 min | 5 / 19 / 21 | 1 | 150 / 77 / 72 |
+| Regularity 15 % / 35 % | 19 / 25 | 1 / 5 | 81 / 70 |
+| From 300 W | 22 | 2 | 72 |
+
+So 15 minutes leaves room for a 10-minute period that jitters (12 would do, 20 brings
+nothing more) and two kettles twenty minutes apart are never one; without the regularity, or
+with 3 blocks, chance series of unrelated short uses appear; under 600 W nothing regular is
+found (and the motor bursts of a washing machine must stay phases of its cycle). The
+grouping comes after the pairing rather than in `find_cycling_sessions`, because between two
+bursts minutes apart other appliances switch (the alternation of the free steps is lost),
+and because the radiator's short sessions are bursts of the same series.
+
+A series is a cycling activation like a session: the median power of its bursts, their
+median on-time and period (start to start, so 80 s for the radiator above), the number of
+bursts, and its duty over the whole series (often under 20 %). `blocks` keeps when it was on
+(`[start, end]` of each block). Its on-periods are those of its bursts, each taken on its own:
+a session ending on an on-step whose off-step was not seen is not "on" until the next block.
+
+**Exact energy of a cycling use.** `Activation.overlap_energy_wh` and `power_at` use the
+on-periods of a cycling activation (each on-step followed by an off-step) instead of its mean
+power: a heater on for 40 s every 4 minutes uses nothing in the three minutes between two
+bursts, and the curve (§ 4.7) can only give a signature what the minute holds. The total is
+unchanged (`power × duty × duration`); a hob session is only spread more exactly.
+
 ### 4.6 Daily signatures (`signatures.py`)
 
 Activations are grouped by kind (`steady` or `cycling`) and duration band (`short` < 10 min,
 `medium` 10–60 min, `long` > 1 h, `session` for cycling), then clustered greedily on power
 (12 % tolerance). The id names the group and the power rounded to 50 W under 1 kW, 100 W above:
 `short-2000w`, `medium-2100w`, `long-900w`, `cyc-1500w`. Daily ids depend on that day only;
-the long-lived identity is the registry id (below).
+the long-lived identity is the registry id (below). A burst series (§ 4.5) is `cycling` /
+`session` like a hob session: it joins the `cyc-…` signature its short sessions already had.
 
 ### 4.7 The report (`report.py`)
 
@@ -560,7 +623,9 @@ light version (standard library, deterministic, a few ms per day) groups them:
    and at least one heating phase. Its *members* are the activations inside it that can be one
    of its phases (not a cycling session such as a hob, not a short burst of heating power such
    as a kettle). Its own power, minute by minute, is the load minus the base, the switched loads
-   and every non-member activation.
+   and every non-member activation. A burst series (§ 4.5) is a cycling activation, so never a
+   member; its bursts (under 5 minutes) were not heating phases before either, and only its
+   on-periods are taken out of the cycle's power.
 2. **Phases** (`segment`). Each minute is classified (heat from 800 W, motor from 50 W, idle),
    smoothed with a median of three, split into runs; runs shorter than 5 min are merged into
    the neighbour of the closest mean power. Idle runs are not phases. A phase is
@@ -728,12 +793,27 @@ flowchart LR
    steps are all as close and of the same size (20 % of their median) continues it as a
    **session** (the cycling rule of § 4.4), `confirmed` from the 6 steps the night needs.
    The night's split of a step combining a cycle and another appliance is not done live.
+   **Burst series** (§ 4.5, #87): each closed event gives its bursts as the night would see
+   them (its session from 6 steps, else its short on/off pairs), kept for 75 minutes (five
+   times the longest period), and `burst_series`, the night's own function, runs on them.
+   When the event completes a series (its fourth block) or continues one, the series is one
+   event (`series`, a session `confirmed` at once): the earliest event still held takes the
+   steps of the others, which are **cancelled** (they leave the feed, as a spike does). So a
+   thermostat is one line per burst for its first three blocks, exactly what the night would
+   say if it stopped there, then one line; each later burst opens a line while it is on and
+   joins the series when it closes. `prune` keeps a series for 15 more minutes (its next
+   burst may come) and the bursts of the events it forgets, so a 10-minute thermostat makes
+   its series in the service, which forgets events after 15 minutes. Not done live: the
+   validation of the pairs; and once in a series the bursts of a fast train count one by one
+   where the night counts their session once (only the median power can differ).
 4. **Candidates** (`live.CandidateRanker`). For each event, the registry signatures (named
    or not, not those the user ignored) of the groups it can still be in, within twice the
    registry tolerance (`Matcher.near`, the registry's own rule): a session matches
    `cycling`; a closed event the band of its duration and multi-phase appliances (it may be
-   their first phase); a running event the bands its elapsed time allows (`short` is out
-   after 10 min, a session after 2 min); an orphan off-step all of them. Score =
+   their first phase), and `cycling` too when it is a burst (at least 600 W, under 5 min: it
+   may be one burst of a thermostat, whose signature is a cycling one); a running event the
+   bands its elapsed time allows (`short` is out after 10 min, a session after 2 min, or
+   5 min from 600 W); an orphan off-step all of them. Score =
    `exp(-d²/2)` (`d` the distance in tolerances: 1 at the center, 0.61 at the edge of the
    night's tolerance) × 0.85–1 from habits (share of its uses at this hour, uses per week).
    A switch (a switched load, or one given by the caller) that changed the same way within
@@ -752,7 +832,14 @@ days give exactly the steps of `detect_steps` (noise, overlapping loads, multi-p
 appliances, motor bursts, solar with dropouts, recorder gaps, irregular readings, 2 s
 meters, the night threshold on a solar day with meter drift); closed events equal `pair_steps`; a hob is one session with the night's cycle
 count; on 60 uses of 6 steady appliances the right one is first in ≥ 80 % and in the top 3
-in ≥ 95 %. A day of a 10 s meter replays in about 0.1 s.
+in ≥ 95 %. A day of a 10 s meter replays in about 0.1 s. Burst series
+(`tests/test_bursts.py`): a 1 kW heater on for 40 s every 4 minutes for 2 hours is one
+cycling use at night (30 bursts, duty 0.17, 0.33 kWh, in the curve too) and one live session
+with the same start, end, count, on-time, period and duty; kettles, a microwave used six
+times, a hob session and eight synthetic days of multi-phase cycles are unchanged; a
+dishwasher's candidate cycle is the same with a heater bursting next to it; a radiator
+behind a relay (two levels) is one use; a slow thermostat makes its series with the
+service's pruning.
 
 ## 5. Using the Energy dashboard
 
@@ -889,7 +976,7 @@ summary with `curve: []` and `curve_pruned: true`.
 | `curve` | Per-minute rows `{t, house, grid, pv, submetered, estimated, base, known: {name: W}, signatures: {daily id: W}, other}` |
 | `peaks` | `{start, end, max_ts, house_w, grid_w, pv_w, parts: [{kind: submetered\|estimated\|known\|signature, name, power_w, since?, registry_id?}], unexplained_w, notable}` |
 | `known_loads` | Switched loads: `{name, entity_id, power_w, transitions, matched, on_states, inverted, on_s}`; an operation-state load (add-on 0.14.0+) adds `mode: "run"` and `runs` |
-| `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}`; a recognised multi-phase cycle (add-on 0.10.0+) adds `multiphase: true` and `phases`, its `power_w` is its mean power and its `signature` the registry id of its template |
+| `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}`; a burst series (add-on 0.16.0+, § 4.5) is `cycling` and adds `blocks` (`[[start, end]]`: when it was on, bursts less than 2 minutes apart as one); a recognised multi-phase cycle (add-on 0.10.0+) adds `multiphase: true` and `phases`, its `power_w` is its mean power and its `signature` the registry id of its template |
 | `cycles` | Candidate multi-phase cycles (add-on 0.10.0+): `{start, end, power_w (heating), energy_kwh, phases: [{kind: heat\|motor, offset_s, duration_s, power_w}], members, template, distance}` |
 | `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
 | `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}` |
@@ -1350,7 +1437,11 @@ hour while its radiator switches on and off on its own; most of the radiator's s
 from any change of the thermostat, and most of the thermostat's changes are far from a step.
 What matters is that the signature **only runs while** the entity is in that state. From the
 entity's known periods of each compared day (`segments`: from midnight with the initial state,
-or from its first change) and the signature's activations (`signature_uses`):
+or from its first change) and the signature's activations (`signature_uses`; for a burst
+series, § 4.5, each of its `blocks`: a radiator bursting for two hours is off most of that
+time, and a relay that opens every 10 minutes is off between two blocks; the edge test takes
+the on and off steps of the blocks in the same way, so both tests see what they saw when each
+block was an activation):
 
 1. **On states**: the states holding a larger share of the signature's on-time than of the
    entity's time (a lift above 1). None, or covering all the time: no candidate.
@@ -2158,6 +2249,21 @@ cannot be read).
   appliance can give one signature per programme, and recognised cycles only absorb their
   activations once the user validated the signature.
 - Activations longer than 6 hours are not paired.
+- Burst series (§ 4.5): a thermostat seen for fewer than 4 blocks, or whose rhythm is broken
+  twice in a row, stays short uses (on the reference installation half of the single bursts
+  of a radiator and three quarters of its short sessions are grouped: the others come by
+  twos and threes at the end of a heating period, or lost their off-step to the pairing,
+  see the first limit); bursts under 600 W
+  and periods above 15 minutes (a fridge) are not grouped; a train of bursts longer than
+  15 minutes cannot be followed (the period is counted from its start), so a heating period
+  that begins with a long train is a session, then a series; a series crossing midnight is
+  two; a thermostat and a hob of the same power share a `cyc-…` signature. Days analysed
+  before 0.16.0 keep their short activations until they leave the registry's memory, so the
+  "short" signature of a thermostat fades instead of disappearing at once. In the Live tab,
+  labelling one burst before its series exists names a short steady use, not the cycling
+  signature; and the live series are those of the night only as far as the live pairs are
+  (§ 4.11: no validation, switched loads not taken out, sessions made on the fly): on real
+  days the same heating periods are found, often with other bounds.
 - Three-phase installations are analysed on the sum of the phases.
 - The analysis depends on the recorder history; the backfill is limited by `purge_keep_days`.
 - The first backfill analyses newest first, so its days do not benefit from the peak window.

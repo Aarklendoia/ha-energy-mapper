@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.16.0
+
+- The regular bursts of a thermostat are one cycling use (#87). A heater
+  regulating on its own thermostat switches on for some tens of seconds every
+  few minutes: its steps are too far apart for a cycling session, so each burst
+  was a short use of its own (a "40 s appliance" used hundreds of times a
+  month, hiding the appliances worth naming in the review). After the pairing,
+  short uses (under 5 minutes) and cycling sessions of at least 600 W and of
+  the same power (within 20 %) are grouped when they come back regularly: bursts
+  less than 2 minutes apart are one block (a radiator bursting while its
+  pilot-wire relay allows it), a block starts at most 15 minutes after the
+  previous one and within 25 % of the usual period, and a series needs 4
+  blocks (it may then miss one). Two kettles twenty minutes apart, a microwave
+  used several times around a meal, hob sessions and the heating phases of
+  multi-phase cycles are unchanged. The series is a cycling activation (power,
+  duty, on-time, period) of the `cyc-…` signature, with `blocks`: when it was
+  on.
+- A cycling use is counted in the minutes it is on (its own on/off pattern)
+  instead of its mean power all along: the curve and the hourly statistics of
+  a thermostat, and of a hob, are exact. The energy of a use is unchanged.
+- Entity suggestions compare each block of a series, so a relay or a
+  thermostat that follows the bursts is still found.
+- Live tab: a thermostat is one line per burst until its fourth block, then
+  one session line (the lines of its bursts leave the feed; each new burst
+  shows while it is on, then joins the session). A short use of at least 600 W
+  is also compared with the cycling signatures.
+
 ## 0.15.0
 
 - Containment suggestions require specificity, not just inclusion (#82). In

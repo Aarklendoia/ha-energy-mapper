@@ -1,6 +1,6 @@
 """Turn unexplained steps into activations (one use of one appliance).
 
-Two kinds:
+Three kinds:
 
 * **cycling sessions**: a load of similar size switching on and off every few
   tens of seconds (induction hob at medium power, oven thermostat). Pairing
@@ -8,12 +8,18 @@ Two kinds:
   are grouped first into one session with a duty cycle.
 * **simple activations**: an on-step paired with the off-step of the same
   size that closes it.
+* **burst series** (#87): a heater regulating on its thermostat switches on
+  for some tens of seconds every few minutes, for hours. Its steps are too
+  far apart for a session, so each burst is first a simple activation (or a
+  short session); the regular ones of the same power are then grouped into
+  one cycling use (:func:`group_bursts`).
 """
 
 from __future__ import annotations
 
 import bisect
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import pairwise
 
@@ -32,6 +38,10 @@ class Activation:
     period_s: float | None = None  # median cycle period
     signature: str | None = None
     steps: list[Step] = field(default_factory=list, repr=False)
+    # a burst series (#87): its blocks ``(start, end)``, the bursts closer
+    # than the session gap counted as one
+    blocks: list[tuple[float, float]] | None = None
+    _on: tuple[list[float], list[float]] | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def duration_s(self) -> float:
@@ -45,24 +55,40 @@ class Activation:
     def energy_kwh(self) -> float:
         return self.mean_power_w * self.duration_s / 3.6e6
 
+    def on_periods(self) -> tuple[list[float], list[float]]:
+        """The starts and the ends of the on-periods of a cycling use: each
+        on-step followed by an off-step."""
+        if self._on is None:
+            pairs = [(a.ts, b.ts) for a, b in pairwise(self.steps) if a.delta > 0 and b.delta < 0]
+            self._on = ([p[0] for p in pairs], [p[1] for p in pairs])
+        return self._on
+
     def power_at(self, ts: float) -> float:
-        """Instant power. For a session, the exact on/off pattern is known."""
+        """Instant power. For a cycling use, the exact on/off pattern is known."""
         if not self.start <= ts < self.end:
             return 0.0
         if not self.cycling:
             return self.power_w
-        state = 0.0
-        for s in self.steps:
-            if s.ts > ts:
-                break
-            state = self.power_w if s.delta > 0 else 0.0
-        return state
+        starts, ends = self.on_periods()
+        i = bisect.bisect_right(starts, ts) - 1
+        return self.power_w if i >= 0 and ts < ends[i] else 0.0
 
     def overlap_energy_wh(self, start: float, end: float) -> float:
+        """Energy used within ``[start, end)``. A cycling use counts its own
+        on-periods: a heater on for 40 s every 4 minutes uses nothing in
+        the minutes between two bursts."""
         a, b = max(start, self.start), min(end, self.end)
         if b <= a:
             return 0.0
-        return self.mean_power_w * (b - a) / 3600.0
+        if not self.cycling or not self.steps:
+            return self.mean_power_w * (b - a) / 3600.0
+        starts, ends = self.on_periods()
+        on_s = 0.0
+        i = max(bisect.bisect_right(starts, a) - 1, 0)
+        while i < len(starts) and starts[i] < b:
+            on_s += max(0.0, min(b, ends[i]) - max(a, starts[i]))
+            i += 1
+        return self.power_w * on_s / 3600.0
 
 
 def find_cycling_sessions(
@@ -142,7 +168,7 @@ def _clean_match_soon(
 
 def _session(group: list[Step]) -> Activation:
     power = statistics.median(abs(s.delta) for s in group)
-    ons, periods = [], []
+    ons = []
     for a, b in pairwise(group):
         if a.delta > 0 and b.delta < 0:
             ons.append(b.ts - a.ts)
@@ -163,6 +189,210 @@ def _session(group: list[Step]) -> Activation:
         period_s=round(statistics.median(periods), 1) if periods else None,
         steps=list(group),
     )
+
+
+@dataclass(frozen=True)
+class BurstConfig:
+    """The burst series (#87): what a thermostat's bursts must look like to
+    be one cycling use."""
+
+    min_w: float = 600.0  # as the cycling sessions: a heating element
+    # a burst is on for less than this; longer, it is a use of its own (and
+    # may be a heating phase of a multi-phase cycle, cycles.py)
+    max_on_s: float = 300.0
+    block_gap_s: float = 120.0  # bursts closer than this (off to on) are one block
+    max_period_s: float = 900.0  # from the start of a block to the next one
+    min_blocks: int = 4
+    size_tol: float = 0.2  # the cycling tolerance, on the median power of the series
+    same_size: float = 0.05  # two series as close as this to a burst: the longest takes it
+    period_tol: float = 0.25  # a period within this of the median of the last ones
+    period_memory: int = 5  # ... that many: a thermostat's period drifts with the room
+    # blocks a series of at least ``min_blocks`` may miss in a row (a burst
+    # hidden by another appliance switching at the same time)
+    max_missed: int = 1
+
+    def is_burst(self, power_w: float, duration_s: float, cycling: bool = False) -> bool:
+        """Whether an activation can be one burst of a series: a short use
+        or a cycling session, of at least ``min_w``."""
+        return power_w >= self.min_w and (cycling or duration_s < self.max_on_s)
+
+
+BURSTS = BurstConfig()
+
+
+class _Series:
+    """A series being built: its blocks (lists of unit indexes)."""
+
+    def __init__(self, blocks: list[list[int]], units: Sequence[tuple[float, float, float]]):
+        self.blocks = blocks
+        self.units = units
+
+    def add(self, i: int, new_block: bool) -> None:
+        if new_block:
+            self.blocks.append([i])
+        else:
+            self.blocks[-1].append(i)
+
+    @property
+    def end(self) -> float:
+        return self.units[self.blocks[-1][-1]][1]
+
+    @property
+    def last_start(self) -> float:
+        return self.units[self.blocks[-1][0]][0]
+
+    @property
+    def power(self) -> float:
+        return statistics.median(self.units[i][2] for b in self.blocks for i in b)
+
+    def period(self, memory: int) -> float | None:
+        starts = [self.units[b[0]][0] for b in self.blocks[-(memory + 1) :]]
+        return statistics.median(b - a for a, b in pairwise(starts)) if len(starts) > 1 else None
+
+    def follows(self, start: float, cfg: BurstConfig) -> bool:
+        """Whether a block starting at ``start`` keeps the rhythm."""
+        period = start - self.last_start
+        usual = self.period(cfg.period_memory)
+        if usual is None:
+            return period <= cfg.max_period_s
+        # an established series may have missed a block or so
+        most = 1 + (cfg.max_missed if len(self.blocks) >= cfg.min_blocks else 0)
+        return any(
+            abs(period - n * usual) <= cfg.period_tol * n * usual and period <= n * cfg.max_period_s
+            for n in range(1, most + 1)
+        )
+
+    def over(self, start: float, cfg: BurstConfig) -> bool:
+        """Whether a unit starting at ``start`` comes too late to continue it."""
+        most = 1 + (cfg.max_missed if len(self.blocks) >= cfg.min_blocks else 0)
+        return start - self.end > cfg.block_gap_s and start - self.last_start > most * cfg.max_period_s
+
+
+def burst_series(
+    units: Sequence[tuple[float, float, float]], config: BurstConfig = BURSTS
+) -> list[list[list[int]]]:
+    """The series of regular bursts among ``units``, the ``(start, end,
+    power_w)`` of the bursts (:meth:`BurstConfig.is_burst`) sorted by start.
+    Each series is the list of its blocks, each block the indexes of its
+    units.
+
+    Units of the same power (``size_tol`` of the median of the series)
+    closer than ``block_gap_s`` form a **block** (a radiator bursting every
+    80 s while its relay allows it). A block follows the previous one when
+    it starts at most ``max_period_s`` after its start and, from the third
+    block, when this period is within ``period_tol`` of the median of the
+    last ones. A series has at least ``min_blocks`` blocks: two kettles
+    twenty minutes apart, or three uses of a microwave at any intervals,
+    stay what they are. Once it has them, a block may come two periods
+    after the previous one (``max_missed``: a burst was hidden by another
+    appliance switching at the same time).
+
+    One pass in time order, each decision made from the units before (so
+    that the live view can follow the same rule): a unit goes to the series
+    it continues (the closest in power, the longest of those within
+    ``same_size``). One that breaks the rhythm of a series of fewer than
+    ``min_blocks`` blocks restarts it from its last block; it leaves a
+    longer one as it is, to be continued by a later unit.
+    """
+    cfg = config
+    open_: list[_Series] = []
+    done: list[_Series] = []
+
+    def close(s: _Series) -> None:
+        if len(s.blocks) >= cfg.min_blocks:
+            done.append(s)
+
+    for i, (start, _end, power) in enumerate(units):
+        for s in list(open_):
+            if s.over(start, cfg):
+                open_.remove(s)
+                close(s)
+        fits: list[tuple[tuple, _Series, bool]] = []
+        breaks: list[tuple[tuple, _Series]] = []
+        for s in open_:
+            ref = s.power
+            off = abs(power - ref) / ref
+            if start < s.end or off > cfg.size_tol:
+                continue  # another load running at the same time, or of another size
+            rank = (int(off / cfg.same_size), -len(s.blocks), off)
+            if start - s.end <= cfg.block_gap_s:
+                fits.append((rank, s, False))
+            elif s.follows(start, cfg):
+                fits.append((rank, s, True))
+            else:
+                breaks.append((rank, s))
+        if fits:
+            _, s, new_block = min(fits, key=lambda f: f[0])
+            s.add(i, new_block)
+            continue
+        if breaks:
+            _, s = min(breaks, key=lambda f: f[0])
+            if len(s.blocks) < cfg.min_blocks and start - s.last_start <= cfg.max_period_s:
+                s.blocks = [s.blocks[-1], [i]]
+                continue
+        open_.append(_Series([[i]], units))
+    for s in open_:
+        close(s)
+    return sorted((s.blocks for s in done), key=lambda blocks: blocks[0][0])
+
+
+def _series(members: list[Activation], blocks: list[tuple[float, float]]) -> Activation:
+    """One cycling use from the bursts of a series, in time order. Its
+    on-periods are those of its bursts, each taken on its own: a session may
+    end on an on-step whose off-step was not seen, which must not last
+    until the next burst."""
+    on: list[tuple[float, float]] = []
+    for a in members:
+        on += zip(*a.on_periods(), strict=True) if a.cycling else [(a.start, a.end)]
+    start, end = members[0].start, members[-1].end
+    durations = [b - a for a, b in on]
+    periods = [b[0] - a[0] for a, b in pairwise(on)]
+    use = Activation(
+        start=start,
+        end=end,
+        # the median over the bursts: a short session counts as one, as in the rule
+        power_w=round(statistics.median(a.power_w for a in members), 1),
+        cycling=True,
+        duty=round(min(1.0, sum(durations) / (end - start)), 3) if end > start else 1.0,
+        cycles=len(on),
+        on_s=round(statistics.median(durations), 1) if durations else None,
+        period_s=round(statistics.median(periods), 1) if periods else None,
+        steps=[s for a in members for s in a.steps],
+        blocks=blocks,
+    )
+    use._on = ([p[0] for p in on], [p[1] for p in on])
+    return use
+
+
+def group_bursts(
+    sessions: list[Activation], pairs: list[Activation], config: BurstConfig = BURSTS
+) -> tuple[list[Activation], list[Activation]]:
+    """Group the regular bursts of a thermostat into one cycling use (#87).
+
+    ``sessions`` and ``pairs`` are the activations of
+    :func:`find_cycling_sessions` and :func:`pair_steps` (validated). The
+    short ones of at least ``min_w`` and the sessions are the bursts; each
+    series of :func:`burst_series` becomes one cycling activation with the
+    steps of its bursts: its power is their median, its duty the share of
+    the time it is on, and its ``blocks`` keep when it was. Returns the
+    sessions (those left and the series, by start) and the pairs left.
+    """
+    bursts = sorted(
+        (a for a in sessions + pairs if config.is_burst(a.power_w, a.duration_s, a.cycling)),
+        key=lambda a: a.start,
+    )
+    series = burst_series([(a.start, a.end, a.power_w) for a in bursts], config)
+    if not series:
+        return sessions, pairs
+    grouped: set[int] = set()
+    out: list[Activation] = []
+    for blocks in series:
+        members = [bursts[i] for b in blocks for i in b]
+        grouped.update(id(a) for a in members)
+        out.append(_series(members, [(bursts[b[0]].start, bursts[b[-1]].end) for b in blocks]))
+    out += [a for a in sessions if id(a) not in grouped]
+    out.sort(key=lambda a: a.start)
+    return out, [a for a in pairs if id(a) not in grouped]
 
 
 def pair_steps(

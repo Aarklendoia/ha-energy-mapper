@@ -169,7 +169,8 @@ def signature_edges(
     config: CorrelationConfig,
 ) -> dict[str, dict[str, list[Edge]]]:
     """``{sid: {day: [Edge]}}``: the on and off steps of the activations of
-    the signatures ``sids`` (registry ids, the clustering's rule). A step
+    the signatures ``sids`` (registry ids, the clustering's rule); those of
+    each block of a burst series (:func:`_spans`). A step
     belongs to the day it falls in; steps closer than the window to the
     day's bounds are left out (the entity changes are read per day)."""
     wanted = set(sids)
@@ -187,16 +188,29 @@ def signature_edges(
             sid = matcher.match(a)
             if sid not in wanted:
                 continue
-            for key, on in (("start", True), ("end", False)):
-                try:
-                    ts = float(a[key])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                ident = (sid, round(ts), on)
-                if not start + margin <= ts < end - margin or ident in seen:
-                    continue
-                seen.add(ident)
-                out.setdefault(sid, {}).setdefault(day, []).append(Edge(ts, on))
+            for a0, a1 in _spans(a):
+                for ts, on in ((a0, True), (a1, False)):
+                    ident = (sid, round(ts), on)
+                    if not start + margin <= ts < end - margin or ident in seen:
+                        continue
+                    seen.add(ident)
+                    out.setdefault(sid, {}).setdefault(day, []).append(Edge(ts, on))
+    return out
+
+
+def _spans(activation: Mapping) -> list[tuple[float, float]]:
+    """When an activation was on: its ``blocks`` for a burst series (#87: a
+    radiator bursting for two hours is off most of that time, and its relay
+    may open and close between two blocks), else from its start to its end."""
+    out = []
+    try:
+        for b0, b1 in activation.get("blocks") or []:
+            if float(b1) > float(b0):
+                out.append((float(b0), float(b1)))
+        if not out:
+            out.append((float(activation["start"]), float(activation["end"])))
+    except (KeyError, TypeError, ValueError):
+        return []
     return out
 
 
@@ -266,8 +280,8 @@ def signature_uses(
     sids: Iterable[str],
 ) -> dict[str, dict[str, list[tuple[float, float]]]]:
     """``{sid: {day: [(start, end)]}}``: the activations of the signatures
-    ``sids`` (registry ids, the clustering's rule), clipped to their day,
-    sorted."""
+    ``sids`` (registry ids, the clustering's rule; each block of a burst
+    series, :func:`_spans`), clipped to their day, sorted."""
     wanted = set(sids)
     matcher = Matcher(registry)
     out: dict[str, dict[str, set[tuple[float, float]]]] = {}
@@ -281,12 +295,10 @@ def signature_uses(
             sid = matcher.match(a)
             if sid not in wanted:
                 continue
-            try:
-                a0, a1 = max(float(a["start"]), start), min(float(a["end"]), end)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if a1 > a0:
-                out.setdefault(sid, {}).setdefault(day, set()).add((a0, a1))
+            for b0, b1 in _spans(a):
+                a0, a1 = max(b0, start), min(b1, end)
+                if a1 > a0:
+                    out.setdefault(sid, {}).setdefault(day, set()).add((a0, a1))
     return {sid: {d: sorted(u) for d, u in per.items()} for sid, per in out.items()}
 
 

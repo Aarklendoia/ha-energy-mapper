@@ -12,8 +12,10 @@ The pipeline, fed with raw Home Assistant states one at a time::
 * an **event** is one line of the feed: a switch-on, completed by the
   off-step that closes it (the rule of :func:`~.activations.pair_steps`), or
   a **session** when alternating steps of the same size follow each other
-  (the rule of :func:`~.activations.find_cycling_sessions`), or an off-step
-  whose switch-on was not seen;
+  (the rule of :func:`~.activations.find_cycling_sessions`) or when short
+  uses of the same power come back regularly (a thermostat: the rule of
+  :func:`~.activations.burst_series`), or an off-step whose switch-on was
+  not seen;
 * each event gets its best **candidates**: registry signatures near its
   power (:meth:`~.registry.Matcher.near`, the registry's own tolerance) and
   switches that changed at the same time, with a score from 0 to 1.
@@ -33,6 +35,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
+from .activations import BURSTS, BurstConfig, burst_series
 from .registry import GROUPS, MULTIPHASE, Matcher, is_ignored
 from .signal import Sample, SampleBuilder
 from .signatures import DURATION_BANDS, duration_band
@@ -73,7 +76,8 @@ class LiveEvent:
     ``delta_w`` is the switch-on step (positive), or a negative off-step
     whose switch-on was not seen (before the view started). ``steps`` are
     the confirmed ``(ts, delta)`` steps of the event: on, off, on, off...
-    for a session.
+    for a session. ``series``: a series of regular bursts (#87), which took
+    the steps of the events of its bursts.
     """
 
     id: int
@@ -87,6 +91,7 @@ class LiveEvent:
     candidates: list[dict] = field(default_factory=list)
     step_id: int | None = None  # the live step that started it
     pending: LiveStep | None = field(default=None, repr=False)  # provisional next cycle
+    series: bool = False
 
     @property
     def running(self) -> bool:
@@ -126,7 +131,8 @@ class LiveEvent:
 
     def session(self, min_steps: int = 6) -> dict | None:
         """A session's cycles; ``confirmed`` once it has as many steps as the
-        night needs to call it a session."""
+        night needs to call it a session (a series of bursts is one from the
+        start: the night's rule made it)."""
         if not self.is_session:
             return None
         ons, periods = [], []
@@ -143,7 +149,7 @@ class LiveEvent:
             "on_s": round(statistics.median(ons), 1) if ons else None,
             "period_s": round(statistics.median(periods), 1) if periods else None,
             "duty": round(min(1.0, sum(ons) / span), 3) if span > 0 else None,
-            "confirmed": len(self.steps) >= min_steps,
+            "confirmed": self.series or len(self.steps) >= min_steps,
         }
 
     def to_dict(self) -> dict:
@@ -165,6 +171,18 @@ class LiveEvent:
         }
 
 
+@dataclass(frozen=True)
+class _Unit:
+    """A closed burst the pairer remembers (the unit of
+    :func:`~.activations.burst_series`), with its steps and its event."""
+
+    start: float
+    end: float
+    power_w: float
+    event: int
+    steps: tuple[tuple[float, float], ...]
+
+
 class LivePairer:
     """Turns live steps into events, as the night pairs its steps.
 
@@ -178,10 +196,19 @@ class LivePairer:
       the off-step of an event whose steps are all that close and of the
       same size (``session_tol`` of their median) continues that event as a
       session instead of opening a new line: the rule of
-      :func:`find_cycling_sessions` (which the night applies from 6 steps).
+      :func:`find_cycling_sessions` (which the night applies from 6 steps);
+    * a closed event that completes a series of regular bursts (a
+      thermostat, #87: :func:`~.activations.burst_series` on the closed
+      short events and sessions of the last ``series_memory_s``) makes one
+      session of them: the earliest event still held takes the steps of
+      the others, which are cancelled (they leave the feed). The next
+      bursts open a line each, and join the series when they close.
 
-    Simplification: the night splits a step that combines a cycle and
-    another appliance; live does not.
+    Simplifications: the night splits a step that combines a cycle and
+    another appliance, and validates its pairs against the load; live does
+    neither. Once in a series, the bursts of a fast train count one by one
+    where the night counts their session once (only the median power of the
+    series can differ).
     """
 
     def __init__(
@@ -194,12 +221,18 @@ class LivePairer:
         session_tol: float = 0.2,
         session_min_steps: int = 6,
         first_id: int = 1,
+        bursts: BurstConfig = BURSTS,
     ):
         self.tol_frac, self.tol_w, self.max_on_s = tol_frac, tol_w, max_on_s
         self.session_min_w, self.session_gap_s = session_min_w, session_gap_s
         self.session_tol, self.session_min_steps = session_tol, session_min_steps
+        self.bursts = bursts
+        # the bursts of a series are looked for this far back: enough for
+        # the blocks a series needs at the longest period
+        self.series_memory_s = (bursts.min_blocks + 1) * bursts.max_period_s
         self.events: dict[int, LiveEvent] = {}
         self._by_step: dict[int, LiveEvent] = {}
+        self._units: list[_Unit] = []  # the closed bursts, by start
         self._next_id = first_id  # the caller keeps ids unique across detectors
 
     def feed(self, step: LiveStep) -> list[LiveEvent]:
@@ -253,7 +286,7 @@ class LivePairer:
             best.steps.append((step.ts, step.delta))
             best.t_off, best.off_w = step.ts, -step.delta
             self._by_step[step.id] = best
-            return [best]
+            return self._series(best, step.ts)
         return [self._new(step, CONFIRMED)]
 
     def _new(self, step: LiveStep, state: str) -> LiveEvent:
@@ -313,12 +346,74 @@ class LivePairer:
                 best = o
         return best
 
+    def _bursts_of(self, ev: LiveEvent) -> list[_Unit]:
+        """The bursts of a closed event, as the night would see them: its
+        session once it has the steps of one, else each of its on/off
+        pairs that is short enough."""
+        cfg, steps = self.bursts, ev.steps
+        if len(steps) >= self.session_min_steps:
+            power = round(statistics.median(abs(d) for _, d in steps), 1)
+            if cfg.is_burst(power, steps[-1][0] - steps[0][0], cycling=True):
+                return [_Unit(steps[0][0], steps[-1][0], power, ev.id, tuple(steps))]
+            return []
+        out = []
+        for (ta, da), (tb, db) in zip(steps, steps[1:], strict=False):
+            power = round((da - db) / 2, 1)
+            if da > 0 and db < 0 and cfg.is_burst(power, tb - ta):
+                out.append(_Unit(ta, tb, power, ev.id, ((ta, da), (tb, db))))
+        return out
+
+    def _series(self, ev: LiveEvent, now: float) -> list[LiveEvent]:
+        """``ev`` just closed: the events that changed, ``ev`` first. When
+        it completes or continues a series of regular bursts, the series is
+        one event (the one that already is, else the earliest still held)
+        and the events of its other bursts are cancelled."""
+        if ev.series or ev.delta_w <= 0:
+            return [ev]
+        since = now - self.series_memory_s
+        self._units = [u for u in self._units if u.event != ev.id and u.end >= since]
+        mine = self._bursts_of(ev)
+        if not mine:
+            return [ev]
+        self._units = sorted(self._units + mine, key=lambda u: u.start)
+        units = self._units
+        found = None
+        for blocks in burst_series([(u.start, u.end, u.power_w) for u in units], self.bursts):
+            members = [units[i] for b in blocks for i in b]
+            if any(u.event == ev.id for u in members):
+                found = members
+                break
+        if found is None:
+            return [ev]
+        held = []  # the events of the bursts, each once, in time order
+        for u in found:
+            o = self.events.get(u.event)
+            if o is not None and o.state == CONFIRMED and all(o is not h for h in held):
+                held.append(o)
+        target = next((o for o in held if o.series), held[0])
+        steps = {st for u in found for st in u.steps} | set(target.steps)
+        target.steps = sorted(steps)
+        target.series = True
+        target.t_on, target.delta_w = target.steps[0]
+        target.t_off, target.off_w = target.steps[-1][0], -target.steps[-1][1]
+        others = [o for o in held if o is not target]
+        for o in others:
+            o.state, o.pending = CANCELLED, None
+        gone = {o.id for o in others}
+        # their steps are final; a provisional next cycle will open its own event
+        self._by_step = {k: v for k, v in self._by_step.items() if v.id not in gone}
+        self._units = [replace(u, event=target.id) if u.event in gone else u for u in units]
+        return [ev, *(o for o in [target, *others] if o is not ev)]
+
     def prune(self, before: float) -> None:
         """Forget the events over before ``before`` (and those running for
-        longer than ``max_on_s``)."""
+        longer than ``max_on_s``). A series of bursts is kept for one more
+        period: its next burst may still come."""
         drop = set()
         for ev in self.events.values():
             last = ev.steps[-1][0] if ev.steps else ev.t_on
+            if ev.series and ev.state == CONFIRMED:
+                last += self.bursts.max_period_s
             if (
                 (ev.state == CANCELLED and ev.t_on < before)
                 or (ev.running and before - ev.last_on > self.max_on_s)
@@ -359,8 +454,10 @@ class CandidateRanker:
       and its frequency move the score between 85 % and 100 %;
     * the group: a session matches cycling signatures; a closed event the
       band of its duration (and multi-phase appliances, whose first phase it
-      may be); a running event the bands its elapsed time still allows (a
-      ``short`` one is out after 10 min, a session after 2 min);
+      may be) and, when it is a burst (short, at least 600 W: maybe one
+      burst of a thermostat, #87), cycling signatures; a running event the
+      bands its elapsed time still allows (a ``short`` one is out after
+      10 min, a session after 2 min, or 5 min from 600 W);
     * PV moved at the same time: the score is halved, so it is never above
       "maybe".
 
@@ -377,7 +474,9 @@ class CandidateRanker:
         switch_window_s: float = 30.0,
         min_score: float = 0.05,
         session_gap_s: float = 120.0,
+        bursts: BurstConfig = BURSTS,
     ):
+        self.bursts = bursts
         self.matcher = Matcher(registry)
         self.sigs = {s["id"]: s for s in (registry or {}).get("signatures") or [] if not is_ignored(s)}
         self.local_hour = local_hour or (lambda ts: time.localtime(ts).tm_hour)
@@ -390,10 +489,13 @@ class CandidateRanker:
         if event.delta_w < 0:
             return [*GROUPS, MULTIPHASE]
         if not event.running and event.duration_s is not None:
-            return [("steady", duration_band(event.duration_s)), MULTIPHASE]
+            out = [("steady", duration_band(event.duration_s)), MULTIPHASE]
+            if self.bursts.is_burst(event.power_w, event.duration_s):
+                out.append(("cycling", "session"))  # maybe one burst of a thermostat
+            return out
         elapsed = max(0.0, now - event.t_on)
         out = [("steady", name) for _lo, hi, name in DURATION_BANDS if hi > elapsed]
-        if elapsed <= self.session_gap_s:
+        if elapsed <= self.session_gap_s or self.bursts.is_burst(event.delta_w, elapsed):
             out.append(("cycling", "session"))
         return [*out, MULTIPHASE]
 

@@ -155,7 +155,10 @@ Each report is a JSON document with:
   an operation-state load adds `mode: "run"` and its `runs`;
 - `signatures`, `activations`: the appliances found in the curve that day.
   Their `signature` is a daily cluster id; the API adds `registry_id`, the
-  long-lived id of the signature registry;
+  long-lived id of the signature registry. A heater regulating on its own
+  thermostat (regular bursts of the same power, at least 4, up to 15 minutes
+  apart; add-on 0.16.0+) is one `cycling` activation with its `duty`, `on_s`
+  and `period_s`, and `blocks`: `[[start, end]]`, when it was on;
 - `cycles`: the candidate cycles of multi-phase appliances (dishwasher,
   washing machine, dryer): `start`, `end`, `power_w` (the heating power),
   `energy_kwh`, `phases` (`kind` `heat` or `motor`, `offset_s`,
@@ -203,7 +206,7 @@ Each signature keeps:
 | `kind`, `band` | `steady`, `cycling` or `multiphase`; `short`, `medium`, `long`, `session` or `cycle`. |
 | `label`, `appliance` | Name and key of the Home Assistant appliance this signature belongs to (`null` when none). A named signature is never forgotten. |
 | `power_w`, `duration_s` | Typical power and duration (weighted medians). |
-| `on_s`, `period_s`, `duty` | Typical cycle of a cycling session (`null` for steady loads). |
+| `on_s`, `period_s`, `duty` | Typical cycle of a cycling session or of a thermostat's bursts (`null` for steady loads). |
 | `weight` | Weighted number of uses (each use counts 1 when new, 0.5 after one half-life). |
 | `count`, `days_seen` | Raw number of uses and of days with a use, over the stored history. |
 | `per_week` | Weighted uses per week. |
@@ -840,7 +843,11 @@ the running session (the view restarted, or the add-on did) gets a snapshot:
   change: a provisional step confirmed or `cancelled` (a spike: remove the
   line), an off-step that completes it (`t_off`, `off_w`, `duration_s`), a
   new cycle of a `session`, new candidates (the registry changed, or the
-  elapsed time ruled a duration band out). `id` stays the same for the whole
+  elapsed time ruled a duration band out). The bursts of a thermostat are
+  one event each until the fourth regular one; they then become one
+  `session` (the earliest event, `confirmed`) and the events of the other
+  bursts are `cancelled`, as is each later burst once it has joined the
+  session (add-on 0.16.0+). `id` stays the same for the whole
   life of an event and is never reused by the add-on process. `delta_w` is
   negative for an off-step whose switch-on was not seen. `candidates`: the 3
   best, from registry signatures (`signature_id`) or switched loads that
