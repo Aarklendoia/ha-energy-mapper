@@ -514,6 +514,121 @@ class KettleHA:
         return self.house.histories(a, end, dt=30) if a < end else {}
 
 
+class OccurrenceTests(unittest.TestCase):
+    """The occurrences of each signature over the rolling window (#65)."""
+
+    def test_window_format_and_order(self):
+        sums = {d.isoformat(): summary(d, [act(d, 7.5, 2000, 180)]) for d in days(D0, 90)}
+        last = D0 + dt.timedelta(days=89)
+        reg = nightly(sums, last, None)
+        (s,) = reg["signatures"]
+        occ = s["occurrences"]
+        self.assertEqual(len(occ), 60)  # the last 60 days of the 90
+        self.assertEqual(occ, sorted(occ))
+        self.assertEqual(occ[-1], [round(midnight(last) + 7.5 * 3600), 180, 2000])
+        self.assertTrue(all(isinstance(v, int) for o in occ for v in o))
+        self.assertGreaterEqual(occ[0][0], midnight(last + dt.timedelta(days=1)) - 60 * DAY)
+        # the same night again gives the same occurrences
+        self.assertEqual(nightly(sums, last, reg)["signatures"][0]["occurrences"], occ)
+
+    def test_cap_keeps_the_most_recent(self):
+        sums = {d.isoformat(): summary(d, [act(d, h, 1400, 300) for h in (6, 12, 18)]) for d in days(D0, 10)}
+        reg = nightly(sums, D0 + dt.timedelta(days=9), None, RegistryConfig(max_occurrences=7))
+        occ = reg["signatures"][0]["occurrences"]
+        self.assertEqual(len(occ), 7)
+        self.assertEqual(occ[-1][0], round(midnight(D0 + dt.timedelta(days=9)) + 18 * 3600))
+        reg = nightly(sums, D0 + dt.timedelta(days=9), None, RegistryConfig(occurrence_days=2))
+        self.assertEqual(len(reg["signatures"][0]["occurrences"]), 6)
+
+    def test_carried_signature_keeps_its_window(self):
+        sums = {d.isoformat(): summary(d, [act(d, 15, 2500, 2400)]) for d in days(D0, 30)}
+        reg = nightly(sums, D0 + dt.timedelta(days=29), None)
+        sid = reg["signatures"][0]["id"]
+        self.assertEqual(len(by_id(reg, sid)["occurrences"]), 30)
+        # its days are gone: the occurrences still in the window stay
+        later = D0 + dt.timedelta(days=29 + 40)
+        reg = nightly({}, later, reg)
+        self.assertEqual(len(by_id(reg, sid)["occurrences"]), 20)
+        reg = nightly({}, later + dt.timedelta(days=30), reg)
+        self.assertEqual(by_id(reg, sid)["occurrences"], [])
+        self.assertEqual(by_id(reg, sid)["count"], 30)
+
+    def test_days_no_longer_stored_are_kept(self):
+        sums = {d.isoformat(): summary(d, [act(d, 8, 2000, 150)]) for d in days(D0, 20)}
+        last = D0 + dt.timedelta(days=19)
+        reg = nightly(sums, last, None)
+        # the first 10 summaries are pruned (a short retention)
+        recent = {k: v for k, v in sums.items() if k >= (D0 + dt.timedelta(days=10)).isoformat()}
+        reg = nightly(recent, last, reg)
+        self.assertEqual(len(reg["signatures"][0]["occurrences"]), 20)
+        self.assertEqual(reg["signatures"][0]["count"], 10)
+
+    def test_merged_signature_unions_occurrences(self):
+        # two previous signatures, 2000 W and 2200 W, whose old days are gone;
+        # the stored days only have uses at 2100 W: one cluster takes the id of
+        # one, the other is merged into it and its occurrences follow
+        d_old, d_new = D0, D0 + dt.timedelta(days=5)
+        prev_occ = {
+            2000: [[round(midnight(d_old) + 3600 * 7), 150, 2000]],
+            2200: [[round(midnight(d_old) + 3600 * 9), 160, 2200]],
+        }
+        previous = {
+            "version": 1,
+            "updated_at": midnight(d_new),
+            "signatures": [
+                {
+                    "id": f"short-{p}w",
+                    "kind": "steady",
+                    "band": "short",
+                    "label": None,
+                    "power_w": p,
+                    "weight": 1.0,
+                    "hours": [0.0] * 24,
+                    "first_seen": d_old.isoformat(),
+                    "occurrences": o,
+                }
+                for p, o in prev_occ.items()
+            ],
+        }
+        sums = {d_new.isoformat(): summary(d_new, [act(d_new, 12, 2100, 150), act(d_new, 13, 2100, 150)])}
+        reg = nightly(sums, d_new, previous)
+        (s,) = reg["signatures"]
+        self.assertEqual([o[2] for o in s["occurrences"]], [2000, 2200, 2100, 2100])
+
+    def test_payload_size(self):
+        # one signature at the cap: about 13 KB of JSON
+        sums = {
+            d.isoformat(): summary(
+                d, [act(d, h + 0.37, 1412, 1234, cycling=True, duty=0.5) for h in range(0, 24, 2)]
+            )
+            for d in days(D0, 60)
+        }
+        reg = nightly(sums, D0 + dt.timedelta(days=59), None)
+        occ = reg["signatures"][0]["occurrences"]
+        self.assertEqual(len(occ), 600)
+        size = len(json.dumps(occ, separators=(",", ":")))
+        self.assertLess(size, 600 * 24)
+
+    def test_old_registry_is_updated_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ReportStore(tmp)
+            today = D0 + dt.timedelta(days=10)
+            for d in days(D0, 10):
+                store_day(store, d, [act(d, 7, 2000, 150)], curve_rows=0)
+            analyzer = StoreAnalyzer(store, {"backfill_days": 3}, today)
+            analyzer.maintain()
+            self.assertFalse(analyzer._needs_maintenance())
+            # a registry of an older add-on, already maintained today
+            reg = store.load_registry()
+            for sig in reg["signatures"]:
+                del sig["occurrences"]
+            store.save_registry(reg)
+            self.assertTrue(analyzer._needs_maintenance())
+            analyzer.catch_up()
+            self.assertEqual(len(store.load_registry()["signatures"][0]["occurrences"]), 10)
+            self.assertFalse(analyzer._needs_maintenance())
+
+
 class NotablePeakTests(unittest.TestCase):
     def setUp(self):
         t0 = midnight(D0)

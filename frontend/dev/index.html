@@ -219,6 +219,7 @@
       // the registry; scenario "many": 28 synthetic signatures more, to review (#51)
       async function signatures() {
         const reg = await sample("signatures");
+        reg.signatures.forEach((s, k) => addOccurrences(s, k));
         if ($("scenario").value !== "many") return reg;
         const day0 = Date.UTC(2027, 2, 3) / 1000 - 3600; // 2027-03-03 00:00 in Paris
         const days = ["2027-03-03", "2027-03-04", "2027-03-05", "2027-03-06", "2027-03-07", "2027-03-08", "2027-03-09"];
@@ -256,8 +257,42 @@
             examples,
             appliance: null,
           });
+          // every other one without occurrences: the histogram of an add-on before 0.9.0
+          if (i % 2 === 0) addOccurrences(reg.signatures[reg.signatures.length - 1], i + 3);
         }
         return reg;
+      }
+
+      // synthetic occurrences of the day raster (#65): [start, duration_s, power_w]
+      // over 45 days before 2027-03-10, in one of a few rhythms (same time every
+      // day, weekdays only, a drifting time, at random, several runs a day)
+      function addOccurrences(s, k) {
+        let seed = 7 + k * 101;
+        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+        const peak = s.hours.indexOf(Math.max(...s.hours));
+        const rhythm = s.kind === "cycling" ? 4 : k % 4;
+        const occ = [];
+        const span = 45;
+        for (let d = span - 1; d >= 0; d--) {
+          const midnight = Date.UTC(2027, 2, 9 - d) / 1000 - 3600; // Paris, winter time
+          const weekday = new Date((midnight + 7200) * 1000).getUTCDay();
+          const runs = [];
+          if (rhythm === 0) runs.push(peak + (rnd() - 0.5) * 0.7);
+          else if (rhythm === 1 && weekday !== 0 && weekday !== 6) runs.push(peak + (rnd() - 0.5) * 0.5);
+          else if (rhythm === 2) runs.push(((peak + 0.5 - d * 0.12) % 24 + 24) % 24);
+          else if (rhythm === 3 && rnd() < 0.45) runs.push(rnd() * 24);
+          else if (rhythm === 4) for (let h = 1; h < 24; h += 3) if (rnd() < 0.55) runs.push(h + rnd() * 1.5);
+          for (const h of runs) {
+            const duration = Math.round(s.duration_s * (0.85 + rnd() * 0.3));
+            occ.push([Math.round(midnight + h * 3600), duration, Math.round(s.power_w * (0.94 + rnd() * 0.12))]);
+          }
+        }
+        occ.sort((a, b) => a[0] - b[0]);
+        s.occurrences = occ;
+        // the hour weights from the same uses (Paris, winter time)
+        s.hours = Array.from({ length: 24 }, () => 0);
+        for (const [start] of occ) s.hours[new Date((start + 3600) * 1000).getUTCHours()] += 1;
+        s.first_seen = "2027-01-24";
       }
 
       // review of the signatures (the add-on's rules, in memory)

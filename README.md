@@ -95,8 +95,8 @@ thermostat), which are grouped into one session with their duty cycle.
   **aarch64** (Raspberry Pi 4/5 included: a day is analysed in a few seconds at most).
   Home Assistant Container and Core are not supported yet: a standalone image is planned in
   [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
-- **Home Assistant 2025.10 or later** for the integration, add-on **0.8.0 or later** for the
-  attribute suggestions and merges (0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
+- **Home Assistant 2025.10 or later** for the integration, add-on **0.9.0 or later** for the
+  day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
   management, 0.4.0 for the appliance statistics; developed and tested on 2026.10 and
   2026.11; the panel uses Home Assistant's own date picker when available, and a plain date
   field otherwise).
@@ -209,9 +209,12 @@ address, so a view can be bookmarked.
   energy is already explained; chips filter the queue: *Most energy first*, *With a
   suggestion*, *Waiting*, *Ignored*. On the left, the queue (name, uses per week, energy):
   tick several to **Wait**, **Ignore** or **Restore** them at once. On the right, the current
-  signature: power, usual duration, runs per week, energy, first seen, a 24-hour histogram of
-  its usual hours and up to three recent **examples drawn on the house curve**: select one to
-  open its day zoomed on it. Below, the form: a name and *How to track it*, then **Validate and
+  signature: power, usual duration, runs per week, energy, first seen, a **day raster** of its
+  uses over the last 60 days (one row per day, the most recent on top, 0 to 24 h; each use a
+  block as wide as it lasted, darker when more powerful; weekends tinted; a thin strip of the
+  usual hours above): it shows whether it runs at the same time every day, on weekdays only, or
+  at a drifting time. Select a use (or press Enter on it) to open its day zoomed on it. Then up
+  to three recent **examples drawn on the house curve**, which open their day the same way. Below, the form: a name and *How to track it*, then **Validate and
   next**, **Wait** or **Ignore**; keyboard shortcuts **V**, **W** (wait), **I** and the arrows.
   On a phone the queue becomes a "1 of 34" stepper. What the choices do:
   - **Curve only**: a **new appliance** (give it a name: Energy Mapper creates
@@ -570,8 +573,9 @@ regroupés en une seule session avec leur rapport cyclique.
   **aarch64** (Raspberry Pi 4/5 compris : une journée s'analyse en quelques secondes au plus).
   Home Assistant Container et Core ne sont pas encore pris en charge : une image autonome est
   prévue dans [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
-- **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.8.0 ou plus
-  récent** pour les suggestions d'attribut et les fusions (0.7.0 pour les suggestions
+- **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.9.0 ou plus
+  récent** pour la grille jour par jour de l'examen (0.8.0 pour les suggestions d'attribut et
+  les fusions, 0.7.0 pour les suggestions
   d'entité, 0.6.0 pour l'examen des signatures, 0.5.0 pour la
   gestion des appareils, 0.4.0 pour leurs statistiques ; développée et testée sur
   2026.10 et 2026.11 ; le panneau utilise le sélecteur de date de Home Assistant quand il est
@@ -691,9 +695,13 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   énergivores d'abord*, *Avec suggestion*, *En attente*, *Ignorées*. À gauche, la file (nom,
   utilisations par semaine, énergie) : cochez-en plusieurs pour les **Attendre**, **Ignorer**
   ou **Rétablir** d'un coup. À droite, la signature en cours : puissance, durée habituelle,
-  fréquence, énergie, première apparition, un histogramme de ses heures habituelles sur 24 h et
-  jusqu'à trois **exemples dessinés sur la courbe de la maison** : sélectionnez-en un pour
-  ouvrir son jour zoomé dessus. En dessous, le formulaire : un nom et *Comment le suivre*, puis
+  fréquence, énergie, première apparition, une **grille jour par jour** de ses utilisations sur
+  les 60 derniers jours (une ligne par jour, la plus récente en haut, de 0 à 24 h ; chaque
+  utilisation est un bloc aussi large que sa durée, plus foncé quand elle est plus puissante ;
+  week-ends teintés ; une fine bande des heures habituelles au-dessus) : on voit s'il tourne à
+  heure fixe, en semaine seulement ou à une heure qui dérive. Sélectionnez une utilisation (ou
+  Entrée dessus) pour ouvrir son jour zoomé dessus. Puis jusqu'à trois **exemples dessinés sur
+  la courbe de la maison**, qui ouvrent leur jour de la même façon. En dessous, le formulaire : un nom et *Comment le suivre*, puis
   **Valider et passer au suivant**, **Attendre** ou **Ignorer** ; raccourcis clavier **V**,
   **A** (attendre), **I** et les flèches. Sur téléphone, la file devient un sélecteur « 1 sur
   34 ». Ce que font les choix :

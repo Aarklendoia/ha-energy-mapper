@@ -438,7 +438,14 @@ the stored day summaries.
   and dropped when its weight falls below 1 %, unless it has a user label (v1).
 - **Per signature**: weighted and raw counts, days seen, uses per week, first and last seen,
   weighted hours histogram, weighted-median power and duration (and on-time, period and duty
-  for sessions), raw and weighted energy, the three most recent examples.
+  for sessions), raw and weighted energy, the three most recent examples, and the
+  `occurrences` of the last 60 days (`occurrence_days`), `[start, duration_s, power_w]` integers
+  sorted by start, at most 600 (`max_occurrences`, the most recent): built from the cluster's
+  activations; those of days no longer stored are kept from the previous registry, a carried
+  signature keeps its own pruned to the window, and a signature merged into a neighbour gives
+  its old ones to it. About 20 bytes each in the compact JSON of the API (12 KB at the cap, 1 to
+  2 KB for a daily appliance). A registry without them (add-on before 0.9.0) triggers the
+  maintenance at the next start, so they fill at once from the stored summaries.
 - **Registry ids in daily reports**: `annotate_report()` adds `registry_id` to the activations
   (nearest signature, same rule), to the daily signatures (majority of their activations) and
   to the signature parts of the peaks. The API applies it when serving a report, so the ids are
@@ -563,7 +570,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `200 {"status": "ok", "version": "0.8.1", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
+| `GET /api/health` | `200 {"status": "ok", "version": "0.9.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
 | `GET /api/days` | `200 {"days": [...], "summary_days": [...], "generated": {day: <unix time>}}`: days with a full report, and older days with only a summary, ascending; `generated`: when each full report was made (`generated_at`) |
 | `GET /api/report/YYYY-MM-DD` | `200` the report with registry ids; `400 {"error": "invalid_day"}`; `404 {"error": "not_found"}` |
 | `GET /api/hourly/YYYY-MM-DD` | `200` the hourly breakdown of the day (`nilm_core/hourly.py`, § 8.1); `400 invalid_day`; `404 not_found` when the day has no per-minute curve |
@@ -854,8 +861,21 @@ at a time.
   signature, then one reload).
 - **Detail** (right): "Signature 3 of 29", the provisional name as title (`h2`, focusable),
   previous / next (no wrap); facts (power, cycle for a cycling signature, usual duration, runs
-  per week, energy observed, first seen); a 24-hour histogram of the usual hours (the hours at
-  or above half of the busiest one in the primary colour); up to three examples **drawn on the
+  per week, energy observed, first seen); the **day raster** (#65, `raster.ts`): one row per
+  local day from the day before today (or a later occurrence) back to `first_seen`, at most 60,
+  empty days included, the most recent on top; each occurrence of the registry (`occurrences`,
+  add-on 0.9.0+) is a block in `--primary-color`, as wide as its duration (at least 3 px) with
+  an opacity from 0.45 to 1 by its power between the signature's lowest and highest, split at
+  midnight (`rasterRows`; a 23- or 25-hour day is scaled to the row); weekend rows tinted; about
+  ten rows visible, the older ones by scrolling inside the card; a thin 24-cell strip of the
+  usual hours (`hours`) and an axis every 3 h (6 h under 760 px, where the rows are 10 px high
+  instead of 14) above. Each block is a button (title and label: day, times, duration, power):
+  a click or Enter opens *Today* on its day zoomed on it, like the examples (disabled when the
+  day has no report); one block is in the tab order (roving tabindex), the arrows move between
+  blocks (`moveBlock`: left/right in time, up/down to the nearest block of the next non-empty
+  row, Home/End) without stepping through the queue. Without `occurrences` (add-on before
+  0.9.0) the former 24-hour histogram of the usual hours is shown instead. Then up to three
+  examples **drawn on the
   house curve** (`exampleDrawing`: the curve of the example's day around it, at least 20 min
   or its duration on each side, the use shaded): the curves come from `energy_mapper/report`
   (the day already loaded is reused), loaded 300 ms after a signature is shown so that stepping

@@ -1333,6 +1333,123 @@ export const panelStyles = css`
     margin-top: 2px;
     font-size: var(--ha-font-size-xs, 11px);
   }
+  /* day raster (#65): one row per day, the most recent on top */
+  .rq-raster {
+    --rq-day-w: 64px;
+    --rq-row-h: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .rq-raster-row {
+    display: grid;
+    grid-template-columns: var(--rq-day-w) minmax(0, 1fr);
+    align-items: center;
+    column-gap: 8px;
+  }
+  .rq-strip {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    gap: 1px;
+    height: 8px;
+  }
+  .rq-strip > div {
+    border-radius: 1px;
+    background: var(--primary-color);
+  }
+  .rq-strip > div.zero {
+    background: var(--divider-color);
+  }
+  .rq-axis-track {
+    position: relative;
+    height: 14px;
+    font-size: var(--ha-font-size-xs, 11px);
+    line-height: 14px;
+  }
+  .rq-axis-track > span {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    white-space: nowrap;
+  }
+  .rq-axis-track > span.first {
+    transform: none;
+  }
+  .rq-axis-track > span.last {
+    transform: translateX(-100%);
+  }
+  .rq-raster-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    /* about ten days visible, the older ones by scrolling */
+    max-height: calc(10 * (var(--rq-row-h) + 2px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 2px 0;
+  }
+  .rq-raster-body > .rq-raster-row {
+    min-height: var(--rq-row-h);
+    border-radius: 3px;
+  }
+  .rq-raster-body > .rq-raster-row.weekend {
+    background: color-mix(in srgb, var(--primary-text-color, #212121) 6%, transparent);
+  }
+  .rq-day {
+    font-size: var(--ha-font-size-xs, 11px);
+    line-height: var(--rq-row-h);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-inline-start: 4px;
+  }
+  .rq-track {
+    position: relative;
+    height: var(--rq-row-h);
+    margin-inline-end: 3px;
+    background: linear-gradient(var(--divider-color), var(--divider-color)) center / 100% 1px no-repeat;
+  }
+  .rq-hour-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--divider-color);
+  }
+  .rq-block {
+    position: absolute;
+    top: 1px;
+    bottom: 1px;
+    min-width: 3px;
+    max-width: 100%;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 2px;
+    background: var(--primary-color);
+    cursor: pointer;
+  }
+  .rq-block.cut-before {
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+  }
+  .rq-block.cut-after {
+    border-start-end-radius: 0;
+    border-end-end-radius: 0;
+  }
+  .rq-block[aria-disabled="true"] {
+    cursor: default;
+  }
+  .rq-block:hover {
+    filter: brightness(1.15);
+  }
+  .rq-block:focus-visible {
+    outline: 2px solid var(--primary-text-color);
+    outline-offset: 1px;
+    z-index: 1;
+    opacity: 1 !important;
+  }
   .rq-examples {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1484,6 +1601,16 @@ export const panelStyles = css`
   }
   /* phones: the queue becomes a "1 of 34" stepper above the detail */
   @container rq (max-width: 759px) {
+    .rq-raster {
+      --rq-day-w: 48px;
+      --rq-row-h: 10px;
+    }
+    .rq-raster-row {
+      column-gap: 6px;
+    }
+    .rq-axis-track > span.minor {
+      display: none;
+    }
     .rq-queue,
     .rq-nav,
     .rq-pos,

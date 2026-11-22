@@ -167,8 +167,14 @@ export interface RegistrySignature {
   energy_kwh: number;
   weighted_energy_kwh?: number;
   examples?: SignatureExample[];
+  /** the uses of the last 60 days, [start (unix s), duration_s, power_w],
+   * sorted by start (add-on 0.9.0+; absent before) */
+  occurrences?: Occurrence[];
   appliance?: string | null;
 }
+
+/** One use of a signature: [start (unix s), duration (s), power (W)]. */
+export type Occurrence = [number, number, number];
 
 export interface SignatureExample {
   day: string;

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.0
+
+- Signature registry: each signature keeps its `occurrences` of the last 60
+  days, `[start, duration_s, power_w]` (unix time, seconds, watts, integers),
+  sorted by start, at most 600 (the most recent ones). They feed the day
+  raster of the To review tab of the panel (#65) and come with each
+  signature in `GET /api/review` and `GET /api/signatures`. Merged clusters
+  union their occurrences; a signature carried forward without stored
+  activations keeps its own, pruned to the window.
+- A registry written by an older version is updated at the next start,
+  from the stored day summaries (about 200 days are kept), so the existing
+  signatures get their occurrences at once.
+
 ## 0.8.1
 
 - Reports: new `estimated`, the part of `submetered` that comes from
