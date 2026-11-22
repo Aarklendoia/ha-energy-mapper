@@ -18,6 +18,7 @@ options:
   half_life_days: 30
   report_retention_days: 90
   peak_window_days: 30
+  self_test_devices: 1
   grid_invert: false
   battery_invert: false
   switched_loads: []
@@ -28,6 +29,7 @@ schema:
   half_life_days: int(1,365)
   report_retention_days: int(7,3650)
   peak_window_days: int(1,365)
+  self_test_devices: int(0,10)
   grid_entity: str?
   grid_export_entity: str?
   grid_invert: bool

@@ -1840,6 +1840,59 @@ export const panelStyles = css`
     padding: 8px 12px 12px;
     gap: 8px;
   }
+  /* nightly self-test (#15) */
+  .self-test-list {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 8px;
+  }
+  .self-test-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--divider-color);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .self-test-main {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .self-test-name {
+    font-weight: var(--ha-font-weight-medium, 500);
+    min-width: 0;
+  }
+  .self-test-rate {
+    flex: none;
+    font-size: var(--ha-font-size-l, 16px);
+    font-weight: var(--ha-font-weight-medium, 500);
+    font-variant-numeric: tabular-nums;
+  }
+  .self-test-rate.tone-good {
+    color: var(--success-color, #43a047);
+  }
+  .self-test-rate.tone-fair {
+    color: var(--warning-color, #ffa600);
+  }
+  .self-test-rate.tone-poor {
+    color: var(--error-color, #db4437);
+  }
+  .self-test-headline {
+    color: var(--primary-text-color);
+  }
+  .self-test-trend.trend-up {
+    color: var(--success-color, #43a047);
+  }
+  .self-test-trend.trend-down {
+    color: var(--error-color, #db4437);
+  }
+  .self-test-detail {
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-s, 12px);
+  }
   .all-signatures {
     padding: 0;
   }

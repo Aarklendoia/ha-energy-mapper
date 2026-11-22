@@ -38,6 +38,9 @@ sub-meters are measured.
 5. Then the signatures to review are compared with the state changes of the
    Home Assistant entities that may tell when an appliance runs (see
    [Entity suggestions](#entity-suggestions)).
+6. The newest day analysed by a pass is also used for the **self-test**: a
+   measured device is hidden in a copy of the analysis, to check that the
+   curve finds it again (see [Self-test](#self-test)).
 
 Days run from midnight to midnight in the time zone of Home Assistant.
 
@@ -69,6 +72,7 @@ below (see `PUT /api/settings`).
 | `half_life_days` | `30` | Age at which a past use counts half in the signature registry. |
 | `report_retention_days` | `90` | How long the full daily reports (with the curve) are kept. |
 | `peak_window_days` | `30` | A peak is notable above 80 % of the highest power of this many past days. |
+| `self_test_devices` | `1` | Measured devices (sub-meters) hidden per night by the [self-test](#self-test); `0` disables it. |
 | `grid_entity` | Energy dashboard | Grid power sensor (W or kW), positive when importing. |
 | `grid_export_entity` | Energy dashboard | Export power sensor, for meters that report import and export separately. |
 | `grid_invert` | `false` | The grid sensor is positive when exporting. |
@@ -210,6 +214,7 @@ bounded, whatever the age of the installation:
 | The user's appliances, pushed by the integration (`appliances.json`) | until replaced | a few KB |
 | State changes of the candidate entities, per day (`changes/`, gzip) | 31 days | ~10–100 KB per day |
 | Entity suggestions of the signatures to review (`suggestions.json`) | replaced every night | a few KB |
+| Self-test results, one entry per device tested per night (`self_test.json`) | 60 days | a few KB |
 
 Pruning runs after each nightly analysis. The registry is rebuilt from the
 day summaries if it is missing or unreadable. Reports stored as plain JSON
@@ -238,6 +243,7 @@ announces itself to Home Assistant through Supervisor discovery.
 | `POST /api/signatures` | `{"kind": "steady" or "cycling", "band": "short", "medium" or "long", "power_w", "label"}`: the signature of an appliance not seen yet: `{"signature": {...}, "created": true}`; an existing unnamed signature at that power is returned as is (`created: false`); 409 `conflict` when it already belongs to another appliance |
 | `GET /api/teaching` | The learning status of the appliances taught by a sensor (see [Learning from a measured device](#learning-from-a-measured-device)) |
 | `POST /api/teaching` | `{"appliance": <key>}`: the signature learned for it, `{"signature", "created", "learned"}` |
+| `GET /api/self_test` | The success rate of each measured device hidden by the nightly self-test (see [Self-test](#self-test)) |
 
 `GET /api/signatures` answers:
 
@@ -336,6 +342,7 @@ Accepted keys (all optional; `null`, `""` and `[]` mean "absent"):
 | `review_min_uses`, `review_min_days` | 2 to 1000 and 1 to 365: a signature is proposed for review once seen this many times on this many different days (5 and 3) |
 | `review_wait_days`, `review_wait_factor` | 1 to 365 and 1.2 to 10: a signature put on hold comes back after this many days, or once its uses reached this multiple of the number it had (14 and 2) |
 | `review_suggest_score` | 50 to 100 (%): an entity is suggested for a signature when its state changes at this share of the signature's starts and stops (80) |
+| `self_test_devices` | 0 to 10: measured devices hidden per night by the self-test, 0 disables it (1) |
 
 An unknown key or an invalid value refuses the whole request (400,
 `{"error": "invalid_settings", "message": "<key>: ..."}`); the body is limited
@@ -349,7 +356,7 @@ to 64 KB. `GET /api/settings` answers:
                "report_retention_days": 90, "peak_window_days": 30, "grid_invert": false,
                "battery_invert": false, "step_threshold_w": 300.0, "peak_threshold_w": null,
                "review_min_uses": 5, "review_min_days": 3, "review_wait_days": 14, "review_wait_factor": 2.0,
-               "review_suggest_score": 80},
+               "review_suggest_score": 80, "self_test_devices": 1},
   "automatic": {"grid_entity": "sensor.grid_power", "grid_export_entity": null,
                 "pv_entity": null, "battery_entity": null, "submeters": [],
                 "switched_loads": [{"entity_id": "switch.water_heater", "name": "Water heater", "on_states": ["on"]}]}
@@ -453,6 +460,53 @@ template for a multi-phase one, so the analysis recognises its cycles at
 once). Errors: `404 not_found` (no appliance with a teacher),
 `422 not_learned` (no use seen yet), `422 not_recognisable` (below the step
 threshold), `409 conflict` (another appliance owns it; `id`).
+
+### Self-test
+
+After a pass, the newest day it analysed is analysed once more, in memory,
+for up to `self_test_devices` measured devices (1 by default): each time with
+that device **not subtracted**, so that its power stays hidden in the curve
+as if it had no sensor. The candidates are the subtracted sub-meters that
+measure (not the estimates of the Energy dashboard); they take turns, the
+device whose last test is the oldest first (never tested first, then by
+entity id). The histories already read are reused: no extra request to Home
+Assistant. The hidden report is never stored, and the registry, the real
+report and the statistics never change; a failure only costs the test.
+
+For each test, the device's own readings give its runs that day (as for
+[learning from a measured device](#learning-from-a-measured-device)). The
+signature to look for is learned from its runs of the day and of its
+previous tests, then resolved in the registry, or, since a subtracted device
+never reaches the registry, evaluated as the expected signature it would be.
+Its detections in the hidden day are compared with the runs (precision,
+recall, energy). A signature below the step threshold is not looked for (no
+hidden analysis): the device is reported as too low for the curve.
+
+`GET /api/self_test` answers, over the last 60 days:
+
+```json
+{"enabled": true, "devices_per_night": 1, "window_days": 60, "min_uses": 5,
+ "last_day": "2027-03-09",
+ "devices": [{"entity_id": "sensor.water_heater_power", "name": "Water heater",
+   "appliance": null, "state": "ok", "tests": 6, "nights": 6,
+   "first_day": "2027-02-01", "last_day": "2027-03-09",
+   "uses": 6, "found": 5, "detections": 5, "correct": 5,
+   "recall": 0.833, "precision": 1.0, "truth_kwh": 15.1, "detected_kwh": 14.2,
+   "energy_ratio": 0.94, "rate": 0.833, "trend": "stable",
+   "learned": {"kind": "steady", "band": "long", "power_w": 2500, ...},
+   "signature": {"id": "long-2500w", "in_registry": false, ...},
+   "history": [{"day": "2027-02-01", "uses": 1, "found": 1, "detections": 1, "correct": 1}]}]}
+```
+
+- `state`: `ok` (a success rate), `not_enough_data` (fewer than `min_uses`
+  true uses tested: `rate` is null, never 0 %), `not_recognisable` (below the
+  step threshold) or `no_use` (the device never ran yet).
+- `rate`: the share of the true uses found again (the recall over its tests).
+- `trend`: `up`, `down` or `stable`: the recall of the newer half of the tests
+  against the older half (10 points or more), null while either half has
+  fewer than 3 uses.
+- `tests`: nights the hidden day was evaluated; `nights`: all the nights the
+  device was picked.
 
 ### Review
 

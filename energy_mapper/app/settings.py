@@ -42,6 +42,8 @@ NUMBER_KEYS = {
     "review_wait_factor": (1.2, 10, False),
     # entity suggestions (#41): share of the steps (%) an entity must match
     "review_suggest_score": (50, 100, True),
+    # nightly self-test (#15): measured devices hidden per night, 0 disables it
+    "self_test_devices": (0, 10, True),
 }
 SUBMETERS_MODES = ("automatic", "manual")
 KEYS = (
@@ -74,6 +76,7 @@ DEFAULTS: dict = {
     "review_wait_days": 14,
     "review_wait_factor": 2.0,
     "review_suggest_score": 80,
+    "self_test_devices": 1,
 }
 
 

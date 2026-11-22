@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+import selftest
 from appliances import analysis_options, apply_to_registry, teachers
 from const import VERSION
 from energy_config import DerivedConfig, derive, tracking_gaps
@@ -434,7 +435,9 @@ class Analyzer:
         days = [(day - dt.timedelta(days=i)).isoformat() for i in range(1, window + 1)]
         return peak_reference({d: self._day_max(d) for d in days}, day.isoformat(), window)
 
-    def _run_day(self, day: dt.date, ctx: Context) -> dict:
+    def _run_day(self, day: dt.date, ctx: Context, self_test: bool = False) -> dict:
+        """Analyse and store one day; with ``self_test``, then hide a few
+        measured devices in a copy of the analysis (#15)."""
         cfg = ctx.derived.config
         start, end = day_bounds(day, ctx.tz)
         histories = self.client.history(ctx.entities, start - cfg.context_s, end)
@@ -475,6 +478,8 @@ class Analyzer:
             len(report["signatures"]),
             len(report["known_loads"]),
         )
+        if self_test:
+            self._self_test_safely(day, ctx, histories, start, end)
         return report
 
     def _ground_truth(self, cfg, histories, start: float, end: float, read: set[str]) -> list[dict]:
@@ -490,6 +495,97 @@ class Analyzer:
             ]
             out.append(day_truth(appliance["key"], entity, points, start, end))
         return out
+
+    # -- nightly self-test (#15) ------------------------------------------------
+    @property
+    def self_test_devices(self) -> int:
+        """Measured devices hidden per night (0: no self-test)."""
+        value = self.options.get("self_test_devices")
+        if value is None or value == "":
+            return selftest.DEFAULT_DEVICES
+        try:
+            return min(max(int(value), 0), selftest.MAX_DEVICES)
+        except (TypeError, ValueError):
+            return selftest.DEFAULT_DEVICES
+
+    def _self_test(self, day: dt.date, ctx: Context, histories: dict, start: float, end: float) -> list[dict]:
+        """Analyse the day again, in memory, with each chosen measured device
+        not subtracted, and store whether its uses were found again. Uses the
+        histories already read; never stores the hidden reports nor touches
+        the registry."""
+        count = self.self_test_devices
+        if count <= 0:
+            return []
+        cfg = ctx.derived.config
+        devices = dict(selftest.candidates(cfg.submeters))
+        data = self.store.load_self_test() or selftest.empty()
+        key = day.isoformat()
+        done = selftest.tested_days(data, key)
+        chosen = selftest.pick([e for e in devices if e not in done], data, count)
+        if not chosen:
+            return []
+        registry = self.store.load_registry() or empty_registry(self.registry_config)
+        appliance_of = {
+            s["entity_id"]: a["key"]
+            for a in self.appliances
+            for s in a.get("sources") or []
+            if s.get("type") == "submeter" and s.get("entity_id")
+        }
+        tz = ctx.tz
+
+        def hour(ts: float) -> int:
+            return dt.datetime.fromtimestamp(ts, tz).hour
+
+        tests = []
+        for entity in chosen:
+            t0 = time.perf_counter()
+            scale = cfg.scales.get(entity, 1.0)
+            points = [
+                (ts, None if v is None else v * scale) for ts, v in parse_numeric(histories.get(entity, []))
+            ]
+            hidden = selftest.hidden_config(cfg, entity)
+            test = selftest.hide_and_find(
+                key,
+                entity,
+                devices[entity],
+                points,
+                start,
+                end,
+                lambda c=hidden: analyze(histories, c, start, end, local_hour=hour),
+                registry,
+                selftest.previous_runs(data, entity),
+                self.clock(),
+                appliance_of.get(entity),
+                self.step_threshold_w,
+                self.registry_config,
+            )
+            tests.append(test)
+            ev = test.get("evaluation") or {}
+            _LOGGER.info(
+                "self-test %s on %s: %s, %s of %s use(s) found, %s detection(s) in %.2f s",
+                entity,
+                key,
+                test["status"],
+                ev.get("found", "-"),
+                ev.get("uses", len(test["runs"])),
+                ev.get("detections", "-"),
+                time.perf_counter() - t0,
+            )
+        self.store.save_self_test(selftest.record(data, tests, self.today()))
+        return tests
+
+    def _self_test_safely(
+        self, day: dt.date, ctx: Context, histories: dict, start: float, end: float
+    ) -> None:
+        """The self-test never costs the real analysis."""
+        try:
+            self._self_test(day, ctx, histories, start, end)
+        except Exception:
+            _LOGGER.exception("self-test of %s failed", day)
+
+    def self_test(self) -> dict:
+        """``GET /api/self_test``: the success rate of each tested device."""
+        return selftest.summary(self.store.load_self_test(), self.today(), self.self_test_devices)
 
     # -- learning from a measured device (#14) ----------------------------------
     @property
@@ -752,7 +848,8 @@ class Analyzer:
             empty = 0
             for day in missing:
                 try:
-                    self._run_day(day, ctx)
+                    # the newest day analysed by the pass hides a measured device (#15)
+                    self._run_day(day, ctx, self_test=not done)
                     done.append(day.isoformat())
                     empty = 0
                 except AnalysisError as err:

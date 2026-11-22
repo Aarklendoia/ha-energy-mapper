@@ -26,6 +26,18 @@
   once).
 - The ground truth and the evaluation are a pure module of the engine
   (`nilm_core/groundtruth.py`), for the nightly self-test (#15) too.
+- Nightly self-test (#15): after a pass, the newest day analysed is analysed
+  again in memory with one measured device (a sub-meter that measures, not an
+  estimate) **not subtracted**, from the histories already read. Its own
+  readings are the truth; the signature learned from them is looked for in
+  the hidden day (precision, recall, energy). The devices take turns (the
+  oldest test first). The real report, the registry and the statistics never
+  change; a failure only costs the test. Results in `/data/self_test.json`
+  (60 days), summarised by the new `GET /api/self_test`: per device the
+  success rate (the share of the true uses found again, from 5 uses; "not
+  enough data" before, never 0 %), precision, energy ratio and trend.
+- New setting and option `self_test_devices` (0 to 10, default 1; 0 disables
+  the self-test).
 
 ## 0.10.0
 

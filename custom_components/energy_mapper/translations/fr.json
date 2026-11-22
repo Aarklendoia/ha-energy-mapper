@@ -82,10 +82,12 @@
               "backfill_days": "Jours passés analysés au démarrage",
               "half_life_days": "Demi-vie des signatures (jours)",
               "report_retention_days": "Conservation des rapports complets (jours)",
-              "peak_window_days": "Fenêtre de référence des pics (jours)"
+              "peak_window_days": "Fenêtre de référence des pics (jours)",
+              "self_test_devices": "Auto-test : appareils mesurés par nuit"
             },
             "data_description": {
               "analysis_time": "Une nouvelle heure s'applique après la prochaine analyse.",
+              "self_test_devices": "Après l'analyse de la nuit, ce nombre de sous-compteurs est caché dans une copie de l'analyse pour vérifier que la courbe les retrouve (affiché dans l'onglet Appareils). 0 le désactive.",
               "half_life_days": "Âge auquel une utilisation passée compte pour moitié dans le registre des signatures."
             }
           },

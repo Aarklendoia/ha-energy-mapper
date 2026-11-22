@@ -24,6 +24,9 @@ GET  /api/teaching            {"teachers": [...]}: the learning status of each a
                               taught by a measured device (teaching.py, #14)
 POST /api/teaching            {"appliance": key}: the signature learned for it, created in
                               the registry when needed: {"signature", "created", "learned"}
+GET  /api/self_test           {"enabled", "devices_per_night", "window_days", "min_uses",
+                              "last_day", "devices": [...]}: the nightly self-test, the
+                              success rate of each hidden measured device (selftest.py, #15)
 """
 
 from __future__ import annotations
@@ -278,6 +281,9 @@ def route(
     if path == "/api/teaching" and method == "POST":
         return _apply_teaching(analyzer, body)
 
+    if path == "/api/self_test" and method == "GET":
+        return 200, analyzer.self_test()
+
     known = {
         "/api/health",
         "/api/days",
@@ -287,6 +293,7 @@ def route(
         "/api/appliances",
         "/api/review",
         "/api/teaching",
+        "/api/self_test",
     }
     if path in known or path.startswith(("/api/report/", "/api/hourly/")):
         return 405, {"error": "method_not_allowed"}

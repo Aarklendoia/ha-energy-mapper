@@ -67,4 +67,5 @@ ANALYSIS_KEYS: Final = (
     "half_life_days",
     "report_retention_days",
     "peak_window_days",
+    "self_test_devices",
 )

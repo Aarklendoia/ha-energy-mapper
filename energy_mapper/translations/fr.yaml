@@ -25,6 +25,12 @@ configuration:
     description: >-
       Un pic est notable au-dessus de 80 % de la puissance la plus haute de ce
       nombre de jours passés, pour suivre les saisons.
+  self_test_devices:
+    name: Appareils auto-testés par nuit
+    description: >-
+      Après l'analyse de la nuit, ce nombre d'appareils mesurés (sous-compteurs)
+      est caché dans une copie de l'analyse pour vérifier que la courbe les
+      retrouve. 0 désactive l'auto-test.
   grid_entity:
     name: Capteur de puissance du réseau
     description: >-

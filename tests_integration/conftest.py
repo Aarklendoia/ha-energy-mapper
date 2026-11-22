@@ -47,6 +47,7 @@ DEFAULTS = {
     "review_wait_days": 14,
     "review_wait_factor": 2.0,
     "review_suggest_score": 80,
+    "self_test_devices": 1,
 }
 
 

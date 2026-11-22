@@ -112,6 +112,11 @@ sequenceDiagram
     E-->>S: daily report
     S->>S: + day, time_zone, addon_version, config, findings (+ tracking gaps)
     S->>D: reports/DAY.json.gz and summaries/DAY.json.gz
+    opt newest day of the pass: self-test (§ 8.7)
+      S->>E: analyze(same histories, copy of config without one sub-meter)
+      E-->>S: hidden report (never stored)
+      S->>D: self_test.json
+    end
   end
   S->>D: prune (report retention, summary forgetting)
   S->>E: registry.update(previous, all summaries, now)
@@ -139,6 +144,9 @@ sequenceDiagram
   and the energy sensors of the switched devices (for the tracking gaps). The entity
   suggestions read their candidates the same way, plus one request *with* attributes (not
   minimal) for the few entities whose attributes are compared (§ 8.4).
+- **Self-test** (§ 8.7): the newest day a pass analyses is analysed again in memory with one
+  measured device (`self_test_devices`, 1 by default) not subtracted, from the histories
+  already read.
 - **After a pass that analysed something** (or once a day otherwise), the storage is pruned
   and the signature registry updated, then the entity suggestions are computed (§ 8.4).
   `POST /api/analyze` does the same for one day. A pass with nothing to analyse never calls
@@ -540,7 +548,7 @@ A power sensor that measures one appliance (a smart plug, an appliance's own met
 exactly when it ran. `nilm_core/groundtruth.py` turns it into a ground truth, learns a
 signature from it and evaluates the curve-based recognition against it. Pure (no clock, no
 I/O): the add-on uses it to learn an appliance from a temporary plug (§ 8.6), and the nightly
-self-test (#15) will use the same functions on a measured device it hides from the analysis.
+self-test (§ 8.7) uses the same functions on a measured device it hides from the analysis.
 
 1. **Runs** (`runs_of`). The readings are piecewise constant: a Home Assistant state holds
    until the next one (no hold limit, unlike the sub-meters of § 4.1: a plug at 0 W records
@@ -677,6 +685,7 @@ Everything is under the add-on's `/data` (included in Home Assistant backups):
 | `appliances.json` | The user's appliances pushed by the integration (§ 8.2) | Until replaced | KB |
 | `changes/YYYY-MM-DD.json.gz` | State changes of the candidate entities and attributes on one day, with their state at midnight (version 2, § 8.4) | 31 days, and never without the day's summary | ~10–100 KB per day |
 | `suggestions.json` | Entity suggestions of the signatures to review (§ 8.4), and the candidate list | Replaced each night | a few KB to tens of KB |
+| `self_test.json` | Nightly self-test: one entry per device tested per night, with its runs and evaluation (§ 8.7) | 60 days | a few KB |
 | `state.json` | `last_run`, `last_maintenance` | – | bytes |
 | `options.json` | Add-on options (written by the Supervisor) | – | bytes |
 
@@ -729,6 +738,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 | `POST /api/signatures` | `{"kind", "band", "power_w", "label"}`: the signature of an appliance not seen yet: `200 {"signature", "created"}` (an existing unnamed signature at that power is returned, `created: false`); `409 {"error": "conflict", "message", "id"}` when that signature belongs to another appliance; `400 invalid_signature` |
 | `GET /api/teaching` | `200 {"teachers": [...]}`: per appliance with a teacher, `{key, name, entity_id, since, days, first_day, last_day, uses, energy_kwh, learned, signature: {id, kind, band, power_w, label, in_registry, linked}, conflict: {id, appliance} \| null, evaluation, per_day}` (§ 8.6) |
 | `POST /api/teaching` | `{"appliance": <key>}`: `200 {"signature", "created", "learned"}`; `404 not_found` (no appliance with a teacher), `422 not_learned` / `not_recognisable`, `409 conflict` (`id`), `400 invalid_teaching` |
+| `GET /api/self_test` | `200 {"enabled", "devices_per_night", "window_days", "min_uses", "last_day", "devices": [...]}`: per tested device `{entity_id, name, appliance, state, tests, nights, first_day, last_day, uses, found, detections, correct, recall, precision, truth_kwh, detected_kwh, energy_ratio, rate, trend, learned, signature, history}` (§ 8.7) |
 
 Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 `405 {"error": "method_not_allowed"}`. The registry signature fields are documented in the
@@ -742,8 +752,8 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 ## 8. Integration: websocket API, appliances and statistics
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
-administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over`, `undo_take_over`, `teaching`, `teach` and
-`stop_teaching`, each command relays one add-on request and returns its JSON unchanged.
+administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over`, `undo_take_over`, `teaching`, `teach`,
+`stop_teaching` and `self_test`, each command relays one add-on request and returns its JSON unchanged.
 
 | Command | Parameters | Result |
 |---|---|---|
@@ -765,6 +775,7 @@ administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_ove
 | `energy_mapper/teaching` | – | `GET /api/teaching` and `"supported"` (false for an add-on before 0.11.0: `{"supported": false, "teachers": []}`), for every user (§ 8.6). Integration 0.9.0+ |
 | `energy_mapper/teach` | `appliance` (key), `entity_id` (a power sensor) | Starts learning the appliance from that sensor: `{"key", "teacher"}`; admin only |
 | `energy_mapper/stop_teaching` | `appliance` (key), `use` (bool, default false) | Ends the learning; with `use`, links the learned signature: `{"key", "sources", "signature", "created"}`; admin only |
+| `energy_mapper/self_test` | – | `GET /api/self_test` and `"supported"` (false for an add-on before 0.11.0: `{"supported": false, "enabled": false, "devices": []}`), for every user (§ 8.7). Integration 0.9.0+ |
 
 The review commands take `signature_id` (`id` is the websocket message's own id).
 Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized`,
@@ -1365,7 +1376,80 @@ truth of a hidden measured device), `detections` (what a day's analysis recognis
 signature), `evaluate` / `merge_evaluations` (per day and over the window), `learn` (the
 signature to look for), and from the add-on `teaching.day_truth` (the stored form, with the
 key of the appliance), `truth_days`, `resolve` and `evaluate_days` (the evaluation of one
-signature over stored days).
+signature over stored days). It does (§ 8.7).
+
+### 8.7 Nightly self-test (#15)
+
+How well does the curve find an appliance it cannot see? A sub-meter answers it every night:
+its device is measured exactly, and the analysis subtracts it. Hiding it in a copy of the
+analysis puts its power back in the curve, as if it had no meter, while its readings still
+tell when it really ran.
+
+**When and what** (`service.py`, `selftest.py`, pure). After a pass, the newest day it analysed
+(`catch_up`: the first day it stores, normally yesterday) is analysed again, in memory, for up
+to `self_test_devices` devices (setting and add-on option, 0–10, default 1; 0 disables it).
+`POST /api/analyze` does not run it. The candidates are the subtracted sub-meters that measure
+(`SubmeterConfig.estimated` false: an estimate is not a truth), whatever declares them (Energy
+dashboard, settings, an appliance's sub-meter source); a teaching sensor (§ 8.6) is not
+subtracted, so it is already measured by its learning status. **Rotation**: the device whose
+last test is the oldest first, never tested first, ties by entity id; a device already tested
+on that day is not tested again. Deterministic, so one device per night visits every sub-meter
+in turn.
+
+**One test** (`selftest.hide_and_find`), reusing § 4.10 and § 8.6 unchanged:
+
+1. The device's readings (scaled to W), from the histories already read for the day (no extra
+   Home Assistant request), give its runs (`groundtruth.runs_of`) and the covered periods.
+2. The signature to look for is `groundtruth.learn` on its runs of the day plus those of its
+   previous tests (at most 200), so a device that did not run that day can still be looked
+   for (its detections then count as false), and one day's odd use does not decide.
+3. Nothing to look for: no run yet (`no_use`), or below the step threshold
+   (`not_recognisable`). No hidden analysis is run then: the slot costs nothing.
+4. Otherwise `analyze` runs on the same histories with `selftest.hidden_config` (a deep copy of
+   the day's `AnalysisConfig` without that sub-meter; the peak reference and the cycle
+   templates are those of the real analysis). The signature is `teaching.resolve` in the stored
+   registry; when there is none (a subtracted device never reaches the registry), it is the
+   expected signature `teaching.new_signature` would create, added to a **copy** of the
+   registry. `teaching.evaluate_days` gives that day's precision, recall and energy ratio.
+
+**Never changes the real analysis.** The real report is stored before the self-test starts,
+the hidden report is never stored, the registry is only read (copied when a signature is
+added), and the statistics come from the stored reports only. Any failure is logged and costs
+the test only (`_self_test_safely`). Cost: one more `analyze` of the day per tested device (as long
+as the day's own analysis), nothing for a device that cannot be seen.
+
+**Storage** (`self_test.json`, `{version: 1, tests: [...]}`): per test `{day, entity_id, name,
+appliance (the key of an appliance with this sub-meter source), at, status (tested | no_use |
+not_recognisable), runs, covered_s, learned, signature: {id, kind, band, power_w, label,
+in_registry}, evaluation}`. A test of the same device and day replaces the old one; tests
+older than 60 days are dropped when the next one is stored, and `GET /api/self_test` only
+reads the window.
+
+**Summary** (`selftest.summary`, `GET /api/self_test`): per device, the merged evaluation of
+its `tested` nights. `rate` is its recall, "found again X % of the time", once it has at least
+5 true uses (`min_uses`); before that the `state` is `not_enough_data` and `rate` is null,
+never a misleading 0 %. `trend`: the recall of the newer half of the tests against the older
+half, `up` / `down` from 10 points, else `stable`; null while either half has fewer than 3
+uses. Devices are sorted by name.
+
+**Integration**: `energy_mapper/self_test` relays it for every user, with `supported: false`
+for an add-on before 0.11.0. The options flow has the setting in *Analysis and storage*
+(*Self-test: measured devices per night*; stored only when it differs from the add-on's
+default, so an older add-on that does not know it never receives it unless the user sets it).
+
+**Panel** (Appliances tab, every user; `frontend/src/selftest.ts`, unit tested): a *Self-test*
+card between the appliance cards and *All signatures*, shown once a device was tested. A hint
+says what the test does and over how many days (and that it is switched off, when it is). One
+line per device, by friendly name: the rate on the right (green from 80 %, orange from 50 %,
+red below), "Found again 83 % of the time" with the trend (↗ Improving, → Stable, ↘ Getting
+worse), then "6 tests · 10 of 12 uses · precision 90 % · energy 97 %". A device without enough
+uses shows "Not enough data yet (2 of 5 uses)" and no rate; one below the step threshold "Too
+low for the whole-house curve (90 W)"; one that never ran "No use seen yet".
+
+**Left for later**: a self-test for the switched loads (hide the relay, look for its steps),
+several nights' hidden reports to measure the signatures the registry would learn for the
+device (today the signature comes from its own runs), and a test of the teaching sensors with
+the same card.
 
 ## 9. Settings and precedence
 
@@ -1385,8 +1469,8 @@ flowchart LR
    is down or refuses them, nothing is saved.
 2. **Add-on options** (`/data/options.json`), the same keys plus `log_level`.
 3. **Defaults** (`analysis_time` 04:30, `backfill_days` 30, `half_life_days` 30,
-   `report_retention_days` 90, `peak_window_days` 30, `step_threshold_w` 300, signs not
-   inverted, relative peak threshold) and, for the sensors, the Energy dashboard.
+   `report_retention_days` 90, `peak_window_days` 30, `step_threshold_w` 300,
+   `self_test_devices` 1, signs not inverted, relative peak threshold) and, for the sensors, the Energy dashboard.
 
 Accepted keys and ranges: `grid_entity`, `grid_export_entity`, `pv_entity`, `battery_entity`
 (`sensor.*`), `grid_invert`, `battery_invert` (bool), `submeters_mode` (`automatic` or
@@ -1396,7 +1480,7 @@ list, § 8.2), `step_threshold_w` 50–10000,
 `peak_threshold_w` 100–100000, `analysis_time` `HH:MM`, `backfill_days` 0–365,
 `half_life_days` and `peak_window_days` 1–365, `report_retention_days` 7–3650,
 `review_min_uses` 2–1000, `review_min_days` and `review_wait_days` 1–365, `review_wait_factor`
-1.2–10, `review_suggest_score` 50–100 (%, § 8.4). `null`, `""`
+1.2–10, `review_suggest_score` 50–100 (%, § 8.4), `self_test_devices` 0–10 (§ 8.7). `null`, `""`
 and `[]` mean absent; unknown keys refuse the whole request.
 
 **Lists** (#33). Sub-meters: `submeters_mode: manual` makes `submeters` the exact list,
@@ -1510,6 +1594,6 @@ cannot be read).
 
 | Milestone | Issues |
 |---|---|
-| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13, done), learn from measured devices (#14, done), nightly self-test (#15), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
+| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13, done), learn from measured devices (#14, done), nightly self-test (#15, done), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
 | [v2 – Live](https://github.com/sylvaing/ha-energy-mapper/milestone/3) | Real-time detection (#17), per-phase analysis (#18), multi-phase appliance cycles (#26) |
 | [v3 – Publish](https://github.com/sylvaing/ha-energy-mapper/milestone/4) | Standalone Docker image for Container/Core (#19), release process and store listings (#20) |

@@ -206,7 +206,12 @@ FORM = {
         "excluded_switched_loads": ["switch.pump", "switch.pump"],
     },
     "thresholds": {"step_threshold_w": 200},
-    "analysis": {"analysis_time": "03:15:00", "backfill_days": 30, "half_life_days": 20},
+    "analysis": {
+        "analysis_time": "03:15:00",
+        "backfill_days": 30,
+        "half_life_days": 20,
+        "self_test_devices": 0.0,
+    },
     "review": {
         "review_repair": False,
         "review_min_uses": 5,
@@ -222,6 +227,7 @@ EXPECTED = {
     "step_threshold_w": 200.0,
     "analysis_time": "03:15",
     "half_life_days": 20,
+    "self_test_devices": 0,
     "review_wait_factor": 3.0,
     "review_suggest_score": 90,
 }
@@ -251,6 +257,7 @@ def test_suggested_values() -> None:
     assert values["loads"]["switched_loads"] == AUTOMATIC["switched_loads"]
     assert values["analysis"]["backfill_days"] == 5
     assert values["analysis"]["analysis_time"] == "04:30:00"
+    assert values["analysis"]["self_test_devices"] == 1
     assert "peak_threshold_w" not in values["thresholds"]
     assert values["review"] == {
         "review_min_uses": 5,

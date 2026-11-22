@@ -102,7 +102,7 @@ thermostat), which are grouped into one session with their duty cycle.
   Home Assistant Container and Core are not supported yet: a standalone image is planned in
   [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
 - **Home Assistant 2025.10 or later** for the integration, add-on **0.11.0 or later** to
-  learn an appliance from a smart plug, 0.9.0 for the day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
+  learn an appliance from a smart plug and for the nightly self-test, 0.9.0 for the day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
   management, 0.4.0 for the appliance statistics; developed and tested on 2026.10 and
   2026.11; the panel uses Home Assistant's own date picker when available, and a plain date
   field otherwise).
@@ -191,6 +191,7 @@ appliances that come from the Energy dashboard, and your changes (excluded, adde
 | | Signature half-life | 30 days | Age at which a past use counts half in the signature registry. Shorter forgets replaced appliances faster; longer keeps rare ones known longer. |
 | | Keep full reports | 90 days | Full reports keep the per-minute curve; older days keep a summary (totals, peaks, activations). |
 | | Peak reference window | 30 days | Notable peaks are relative to the highest power of these days, to follow the seasons. |
+| | Self-test: measured devices per night | 1 | After the nightly analysis, this many sub-meters are hidden in a copy of the analysis to check that the curve finds them again (see *Self-test* below). 0 disables it. |
 | Review of the signatures | Notify in Repairs | on | One notice in **Settings → Repairs** while signatures wait in the *To review* tab of the panel. |
 | | Uses / different days before a signature is proposed | 5 / 3 | A signature is proposed once it was seen that many times on that many different days. |
 | | *Wait*: propose again after | 14 days | A signature put on hold comes back after these days, or once its uses reached… |
@@ -368,6 +369,18 @@ learned signature to the appliance and removes the plug from its sources: unplug
 appliance is now tracked from the curve. *Stop learning* drops what was learned. An appliance
 below the step threshold (300 W by default) cannot be learned this way.
 
+**Self-test** ([#15](https://github.com/sylvaing/ha-energy-mapper/issues/15)): how well does
+the curve find an appliance it cannot see? Each night, after the analysis, the add-on takes one
+of your sub-meters (a device measured by its own power sensor), analyses the day once more
+**with that device hidden** in the curve, as if it had no sensor, and checks against its sensor
+whether its uses were found. The devices take turns, one per night by default (the setting
+*Self-test: measured devices per night*; 0 switches it off); the real report, the signatures
+and the statistics never change. The *Appliances* tab shows a *Self-test* card to every user:
+for each device, "found again 83 % of the time" over the last 60 days, the number of tests,
+the uses found, the precision (share of right detections), the energy found, and the trend
+(improving, stable, getting worse). A device with fewer than 5 uses tested shows "not enough
+data yet", and one below the step threshold "too low for the whole-house curve".
+
 | Sensor | Value |
 |---|---|
 | *Appliance* Energy yesterday | kWh of the last analysed day (attribute `day`) |
@@ -446,7 +459,7 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
   signatures in the panel (name one, or link it to an existing switch or power sensor), with
   the entity each one probably is, one entry per appliance and per-appliance entities and
   hourly energy statistics, "take
-  over tracking" in the Energy dashboard, learning from measured devices (done), a nightly self-test with a success rate, variable loads, and
+  over tracking" in the Energy dashboard, learning from measured devices, a nightly self-test with a success rate (done), variable loads, and
   a benchmark on public NILM datasets ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): real-time
   detection, per-phase analysis, recognition of multi-phase appliance cycles.
@@ -609,7 +622,7 @@ regroupés en une seule session avec leur rapport cyclique.
   Home Assistant Container et Core ne sont pas encore pris en charge : une image autonome est
   prévue dans [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
 - **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.11.0 ou plus
-  récent** pour apprendre un appareil d'une prise connectée, 0.9.0 pour la grille jour par
+  récent** pour apprendre un appareil d'une prise connectée et pour l'auto-test de nuit, 0.9.0 pour la grille jour par
   jour de l'examen (0.8.0 pour les suggestions d'attribut et
   les fusions, 0.7.0 pour les suggestions
   d'entité, 0.6.0 pour l'examen des signatures, 0.5.0 pour la
@@ -705,6 +718,7 @@ viennent du tableau Énergie, et vos changements (exclus, ajoutés ou modifiés)
 | | Demi-vie des signatures | 30 jours | Âge auquel une utilisation passée compte pour moitié dans le registre des signatures. Plus court oublie plus vite un appareil remplacé ; plus long garde plus longtemps les appareils rares. |
 | | Conservation des rapports complets | 90 jours | Les rapports complets gardent la courbe minute par minute ; les jours plus anciens gardent un résumé (totaux, pics, utilisations). |
 | | Fenêtre de référence des pics | 30 jours | Les pics notables sont relatifs à la puissance la plus haute de ces jours, pour suivre les saisons. |
+| | Auto-test : appareils mesurés par nuit | 1 | Après l'analyse de la nuit, ce nombre de sous-compteurs est caché dans une copie de l'analyse pour vérifier que la courbe les retrouve (voir *Auto-test* plus bas). 0 le désactive. |
 | Examen des signatures | Signaler dans Réparations | oui | Un seul avis dans **Paramètres → Réparations** tant que des signatures attendent dans l'onglet *À examiner* du panneau. |
 | | Utilisations / jours différents avant de proposer une signature | 5 / 3 | Une signature est proposée dès qu'elle a été vue ce nombre de fois sur ce nombre de jours différents. |
 | | *Attendre* : proposer de nouveau après | 14 jours | Une signature mise en attente revient après ces jours, ou quand ses utilisations ont atteint… |
@@ -902,6 +916,20 @@ signature apprise à l'appareil et retire la prise de ses sources : débranchez-
 est désormais suivi dans la courbe. *Arrêter l'apprentissage* oublie ce qui a été appris. Un
 appareil sous le seuil de marche (300 W par défaut) ne peut pas être appris ainsi.
 
+**Auto-test** ([#15](https://github.com/sylvaing/ha-energy-mapper/issues/15)) : la courbe
+retrouve-t-elle un appareil qu'elle ne voit pas ? Chaque nuit, après l'analyse, l'add-on prend
+un de vos sous-compteurs (un appareil mesuré par son propre capteur de puissance), analyse la
+journée une seconde fois **en cachant cet appareil** dans la courbe, comme s'il n'avait pas de
+capteur, et vérifie avec son capteur si ses utilisations ont été retrouvées. Les appareils
+passent à tour de rôle, un par nuit par défaut (le réglage *Auto-test : appareils mesurés par
+nuit* ; 0 le désactive) ; le vrai rapport, les signatures et les statistiques ne changent
+jamais. L'onglet *Appareils* montre une carte *Auto-test* à tous les utilisateurs : pour chaque
+appareil, « retrouvé 83 % du temps » sur les 60 derniers jours, le nombre de tests, les
+utilisations retrouvées, la précision (part des détections justes), l'énergie retrouvée et la
+tendance (en progrès, stable, en baisse). Un appareil avec moins de 5 utilisations testées
+affiche « pas encore assez de données », et un appareil sous le seuil de marche « trop faible
+pour la courbe de la maison ».
+
 | Capteur | Valeur |
 |---|---|
 | *Appareil* Énergie hier | kWh du dernier jour analysé (attribut `day`) |
@@ -985,8 +1013,8 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
   revue des signatures dans le panneau (en nommer une, ou la relier à un interrupteur ou un
   capteur de puissance existant), avec l'entité qu'elle est probablement, une entrée par
   appareil, entités par appareil, statistiques d'énergie heure par heure et « prendre en
-  charge le suivi » dans le tableau Énergie, apprentissage à partir des appareils mesurés
-  (faits), auto-contrôle de nuit avec un taux de réussite, charges variables, et évaluation
+  charge le suivi » dans le tableau Énergie, apprentissage à partir des appareils mesurés,
+  auto-test de nuit avec un taux de réussite (faits), charges variables, et évaluation
   sur des jeux de données NILM publics ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : détection en
   temps réel, analyse par phase, reconnaissance des cycles des appareils à plusieurs phases.
