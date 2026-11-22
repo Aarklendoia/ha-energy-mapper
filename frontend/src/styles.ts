@@ -412,6 +412,9 @@ export const panelStyles = css`
     color: var(--secondary-text-color);
     font-size: var(--ha-font-size-s, 12px);
   }
+  .sig-id {
+    overflow-wrap: anywhere;
+  }
   .hours {
     display: flex;
     align-items: flex-end;

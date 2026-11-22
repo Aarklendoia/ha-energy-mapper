@@ -1,6 +1,7 @@
 // Pure data shaping of the reports for the panel (unit tested, no DOM).
 
-import type { CurvePoint, Days, Peak, Registry, Report } from "./types.ts";
+import type { NameSource } from "./names.ts";
+import type { CurvePoint, Days, Peak, PeakPart, Registry, RegistrySignature, Report } from "./types.ts";
 
 export type SeriesKind = "base" | "submetered" | "estimated" | "known" | "signature" | "other";
 
@@ -12,19 +13,53 @@ export interface StackSeries {
   keys: string[];
   /** display name (translated by the panel for the fixed kinds) */
   name: string;
+  /** signatures: the registry id (or daily id), shown as secondary text */
+  ref?: string;
   energy_kwh: number;
 }
 
-/** Display name of the signatures: daily cluster id -> registry label, else registry id. */
-export function signatureNames(report: Report, registry: Registry | null): Map<string, string> {
-  const labels = new Map<string, string>();
-  for (const s of registry?.signatures ?? []) if (s.label) labels.set(s.id, s.label);
+/** Name of a signature without label (see names.ts): built from what it is. */
+export type Namer = (sig: NameSource) => string;
+
+/** Display name of the signatures: daily cluster id -> registry label, else a
+ * provisional name built from the registry signature (or the daily one when it
+ * has no registry match) by ``namer``, else the registry id. The unclassified
+ * cluster "?" keeps its id. */
+export function signatureNames(report: Report, registry: Registry | null, namer?: Namer): Map<string, string> {
+  const byId = new Map<string, RegistrySignature>();
+  for (const s of registry?.signatures ?? []) byId.set(s.id, s);
   const names = new Map<string, string>();
   for (const s of report.signatures ?? []) {
     const rid = s.registry_id ?? null;
-    names.set(s.id, (rid && labels.get(rid)) || rid || s.id);
+    const reg = rid ? byId.get(rid) : undefined;
+    if (reg?.label) names.set(s.id, reg.label);
+    else if (s.id === "?" && !rid) names.set(s.id, s.id);
+    else if (namer) names.set(s.id, namer(reg ?? s));
+    else names.set(s.id, rid || s.id);
   }
   return names;
+}
+
+/** Display name of a registry signature: its label, else a provisional name, else its id. */
+export function registryName(sig: RegistrySignature, namer?: Namer): string {
+  return sig.label || (namer ? namer(sig) : sig.id);
+}
+
+/** Display name of the signature part of a peak (same rules as signatureNames). */
+export function peakPartName(
+  part: PeakPart,
+  report: Report,
+  registry: Registry | null,
+  namer?: Namer,
+): string {
+  const rid = part.registry_id || null;
+  const reg = rid ? registry?.signatures?.find((s) => s.id === rid) : undefined;
+  if (reg?.label) return reg.label;
+  if (part.name === "?" && !rid) return part.name;
+  const daily = report.signatures?.find((s) => s.id === part.name);
+  const source = reg ?? daily;
+  if (namer && source) return namer(source);
+  return rid || part.name;
 }
 
 /** Registry id of a daily signature (itself when it has none). */
@@ -39,7 +74,7 @@ function sortByEnergy<T extends { energy_kwh: number; name: string }>(items: T[]
 /** The stacked series, bottom to top: base load, sub-meters, switched loads,
  * signatures (by decreasing energy), then the unexplained rest. Several daily
  * clusters matched to the same registry signature share one series. */
-export function stackSeries(report: Report, registry: Registry | null): StackSeries[] {
+export function stackSeries(report: Report, registry: Registry | null, namer?: Namer): StackSeries[] {
   const e = report.energy_kwh;
   const out: StackSeries[] = [{ id: "base", kind: "base", keys: ["base"], name: "base", energy_kwh: e.base }];
   // sub-meters: what plugs and sensors measure, then the estimates subtracted
@@ -65,9 +100,10 @@ export function stackSeries(report: Report, registry: Registry | null): StackSer
       })),
     ),
   );
-  const names = signatureNames(report, registry);
+  const names = signatureNames(report, registry, namer);
   const dailyIds = new Set<string>(Object.keys(e.signatures ?? {}));
   for (const p of report.curve) for (const k of Object.keys(p.signatures ?? {})) dailyIds.add(k);
+  const labelled = new Set((registry?.signatures ?? []).filter((r) => r.label).map((r) => r.id));
   const groups = new Map<string, StackSeries>();
   for (const id of dailyIds) {
     const rid = registryIdOf(report, id);
@@ -77,6 +113,8 @@ export function stackSeries(report: Report, registry: Registry | null): StackSer
       kind: "signature" as const,
       keys: [],
       name: names.get(id) ?? id,
+      // the id only for debugging the unnamed ones
+      ref: labelled.has(rid) || rid === "?" ? undefined : rid,
       energy_kwh: 0,
     };
     group.keys.push(id);

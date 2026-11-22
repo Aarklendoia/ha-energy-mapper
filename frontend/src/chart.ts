@@ -255,6 +255,11 @@ export class EnergyMapperChart extends LitElement {
   private tooltip(params: TooltipParam[], m: ChartModel): string {
     if (!params.length) return "";
     const t = params[0].value[0] / 1000;
+    // signatures: their registry id, muted, for debugging (#52)
+    const ref = (id: string) => {
+      const r = m.stack.find((s) => s.id === id)?.ref;
+      return r && r !== m.names.get(id) ? ` <span style="opacity:0.6">${escape(r)}</span>` : "";
+    };
     const rows = params
       .filter((p) => p.seriesId === "house" || p.seriesId === "pv" || p.value[1] > 0)
       .sort((a, b) => {
@@ -266,7 +271,7 @@ export class EnergyMapperChart extends LitElement {
         const strong = p.seriesId === "house" ? "font-weight:500;" : "";
         return `<div style="display:flex;align-items:center;gap:8px;${strong}">
           <span style="width:8px;height:8px;border-radius:50%;background:${p.color};flex:none"></span>
-          <span style="flex:1">${escape(p.seriesName)}</span>
+          <span style="flex:1">${escape(p.seriesName)}${ref(p.seriesId)}</span>
           <span style="margin-left:16px">${formatPower(p.value[1], m.info)}</span></div>`;
       })
       .join("");

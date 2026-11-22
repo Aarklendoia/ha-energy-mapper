@@ -23,6 +23,9 @@ import {
   statsDays,
   summary,
   unexplainedShare,
+  type Namer,
+  peakPartName,
+  registryName,
 } from "./data.ts";
 import {
   dayOf,
@@ -40,6 +43,7 @@ import {
 } from "./format.ts";
 import { adaptCalendar, definedPicker, type HaPickerTag, loadHaDatePicker } from "./ha-date-picker.ts";
 import { type StringKey, type Translate, translator } from "./i18n.ts";
+import { distinctNames, provisionalName } from "./names.ts";
 import {
   bestSuggestion,
   drivesLoad,
@@ -191,6 +195,13 @@ export class EnergyMapperPanel extends LitElement {
   }
 
   // -- helpers ---------------------------------------------------------------
+  /** Provisional name of a signature without label (#52). */
+  private get namer(): Namer {
+    const t = this.t;
+    const info = this.info;
+    return (sig) => provisionalName(sig, t, info);
+  }
+
   private get t(): Translate {
     return translator(this.hass?.locale?.language || this.hass?.language);
   }
@@ -462,7 +473,7 @@ export class EnergyMapperPanel extends LitElement {
     if (c && c.report === report && c.registry === this._registry && c.key === key) return c.model;
     const t = this.t;
     const theme: ChartTheme = chartTheme(this);
-    const stack = stackSeries(report, this._registry);
+    const stack = stackSeries(report, this._registry, this.namer);
     const indexes = assignColors(
       stack.filter((s) => s.kind === "known" || s.kind === "signature").map((s) => s.id),
       SERIES_INDEXES,
@@ -484,11 +495,13 @@ export class EnergyMapperPanel extends LitElement {
       );
       names.set(s.id, this.seriesName(s, t));
     }
+    // the legend toggles the series by name: two alike provisional names must differ
+    const distinct = distinctNames(names);
     const model: ChartModel = {
       report,
       stack,
       colors,
-      names,
+      names: distinct,
       info: this.info,
       theme,
       labels: { house: t("chart_house"), pv: t("chart_pv") },
@@ -785,10 +798,8 @@ export class EnergyMapperPanel extends LitElement {
 
   private partLabel(part: PeakPart, t: Translate): string {
     if (part.kind === "submetered" || part.kind === "estimated") return t(part.kind);
-    if (part.kind === "signature") {
-      const rid = part.registry_id;
-      const label = rid ? this._registry?.signatures.find((s) => s.id === rid)?.label : null;
-      const name = label || rid || part.name;
+    if (part.kind === "signature" && this._report) {
+      const name = peakPartName(part, this._report, this._registry, this.namer);
       return name === "?" ? t("unclassified") : name;
     }
     return part.name;
@@ -842,7 +853,8 @@ export class EnergyMapperPanel extends LitElement {
                       ? html`<span class="chip">${t("nothing_identified")}</span>`
                       : p.parts.map((part) => {
                           const c = this.partColor(part, model, report);
-                          return html`<span class="chip">
+                          const ref = part.kind === "signature" ? part.registry_id || part.name : "";
+                          return html`<span class="chip" title=${ref}>
                             ${c ? html`<span class="dot" style="background:${c}"></span>` : nothing}
                             ${this.partLabel(part, t)}
                             <span class="chip-value">${formatPower(part.power_w, info)}</span>
@@ -944,10 +956,10 @@ export class EnergyMapperPanel extends LitElement {
       .join(" ");
     return {
       name: html`<div class="sig-name">
-          ${c ? html`<span class="dot" style="background:${c}"></span>` : nothing} ${s.label || s.id}
+          ${c ? html`<span class="dot" style="background:${c}"></span>` : nothing} ${registryName(s, this.namer)}
           ${seen.has(s.id) ? html`<span class="badge neutral">${t("seen_this_day")}</span>` : nothing}
         </div>
-        ${s.label ? html`<div class="secondary">${s.id}</div>` : nothing}`,
+        <div class="secondary sig-id">${s.id}</div>`,
       kind: s.kind === "cycling" ? t("cycling") : t("steady"),
       cycle,
       power: formatPower(s.power_w, info),
@@ -1100,8 +1112,9 @@ export class EnergyMapperPanel extends LitElement {
     return html`<li>
       <div class="review-head">
         <div class="review-main">
-          <div class="sig-name">${s.id}</div>
+          <div class="sig-name">${registryName(s, this.namer)}</div>
           <div class="secondary">${this.reviewFacts(s, t).join(" · ")}</div>
+          <div class="secondary sig-id">${s.id}</div>
           ${this.renderProbably(s, t)}
         </div>
         <div class="hours" title=${formatHours(usualHours(s.hours, 0.01, 24))}>
@@ -1221,7 +1234,7 @@ export class EnergyMapperPanel extends LitElement {
     if (note) facts.push(note);
     return html`<li>
       <div class="review-main">
-        <span class="sig-name">${s.id}</span>
+        <span class="sig-name" title=${s.id}>${registryName(s, this.namer)}</span>
         <span class="secondary">${facts.join(" · ")}</span>
       </div>
       ${this.textButton(t("review_restore"), () => void this.decide(s, "restore"), this._reviewBusy === s.id)}
