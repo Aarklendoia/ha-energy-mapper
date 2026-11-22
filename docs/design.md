@@ -178,7 +178,7 @@ number ("(2)"), since the legend toggles series by name.
 **Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds three tabs
 in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow keys, Home
 and End move between them; on a `narrow` screen they share the width): **Today** (the day
-picker, findings, summary tiles, chart, peaks, switched loads and the quality line),
+picker, summary card, chart, peaks, switched loads, findings and the quality line),
 **Appliances** (the signature registry and the switched loads; redone by #54) and **To
 review** (administrators whose add-on has a review; a badge counts the proposed signatures).
 The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
@@ -187,6 +187,22 @@ replaced by `tab=review`. A non-administrator asking for `tab=review` gets *Toda
 *Today*, administrators see a banner "N appliances waiting for a name → Start reviewing"
 while signatures are proposed; it opens *To review*. An example of a signature in *To review*
 switches back to *Today*, on its day, zoomed on it.
+
+**Summary card** (`splitParts`, `categorySeries`, `maxPowerTime` in `frontend/src/data.ts`,
+unit tested, #48). On *Today*, one card: the house consumption in large type, then one
+secondary line with the highest power and its time (the curve maximum, else the highest
+peak), the grid import, and the solar with its export (only when the installation has PV).
+Below, a **split bar**, one segmented bar in the HA graph palette, and its legend with kWh
+and share of each category: base load, measured by plugs and sensors, estimated, **named
+appliances** (switched loads and signatures with a label or merged into an appliance),
+**still to name** (the other signatures, the unclassified cluster included) and unexplained.
+Empty categories are left out; reports without `estimated` (add-on < 0.8.1) count all the
+sub-metered energy as measured. Base load, measured and estimated have the colours of their
+chart series; named and still to name use graph colours 2 and 26. Selecting a legend item
+(a button, `aria-pressed`) or a segment selects that category, again to clear it: the
+selection is panel state (`selectedCategory`, for the timeline of #49) and the chart dims
+the other series. On a `narrow` screen the legend has two columns. The findings come below
+the peaks, collapsed under "N things to check" (`<details>`).
 
 **Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
 toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the

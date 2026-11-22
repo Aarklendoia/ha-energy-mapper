@@ -4,6 +4,9 @@ import { test } from "node:test";
 
 import {
   assignColors,
+  categorySeries,
+  maxPowerTime,
+  splitParts,
   dayEntries,
   dayPresets,
   type DayStats,
@@ -269,4 +272,72 @@ test("day picker presets", () => {
     dayPresets("2027-03-10", {}).map((p) => p.key),
     ["yesterday", "day_before_yesterday"],
   );
+});
+
+const near = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} != ${b}`);
+
+test("split bar: switched loads and labelled signatures are named, the others to name", () => {
+  const parts = splitParts(report(), registry);
+  assert.deepEqual(parts.map((p) => p.key), ["base", "measured", "named", "to_name", "other"]);
+  const kwh = Object.fromEntries(parts.map((p) => [p.key, p.energy_kwh]));
+  near(kwh.base, 4);
+  near(kwh.measured, 2);
+  near(kwh.named, 2.4 + 0.8); // water heater + kettle (two daily clusters)
+  near(kwh.to_name, 0.3);
+  near(kwh.other, 0.5);
+  near(parts.reduce((a, p) => a + p.share, 0), 1);
+  near(parts.find((p) => p.key === "base")!.share, 4 / 10);
+});
+
+test("split bar: without registry every signature is still to name", () => {
+  const kwh = Object.fromEntries(splitParts(report(), null).map((p) => [p.key, p.energy_kwh]));
+  near(kwh.named, 2.4);
+  near(kwh.to_name, 1.1);
+});
+
+test("split bar: a signature merged into an appliance is named", () => {
+  const reg: Registry = {
+    ...registry,
+    signatures: [{ ...registry.signatures[0], id: "cyc-1500w", label: null, appliance: "dishwasher" }],
+  };
+  const kwh = Object.fromEntries(splitParts(report(), reg).map((p) => [p.key, p.energy_kwh]));
+  near(kwh.named, 2.4 + 0.3);
+});
+
+test("split bar: estimated apart, older reports all measured", () => {
+  const r = report();
+  r.energy_kwh.estimated = 0.5;
+  const kwh = Object.fromEntries(splitParts(r, registry).map((p) => [p.key, p.energy_kwh]));
+  near(kwh.measured, 1.5);
+  near(kwh.estimated, 0.5);
+  assert.ok(!splitParts(report(), registry).some((p) => p.key === "estimated"));
+});
+
+test("split bar: an empty day has no part", () => {
+  const r = report();
+  r.energy_kwh = { ...r.energy_kwh, base: 0, submetered: 0, other: 0, known: {}, signatures: {} };
+  r.curve = [];
+  r.signatures = [];
+  assert.deepEqual(splitParts(r, null), []);
+});
+
+test("series of a category, to highlight them in the chart", () => {
+  const stack = stackSeries(report(), registry);
+  assert.deepEqual(categorySeries(stack, "named", registry), ["known:Water heater", "sig:short-2000w"]);
+  assert.deepEqual(categorySeries(stack, "to_name", registry), ["sig:cyc-1500w"]);
+  assert.deepEqual(categorySeries(stack, "measured", registry), ["submetered"]);
+});
+
+test("time of the highest power: curve maximum, else the highest peak", () => {
+  const r = report();
+  r.curve.push({ ...r.curve[0], t: 1060, house: 4200 });
+  assert.equal(maxPowerTime(r), 1060);
+  r.curve = [];
+  r.peaks = [
+    { start: 2000, end: 2100, max_ts: 2050, house_w: 3600, grid_w: 0, pv_w: 0, parts: [], unexplained_w: 0 },
+    { start: 5000, end: 5200, max_ts: 5100, house_w: 4200, grid_w: 0, pv_w: 0, parts: [], unexplained_w: 0 },
+  ];
+  assert.equal(maxPowerTime(r), 5100);
+  r.peaks = [];
+  assert.equal(maxPowerTime(r), null);
 });

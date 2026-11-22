@@ -180,6 +180,76 @@ export function summary(report: Report): Summary {
   };
 }
 
+/** The categories of the split bar of the day (#48), in display order. */
+export const SPLIT_KEYS = ["base", "measured", "estimated", "named", "to_name", "other"] as const;
+export type SplitKey = (typeof SPLIT_KEYS)[number];
+
+export interface SplitPart {
+  key: SplitKey;
+  energy_kwh: number;
+  /** share of the sum of the parts (0..1) */
+  share: number;
+}
+
+/** Registry ids of the signatures that have a name: a label, or merged into an appliance. */
+export function namedSignatureIds(registry: Registry | null): Set<string> {
+  return new Set((registry?.signatures ?? []).filter((r) => r.label || r.appliance).map((r) => r.id));
+}
+
+/** Category of the split bar a stacked series belongs to: switched loads and
+ * labelled signatures are named appliances, the other signatures (and the
+ * unclassified cluster) are still to name. */
+export function seriesCategory(series: StackSeries, named: Set<string>): SplitKey {
+  switch (series.kind) {
+    case "base":
+      return "base";
+    case "submetered":
+      return "measured";
+    case "estimated":
+      return "estimated";
+    case "other":
+      return "other";
+    case "known":
+      return "named";
+    case "signature":
+      return named.has(series.id.slice("sig:".length)) ? "named" : "to_name";
+  }
+}
+
+/** Energy of each category of the day, in display order, empty ones left out.
+ * Reports without `estimated` count all the sub-metered energy as measured. */
+export function splitParts(report: Report, registry: Registry | null): SplitPart[] {
+  const named = namedSignatureIds(registry);
+  const totals = new Map<SplitKey, number>(SPLIT_KEYS.map((k) => [k, 0]));
+  for (const s of stackSeries(report, registry)) {
+    const key = seriesCategory(s, named);
+    totals.set(key, totals.get(key)! + Math.max(s.energy_kwh, 0));
+  }
+  const total = [...totals.values()].reduce((a, b) => a + b, 0);
+  return SPLIT_KEYS.filter((k) => totals.get(k)! >= 0.0005).map((key) => ({
+    key,
+    energy_kwh: totals.get(key)!,
+    share: total > 0 ? totals.get(key)! / total : 0,
+  }));
+}
+
+/** Ids of the stacked series of one category (to highlight them in the chart). */
+export function categorySeries(stack: StackSeries[], key: SplitKey, registry: Registry | null): string[] {
+  const named = namedSignatureIds(registry);
+  return stack.filter((s) => seriesCategory(s, named) === key).map((s) => s.id);
+}
+
+/** Time (s) of the highest house power of the day: the curve point at the
+ * maximum, else the highest peak; null when unknown. */
+export function maxPowerTime(report: Report): number | null {
+  let best: { t: number; w: number } | null = null;
+  for (const p of report.curve ?? []) if (!best || p.house > best.w) best = { t: p.t, w: p.house };
+  if (best) return best.t;
+  let peak: Peak | null = null;
+  for (const p of report.peaks ?? []) if (!peak || p.house_w > peak.house_w) peak = p;
+  return peak ? peak.max_ts : null;
+}
+
 /** 32-bit FNV-1a: a stable hash of the series ids. */
 export function hash(text: string): number {
   let h = 0x811c9dc5;

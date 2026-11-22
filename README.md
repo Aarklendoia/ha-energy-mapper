@@ -256,16 +256,13 @@ address, so a view can be bookmarked.
   entities are not recorded at all. Lights and small devices below the step threshold
   (300 W) never match: suggestions mostly help with large loads (heaters, fans, connected
   appliances, audio and video equipment).
-- **Things to check**: what the analysis found in your setup, such as a device without a power
-  sensor, an unavailable sensor, a battery whose sign should be checked, or a **tracking gap**
-  (a switch-driven device whose declared energy is far from what was measured, typically an
-  estimate configured at a few watts for a 2 kW water heater).
-- **Summary cards**: house consumption (and the day's highest power), grid import and export,
-  solar, then how the house consumption splits: **base load** (the always-on power, a low
+- **Summary**: house consumption in large type, the day's highest power and its time, grid
+  import and solar (with what was exported), then a **split bar** of the house consumption,
+  with the energy and share of each part: **base load** (the always-on power, a low
   percentile of the day), **measured by plugs and sensors**, **estimated** (devices whose
-  power is only an estimate, e.g. lights estimated by an estimation integration), **switched
-  loads**, **recognised
-  signatures** and **unexplained**.
+  power is only an estimate, e.g. lights estimated by an estimation integration), **named
+  appliances** (switched loads and named signatures), **still to name** (signatures without
+  a name yet) and **unexplained**. Select a part to highlight it in the chart.
 - **Consumption breakdown**: the same split per minute, stacked, with the house and solar
   lines, the notable threshold (dashed) and the peaks shaded. Zoom with the slider or the
   mouse wheel; each appliance keeps its colour from one day to the next.
@@ -274,6 +271,10 @@ address, so a view can be bookmarked.
   highest power of the last 30 days, or your fixed threshold). Select a peak to zoom on it.
 - **Switched loads**: the power learned from the curve, the number of days seen, and
   *Inverted* when the appliance runs while its switch is off.
+- **N things to check** (collapsed): what the analysis found in your setup, such as a device
+  without a power sensor, an unavailable sensor, a battery whose sign should be checked, or a
+  **tracking gap** (a switch-driven device whose declared energy is far from what was
+  measured, typically an estimate configured at a few watts for a 2 kW water heater).
 - **Signatures**: the appliances recognised across days, most frequent first: steady or
   cycling (with on-time and period), typical power and duration, uses per week, last seen, the
   usual hours of the day, and *Seen this day*. A signature you have not named yet shows a
@@ -718,17 +719,15 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   Les lumières et petits appareils sous le seuil de marche (300 W) ne correspondent jamais :
   les suggestions servent surtout pour les gros appareils (chauffages, ventilateurs,
   appareils connectés, audio et vidéo).
-- **À vérifier** : ce que l'analyse a trouvé dans votre configuration, comme un appareil sans
-  capteur de puissance, un capteur indisponible, une batterie dont le signe est à vérifier,
-  ou un **écart de suivi** (un appareil piloté dont l'énergie déclarée est loin de ce qui a
-  été mesuré, typiquement une estimation réglée à quelques watts pour un chauffe-eau de
-  2 kW).
-- **Cartes du bilan** : consommation de la maison (et puissance maximale du jour), achat et
-  revente, solaire, puis la répartition de la consommation : **consommation de fond** (la
-  puissance permanente, un bas centile de la journée), **mesuré par prises et capteurs**,
-  **estimé** (appareils dont la puissance n'est qu'une estimation, comme des lumières
-  estimées par une intégration d'estimation),
-  **appareils pilotés**, **signatures reconnues** et **non expliqué**.
+- **Bilan** : la consommation de la maison en grand, la puissance la plus haute du jour et son
+  heure, le réseau et le solaire (avec ce qui a été revendu), puis une **barre de
+  répartition** de la consommation de la maison, avec l'énergie et la part de chaque partie :
+  **consommation de fond** (la puissance permanente, un bas centile de la journée),
+  **mesuré par prises et capteurs**, **estimé** (appareils dont la puissance n'est qu'une
+  estimation, comme des lumières estimées par une intégration d'estimation), **appareils
+  nommés** (appareils pilotés et signatures nommées), **à nommer** (signatures encore sans
+  nom) et **non expliqué**. Sélectionnez une partie pour la mettre en évidence dans le
+  graphique.
 - **Répartition de la consommation** : la même répartition minute par minute, empilée, avec
   les courbes de la maison et du solaire, le seuil notable (en pointillés) et les pics
   surlignés. Zoomez avec le curseur ou la molette ; chaque appareil garde sa couleur d'un
@@ -739,6 +738,11 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   Sélectionnez un pic pour zoomer dessus.
 - **Appareils pilotés** : la puissance apprise sur la courbe, le nombre de jours vus, et
   *Inversé* quand l'appareil fonctionne interrupteur éteint.
+- **N points à vérifier** (repliés) : ce que l'analyse a trouvé dans votre configuration,
+  comme un appareil sans capteur de puissance, un capteur indisponible, une batterie dont le
+  signe est à vérifier, ou un **écart de suivi** (un appareil piloté dont l'énergie déclarée
+  est loin de ce qui a été mesuré, typiquement une estimation réglée à quelques watts pour un
+  chauffe-eau de 2 kW).
 - **Signatures** : les appareils reconnus au fil des jours, les plus fréquents d'abord :
   continu ou cyclique (avec durée de marche et période), puissance et durée typiques,
   utilisations par semaine, dernière fois vue, heures habituelles, et *Vue ce jour*. Une

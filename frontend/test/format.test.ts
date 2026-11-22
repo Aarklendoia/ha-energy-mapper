@@ -71,7 +71,7 @@ test("translations: language, fallback, parameters", () => {
   assert.equal(translator("fr")("peaks"), "Pics");
   assert.equal(translator("fr-CA")("peaks"), "Pics");
   assert.equal(translator("de")("peaks"), "Peaks");
-  assert.equal(translator("en")("of_house", { share: "12 %" }), "12 % of the house");
+  assert.equal(translator("en")("grid_line", { energy: "12 kWh" }), "Grid 12 kWh");
 });
 
 test("days of instants and day arithmetic", () => {

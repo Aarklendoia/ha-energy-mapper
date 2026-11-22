@@ -54,9 +54,15 @@ interface TooltipParam {
 }
 
 export class EnergyMapperChart extends LitElement {
-  static override properties = { model: { attribute: false }, narrow: { type: Boolean, reflect: true } };
+  static override properties = {
+    model: { attribute: false },
+    highlight: { attribute: false },
+    narrow: { type: Boolean, reflect: true },
+  };
 
   declare model: ChartModel | null;
+  /** ids of the stacked series to highlight (the others are dimmed), null: none */
+  declare highlight: string[] | null;
   declare narrow: boolean;
   private chart: ECharts | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -64,6 +70,7 @@ export class EnergyMapperChart extends LitElement {
   constructor() {
     super();
     this.model = null;
+    this.highlight = null;
     this.narrow = false;
   }
 
@@ -94,7 +101,7 @@ export class EnergyMapperChart extends LitElement {
   }
 
   protected override updated(changed: PropertyValues): void {
-    if (changed.has("model") || changed.has("narrow")) this.draw();
+    if (changed.has("model") || changed.has("highlight") || changed.has("narrow")) this.draw();
   }
 
   private setup(): void {
@@ -115,8 +122,10 @@ export class EnergyMapperChart extends LitElement {
     const { report, theme, info } = m;
     const curve = report.curve;
     const textStyle = { color: theme.secondaryText, fontFamily: theme.fontFamily };
+    const lit = this.highlight ? new Set(this.highlight) : null;
     const stacked = m.stack.map((s) => {
       const color = m.colors.get(s.id) ?? theme.other;
+      const dim = lit !== null && !lit.has(s.id);
       return {
         id: s.id,
         name: m.names.get(s.id) ?? s.name,
@@ -124,8 +133,8 @@ export class EnergyMapperChart extends LitElement {
         stack: "house",
         symbol: "none",
         color,
-        lineStyle: { width: 0.5, color },
-        areaStyle: { color, opacity: 0.7 },
+        lineStyle: { width: 0.5, color, opacity: dim ? 0.15 : 1 },
+        areaStyle: { color, opacity: dim ? 0.1 : lit ? 0.9 : 0.7 },
         emphasis: { disabled: true },
         data: curve.map((p) => [p.t * 1000, seriesValue(p, s)]),
       };
