@@ -83,6 +83,124 @@ class PvQuiet:
         return pv_quiet(self.ts, self.v, t)
 
 
+# the solar doubt (#86): the house load is grid + solar, two meters that do
+# not report together. When a cloud passes, the grid reading moves at once
+# and the solar reading comes later: a step appears, then cancels itself.
+# So the production of a reading is in doubt by what its next different
+# value shows, when that value comes within PV_LATE_S: the production may
+# already have been there. Nothing is in doubt while it is below PV_QUIET_W.
+PV_LATE_S = 60.0
+# a reading is set aside when its doubt reaches this share of the step threshold
+SOLAR_DOUBT = 0.5
+HOLD_READINGS = 3  # the level held through them: the median of the last trusted readings
+
+
+def solar_doubt_limit(step_threshold_w: float) -> float:
+    """The solar doubt from which a reading is set aside."""
+    return SOLAR_DOUBT * step_threshold_w
+
+
+class SolarHold:
+    """Sets aside the readings whose solar production is in doubt (#86).
+
+    Each reading of the load comes with the solar production it was built
+    with (:meth:`push`). Its **doubt** is how far the next different
+    production is from its own, when one comes within ``late_s`` (a late
+    or skipped solar reading: the production may already have moved, and
+    the load with it); none while the production is below ``quiet_w``.
+
+    A reading whose doubt reaches ``limit_w`` is not trusted: the detector
+    gets the level before the doubt instead (the median of the last
+    ``HOLD_READINGS`` trusted readings), for as long as the doubt lasts. A
+    cloud that the solar meter reports late then shows no step, and an
+    appliance that switched meanwhile shows one step, once the readings
+    are trusted again.
+
+    The readings come out in order, each once its doubt is known: at once
+    while the solar panels produce nothing, else when the production
+    changes or ``late_s`` later (:meth:`flush` at the end). The nightly
+    analysis and the live view run the same instance logic, so they give
+    the detector the same points. ``held``: the times of the readings set
+    aside, when a list is given.
+    """
+
+    def __init__(
+        self,
+        limit_w: float,
+        late_s: float = PV_LATE_S,
+        quiet_w: float = PV_QUIET_W,
+        held: list[float] | None = None,
+    ):
+        self.limit_w, self.late_s, self.quiet_w = limit_w, late_s, quiet_w
+        self.held = held
+        self.count = 0  # readings set aside
+        self._pending: deque[tuple[float, float, float]] = deque()  # doubt not known yet
+        self._trusted: deque[float] = deque(maxlen=HOLD_READINGS)
+        self._level: float | None = None  # held through the doubt in progress
+
+    @property
+    def pending(self) -> int:
+        """Readings waiting for their doubt to be known."""
+        return len(self._pending)
+
+    def push(self, ts: float, value: float, pv: float) -> list[tuple[float, float]]:
+        """One reading of the load and its solar production; returns the
+        points whose doubt is now known, in order."""
+        out: list[tuple[float, float]] = []
+        # the pending readings all have the same production (a different
+        # one would have settled them): this reading settles all or none
+        while self._pending:
+            t0, v0, p0 = self._pending[0]
+            if ts > t0 + self.late_s:
+                doubt = 0.0
+            elif pv != p0:
+                doubt = abs(pv - p0)
+            else:
+                break
+            self._pending.popleft()
+            out.append(self._settle(t0, v0, doubt))
+        if pv <= self.quiet_w:
+            out.append(self._settle(ts, value, 0.0))
+        else:
+            self._pending.append((ts, value, pv))
+        return out
+
+    def flush(self) -> list[tuple[float, float]]:
+        """End of the readings: nothing came after the pending ones."""
+        out = [self._settle(t, v, 0.0) for t, v, _ in self._pending]
+        self._pending.clear()
+        return out
+
+    def _settle(self, ts: float, value: float, doubt: float) -> tuple[float, float]:
+        if doubt < self.limit_w:
+            self._level = None
+            self._trusted.append(value)
+            return ts, value
+        if self._level is None and self._trusted:
+            self._level = statistics.median(self._trusted)
+        self.count += 1
+        if self.held is not None:
+            self.held.append(ts)
+        # nothing trusted yet (the very first readings): as it is
+        return ts, value if self._level is None else self._level
+
+
+def hold_doubtful(
+    points: Sequence[tuple[float, float]],
+    pv: Sequence[float],
+    limit_w: float,
+    held: list[float] | None = None,
+) -> list[tuple[float, float]]:
+    """``points`` for the detector, the readings whose solar production
+    ``pv`` (one value per point) is in doubt set aside: :class:`SolarHold`
+    over a whole series."""
+    hold = SolarHold(limit_w, held=held)
+    out: list[tuple[float, float]] = []
+    for (ts, value), p in zip(points, pv, strict=True):
+        out += hold.push(ts, value, p)
+    return out + hold.flush()
+
+
 class Signal:
     """Fast windowed medians over an irregular series."""
 

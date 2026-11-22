@@ -371,6 +371,7 @@ const en = {
   finding_no_grid: "No grid power sensor",
   finding_unknown_statistic: "Unknown statistic",
   finding_flat_power_sensor: "Power sensor stuck",
+  finding_slow_solar_meter: "Slow solar meter",
   finding_other: "Note",
   // finding sentences, built from the finding's parameters (#34)
   finding_text_grid_ignored: "{name}: grid meter that has never counted, ignored.",
@@ -385,6 +386,8 @@ const en = {
   finding_text_tracking_gap: "{name}: declared {declared}, measured {measured}.",
   finding_text_flat_power_sensor:
     "{name}: its power sensor stays at {power} while its energy counter counted {energy}: it is not subtracted. Learn the appliance from its state (Appliances, Learn from a connected appliance).",
+  finding_text_slow_solar_meter:
+    "{name}: gives a new value only every {interval} s while the panels produce. Above {limit} s, a passing cloud cannot be told from an appliance in the daytime: a faster (local) power reading of the inverter helps.",
   // quality
   quality: "{samples} readings, longest gap {gap}, analysed in {time}",
   // live view (#17)
@@ -922,6 +925,7 @@ const fr: Table = {
   finding_no_grid: "Pas de capteur de puissance réseau",
   finding_unknown_statistic: "Statistique inconnue",
   finding_flat_power_sensor: "Capteur de puissance bloqué",
+  finding_slow_solar_meter: "Compteur solaire lent",
   finding_other: "Remarque",
   finding_text_grid_ignored: "{name} : compteur réseau qui n'a jamais compté, ignoré.",
   finding_text_no_power_sensor_grid: "{name} : compteur réseau sans capteur de puissance, ignoré.",
@@ -935,6 +939,8 @@ const fr: Table = {
   finding_text_tracking_gap: "{name} : {declared} déclarés, {measured} mesurés.",
   finding_text_flat_power_sensor:
     "{name} : son capteur de puissance reste à {power} alors que son compteur d'énergie a compté {energy} : il n'est pas soustrait. Apprenez l'appareil de son état (Appareils, Apprendre d'un appareil connecté).",
+  finding_text_slow_solar_meter:
+    "{name} : ne donne une nouvelle valeur que toutes les {interval} s quand les panneaux produisent. Au-delà de {limit} s, un nuage qui passe ne se distingue plus d'un appareil en journée : une lecture plus rapide (locale) de la puissance de l'onduleur aide.",
   quality: "{samples} mesures, plus grand trou {gap}, analysé en {time}",
   // en direct (#17)
   tab_live: "En direct",

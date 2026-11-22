@@ -76,6 +76,17 @@ export function findingSentence(
         energy: formatEnergy(energy, info),
       });
     }
+    case "slow_solar_meter": {
+      // a solar meter too slow to tell a cloud from an appliance (#86)
+      const interval = num(p.interval_s);
+      const limit = num(p.limit_s);
+      if (!name || interval === undefined || limit === undefined) return null;
+      return t("finding_text_slow_solar_meter", {
+        name,
+        interval: String(Math.round(interval)),
+        limit: String(Math.round(limit)),
+      });
+    }
     default:
       return null;
   }

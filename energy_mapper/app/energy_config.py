@@ -24,6 +24,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from nilm_core import AnalysisConfig, SubmeterConfig, SwitchedLoadConfig
+from nilm_core.steps import PV_LATE_S
 from statistic_ids import KIND_LOAD, KIND_SIGNATURE, is_own, kind_of, statistic_id
 
 POWER_UNITS = {"W": 1.0, "kW": 1000.0, "mW": 0.001, "MW": 1_000_000.0}
@@ -497,6 +498,29 @@ def tracking_gaps(
                 )
             )
     return out
+
+
+# ---------------------------------------------------------------------------
+# slow solar meter (#86)
+# ---------------------------------------------------------------------------
+def slow_solar_meter(report: dict, pv_entity: str | None, limit_s: float = PV_LATE_S) -> list[Finding]:
+    """A solar meter that takes more than ``limit_s`` to tell that the
+    production moved (``quality.solar_interval_s`` of the report). The
+    analysis waits that long for a late solar reading (the solar doubt,
+    #86): with a slower meter, a passing cloud cannot be told from an
+    appliance in the daytime; finding ``slow_solar_meter``."""
+    interval = (report.get("quality") or {}).get("solar_interval_s")
+    if not pv_entity or interval is None or interval <= limit_s:
+        return []
+    return [
+        Finding(
+            "slow_solar_meter",
+            pv_entity,
+            f"solar power sensor: it takes {interval:.0f} s to report a change of the production; "
+            f"above {limit_s:.0f} s, passing clouds look like appliances in the daytime",
+            {"interval_s": round(interval), "limit_s": round(limit_s)},
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
