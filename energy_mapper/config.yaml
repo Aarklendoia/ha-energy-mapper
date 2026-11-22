@@ -1,6 +1,6 @@
 # https://developers.home-assistant.io/docs/apps/configuration
 name: Energy Mapper
-version: "0.12.0"
+version: "0.13.0"
 slug: energy_mapper
 description: Identify the appliances of the home from the whole-house power meter
 url: https://github.com/sylvaing/ha-energy-mapper/tree/main/energy_mapper
@@ -45,6 +45,7 @@ schema:
       on_states:
         - str?
   step_threshold_w: float(50,10000)?
+  night_step_threshold_w: float(50,10000)?
   peak_threshold_w: float(100,100000)?
   live_view: bool
   log_level: list(debug|info|warning|error)

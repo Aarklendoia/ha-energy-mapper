@@ -5,7 +5,7 @@ from __future__ import annotations
 import bisect
 import statistics
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 
@@ -36,6 +36,53 @@ def adapted_windows(interval_s: float | None, window_s: float, merge_s: float) -
     return max(window_s, 3.1 * interval_s), max(merge_s, 1.1 * interval_s)
 
 
+# the night threshold (#77): a step smaller than the step threshold is kept
+# when the PV production is known and below PV_QUIET_W in the PV_QUIET_S
+# before and after it (medians), where meter drift cannot fake it
+PV_QUIET_W = 20.0
+PV_QUIET_S = 60.0
+
+
+def night_threshold(
+    step_threshold_w: float, night_step_threshold_w: float | None, has_pv: bool
+) -> float | None:
+    """The threshold of the small steps kept while PV produces nothing: None
+    when it does not apply (option unset, no PV meter, or not lower than the
+    step threshold)."""
+    if not has_pv or not night_step_threshold_w or night_step_threshold_w >= step_threshold_w:
+        return None
+    return float(night_step_threshold_w)
+
+
+def pv_quiet(
+    ts: Sequence[float],
+    values: Sequence[float],
+    t: float,
+    quiet_w: float = PV_QUIET_W,
+    window_s: float = PV_QUIET_S,
+) -> bool:
+    """The PV production is known and below ``quiet_w`` around ``t``: the
+    medians of the readings in ``[t - window_s, t)`` and ``[t, t + window_s)``
+    (``ts`` sorted). False when either window is empty."""
+    i = bisect.bisect_left(ts, t - window_s)
+    j = bisect.bisect_left(ts, t)
+    k = bisect.bisect_left(ts, t + window_s)
+    if i >= j or j >= k:
+        return False
+    return max(statistics.median(values[i:j]), statistics.median(values[j:k])) < quiet_w
+
+
+class PvQuiet:
+    """:func:`pv_quiet` over a PV series: ``PvQuiet(points)(t)``."""
+
+    def __init__(self, points: Sequence[tuple[float, float]]):
+        self.ts = [p[0] for p in points]
+        self.v = [p[1] for p in points]
+
+    def __call__(self, t: float) -> bool:
+        return pv_quiet(self.ts, self.v, t)
+
+
 class Signal:
     """Fast windowed medians over an irregular series."""
 
@@ -56,6 +103,8 @@ def detect_steps(
     threshold: float = 300.0,
     window_s: float = 20.0,
     merge_s: float = 15.0,
+    low_threshold: float | None = None,
+    low_ok: Callable[[float], bool] | None = None,
 ) -> list[Step]:
     """Find level changes larger than ``threshold``.
 
@@ -64,12 +113,20 @@ def detect_steps(
     grow with the meter's median reporting interval). Medians make
     the detector robust to single-sample spikes (motor inrush, meter noise).
     Neighbouring candidates of the same sign are merged, keeping the largest.
+
+    ``low_threshold`` and ``low_ok`` (the night threshold, #77): a change
+    between ``low_threshold`` and ``threshold`` is a candidate too when
+    ``low_ok(ts)`` says so (:class:`PvQuiet`: PV produces nothing). Small
+    candidates are judged before merging, so where ``low_ok`` is false the
+    steps are exactly those found without them.
     """
     sig = Signal(points)
     window_s, merge_s = adapted_windows(meter_interval(sig.ts), window_s, merge_s)
+    low = low_threshold if low_ok is not None and low_threshold and low_threshold < threshold else None
+    jump = (low if low is not None else threshold) * 0.6
     cand: list[Step] = []
     for i in range(1, len(sig.ts)):
-        if abs(sig.v[i] - sig.v[i - 1]) < threshold * 0.6:
+        if abs(sig.v[i] - sig.v[i - 1]) < jump:
             continue
         t = sig.ts[i]
         before = sig.median(t - window_s, t - 1e-3)
@@ -77,7 +134,7 @@ def detect_steps(
         if before is None or after is None:
             continue
         d = after - before
-        if abs(d) >= threshold:
+        if abs(d) >= threshold or (low is not None and abs(d) >= low and low_ok(t)):
             cand.append(Step(t, d, before, after))
     out: list[Step] = []
     for c in cand:
@@ -108,8 +165,9 @@ class LiveStep:
     before: float
     after: float
     state: str = PROVISIONAL
-    # provisional only: between 60 % and 100 % of the threshold, so too
-    # small to be confirmed as it stands (the guided mode says "too small")
+    # provisional only: between 60 % and 100 % of the threshold (the night
+    # threshold when it applies), so too small to be confirmed as it stands
+    # (the guided mode says "too small")
     small: bool = False
     pv_moved: bool = False  # set by the live detector: PV jumped at the same time
 
@@ -149,6 +207,12 @@ class StepStream:
     (:func:`adapted_windows`); None estimates it from the last readings
     (the night uses the median of the whole day). Points must come in time
     order: an older point is dropped (and counted in ``dropped``).
+
+    ``low_threshold``, ``low_ok`` and ``low_wait_s``: the night threshold of
+    :func:`detect_steps`. ``low_ok(ts)`` needs what comes ``low_wait_s``
+    after the step (the PV after it), so with them every jump is judged
+    once ``max(window_s, low_wait_s)`` has passed, keeping the order (and
+    the merges) of the night: confirmation comes later.
     """
 
     def __init__(
@@ -160,8 +224,16 @@ class StepStream:
         provisional_readings: int = 3,
         provisional_s: float = 10.0,
         estimate_readings: int = 101,
+        low_threshold: float | None = None,
+        low_ok: Callable[[float], bool] | None = None,
+        low_wait_s: float = PV_QUIET_S,
     ):
         self.threshold = threshold
+        self.low_threshold = (
+            low_threshold if low_ok is not None and low_threshold and low_threshold < threshold else None
+        )
+        self.low_ok = low_ok
+        self.low_wait_s = low_wait_s
         self._base = (window_s, merge_s)
         self.interval_s = interval_s
         self._fixed = interval_s is not None
@@ -196,7 +268,7 @@ class StepStream:
             if not self._fixed and len(self._gaps) >= 2:
                 self.interval_s = statistics.median(self._gaps)
                 self.window_s, self.merge_s = adapted_windows(self.interval_s, *self._base)
-            if abs(value - self._v[-1]) >= self.threshold * 0.6:
+            if abs(value - self._v[-1]) >= self.smallest * 0.6:
                 self._jumps.append(ts)
                 self._early.append(ts)
         self._ts.append(ts)
@@ -217,7 +289,28 @@ class StepStream:
         self._expire(out, final=True)
         return out
 
+    @property
+    def smallest(self) -> float:
+        """The smallest step that can be kept: the night threshold when set."""
+        return self.low_threshold if self.low_threshold is not None else self.threshold
+
     # -- internals ---------------------------------------------------------
+    def _delay(self) -> float:
+        """How long after a jump it is judged."""
+        if self.low_threshold is None:
+            return self.window_s
+        return max(self.window_s, self.low_wait_s)
+
+    def _low(self, t: float) -> bool:
+        """The night threshold applies to a step at ``t``."""
+        return self.low_threshold is not None and self.low_ok(t)
+
+    def _accept(self, t: float, d: float) -> bool:
+        """The rule of :func:`detect_steps`."""
+        if abs(d) >= self.threshold:
+            return True
+        return self.low_threshold is not None and abs(d) >= self.low_threshold and self.low_ok(t)
+
     def _median(self, start: float, end: float) -> float | None:
         i = bisect.bisect_left(self._ts, start)
         j = bisect.bisect_right(self._ts, end)
@@ -238,9 +331,10 @@ class StepStream:
             if before is None or after is None:
                 continue
             d = after - before
-            if abs(d) < self.threshold * 0.6:
+            limit = self.low_threshold if self._low(t) else self.threshold
+            if abs(d) < limit * 0.6:
                 continue
-            small = abs(d) < self.threshold
+            small = abs(d) < limit
             near = [p for p in self._open if (p.delta > 0) == (d > 0) and abs(p.ts - t) < self.merge_s]
             if near:
                 p = near[-1]
@@ -254,14 +348,15 @@ class StepStream:
 
     def _judge(self, out: list[LiveStep], final: bool) -> None:
         latest = self._ts[-1] if self._ts else None
-        while self._jumps and (final or self._jumps[0] + self.window_s < latest):
+        delay = self._delay()
+        while self._jumps and (final or self._jumps[0] + delay < latest):
             t = self._jumps.popleft()
             before = self._median(t - self.window_s, t - 1e-3)
             after = self._median(t, t + self.window_s)
             if before is None or after is None:
                 continue
             d = after - before
-            if abs(d) < self.threshold:
+            if not self._accept(t, d):
                 continue
             c = Step(t, d, before, after)
             last = self._last

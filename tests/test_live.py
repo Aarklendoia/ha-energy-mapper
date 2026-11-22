@@ -33,9 +33,10 @@ from nilm_core.live import (  # noqa: E402
     replay,
 )
 from nilm_core.registry import Matcher  # noqa: E402
+from nilm_core.report import find_steps  # noqa: E402
 from nilm_core.signal import SampleBuilder, scaled, sum_series  # noqa: E402
 from nilm_core.steps import CANCELLED, CONFIRMED, PROVISIONAL, LiveStep, StepStream  # noqa: E402
-from synth import DAY0, HOUR, Cycling, House, Steady, switch_history  # noqa: E402
+from synth import DAY0, HOUR, Cycling, House, Steady, solar_drift_day, switch_history  # noqa: E402
 
 UTC_HOUR = lambda ts: int((ts - DAY0) // HOUR) % 24  # noqa: E731
 GRID = "sensor.grid_power"
@@ -66,8 +67,9 @@ def night_samples(hist, cfg):
 
 
 def night_steps(hist, cfg):
-    points = [(s.ts, s.residual) for s in night_samples(hist, cfg) if s.residual is not None]
-    return detect_steps(points, threshold=cfg.step_threshold_w)
+    """The steps of the night, as report.analyze finds them (with the night
+    threshold when it applies)."""
+    return find_steps(night_samples(hist, cfg), cfg)
 
 
 def stream_samples(hist, cfg):
@@ -236,6 +238,28 @@ class EquivalenceTest(unittest.TestCase):
         house, day0, _ = synth_cycles.make_day(0)
         hist = house.histories(day0, day0 + 24 * HOUR, dt=10)
         self.assertEquivalent(hist, AnalysisConfig(grid_entity=GRID), interval_s=None)
+
+    def test_night_threshold(self):
+        # #77: smaller steps where PV produces nothing, the same rule live
+        night = AnalysisConfig(grid_entity=GRID, pv_entity=PV, night_step_threshold_w=150)
+        variants = {
+            "drift": solar_drift_day(),
+            "irregular": with_gap(jitter(solar_drift_day(seed=11)), DAY0 + 19 * HOUR, DAY0 + 19.2 * HOUR),
+        }
+        for name, hist in variants.items():
+            with self.subTest(day=name):
+                live = self.assertEquivalent(hist, night)
+                small = [s for s in live.steps if abs(s.delta) < night.step_threshold_w]
+                self.assertEqual(len(small), 2)
+        with self.subTest(day="estimated interval"):
+            self.assertEquivalent(solar_drift_day(seed=5), night, interval_s=None)
+        for index in (1, 2):
+            with self.subTest(day=index):
+                # noise, overlapping loads, multi-phase appliances, at night too
+                house, day0, _ = synth_cycles.make_day(index)
+                house.pv_peak_w = 3500
+                hist = house.histories(day0 - 3 * HOUR, day0 + 24 * HOUR, dt=10)
+                self.assertEquivalent(hist, night)
 
     def test_night_interval(self):
         hist = flat(level(DAY0, DAY0 + 3600, 7, lambda t: 300))

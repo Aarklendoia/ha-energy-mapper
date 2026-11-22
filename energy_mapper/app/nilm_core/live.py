@@ -36,7 +36,18 @@ from dataclasses import dataclass, field, replace
 from .registry import GROUPS, MULTIPHASE, Matcher, is_ignored
 from .signal import Sample, SampleBuilder
 from .signatures import DURATION_BANDS, duration_band
-from .steps import CANCELLED, CONFIRMED, PROVISIONAL, LiveStep, Step, StepStream, meter_interval
+from .steps import (
+    CANCELLED,
+    CONFIRMED,
+    PROVISIONAL,
+    PV_QUIET_S,
+    PV_QUIET_W,
+    LiveStep,
+    Step,
+    StepStream,
+    meter_interval,
+    pv_quiet,
+)
 
 # score thresholds of the candidates: "looks like" / "maybe" / "unknown"
 LIKELY = 0.6
@@ -471,6 +482,11 @@ class LiveDetector:
     the day; None estimates it from the last readings). A step is marked
     ``pv_moved`` when the PV median moved by at least ``pv_moved_w``
     (default: half the step threshold) across it.
+
+    With the night threshold (``config.low_step_threshold()``, #77), smaller
+    steps are kept where the PV production stays near zero around them, as
+    the night does (:func:`~.steps.pv_quiet` on the PV of the samples); the
+    steps are then confirmed once the minute of PV after them is known.
     """
 
     PV_KEEP_S = 600.0
@@ -488,7 +504,14 @@ class LiveDetector:
         self.config = config
         self.local_hour = local_hour
         self.builder = SampleBuilder.from_config(config)
-        self.stream = StepStream(threshold=config.step_threshold_w, interval_s=interval_s)
+        low = config.low_step_threshold()
+        self.night_threshold_w = low
+        self.stream = StepStream(
+            threshold=config.step_threshold_w,
+            interval_s=interval_s,
+            low_threshold=low,
+            low_ok=self._pv_quiet if low is not None else None,
+        )
         self.pairer = LivePairer(first_id=first_event_id)
         self.ranker = CandidateRanker(registry, local_hour)
         self.pv_moved_w = pv_moved_w if pv_moved_w is not None else 0.5 * config.step_threshold_w
@@ -580,6 +603,20 @@ class LiveDetector:
             if ev.state != CANCELLED:
                 ev.candidates = self.ranker.rank(ev, now, self.switches)
             changed[ev.id] = ev
+
+    def _pv_quiet(self, ts: float) -> bool:
+        return pv_quiet(self._pv_ts, self._pv_v, ts)
+
+    def pv_quiet_now(self) -> bool | None:
+        """PV produces nothing now (median of the last minute below
+        ``PV_QUIET_W``); None without the night threshold or any PV yet. The
+        minute after a step is not known yet: the panel's best guess."""
+        if self.night_threshold_w is None or self.now is None:
+            return None
+        i = bisect.bisect_left(self._pv_ts, self.now - PV_QUIET_S)
+        if i >= len(self._pv_ts):
+            return None
+        return statistics.median(self._pv_v[i:]) < PV_QUIET_W
 
     def _pv_moved(self, ts: float) -> bool:
         w = self.stream.window_s

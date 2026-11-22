@@ -63,6 +63,13 @@ configuration:
   step_threshold_w:
     name: Step threshold (W)
     description: Smallest power change considered as an appliance switching. Default 300 W.
+  night_step_threshold_w:
+    name: Night step threshold (W)
+    description: >-
+      Optional. Smaller steps, down to this value, are also kept while the solar
+      panels produce nothing (PV below 20 W in the minute before and after the step).
+      Between 50 W and the step threshold. Only with a PV sensor; without one, lower
+      the step threshold instead. Empty by default (off).
   peak_threshold_w:
     name: Peak threshold (W)
     description: >-

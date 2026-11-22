@@ -12,7 +12,7 @@ from .cycles import CycleConfig, Phase, attribute, find_cycles
 from .known import KnownLoad, SwitchedLoadConfig, resolve_switched_load
 from .signal import build_samples, parse_numeric, scaled, sum_series
 from .signatures import cluster
-from .steps import detect_steps
+from .steps import PvQuiet, Step, detect_steps, night_threshold
 
 REPORT_VERSION = 1
 
@@ -42,6 +42,10 @@ class AnalysisConfig:
     # unit factors to W, per entity (1000 for kW sensors); missing = 1
     scales: dict[str, float] = field(default_factory=dict)
     step_threshold_w: float = 300.0
+    # the night threshold (#77): smaller steps, down to this, are kept where
+    # the PV production is known and stays near zero around them (no effect
+    # without a PV meter; None: off)
+    night_step_threshold_w: float | None = None
     # peaks: the top episodes above peak_relative x the period's maximum;
     # a peak is "notable" above peak_threshold_w, or when None above
     # peak_relative x the highest of the period's maximum and
@@ -56,6 +60,16 @@ class AnalysisConfig:
     # to, ``{registry id: [phase dicts]}`` (none: candidates are only listed)
     cycle_templates: dict[str, list[dict]] = field(default_factory=dict)
     cycles: CycleConfig = field(default_factory=CycleConfig)
+
+    def low_step_threshold(self) -> float | None:
+        """The night threshold when it applies (a PV meter, lower than the
+        step threshold), else None."""
+        return night_threshold(self.step_threshold_w, self.night_step_threshold_w, bool(self.pv_entity))
+
+    def smallest_step_w(self) -> float:
+        """The smallest step the analysis can keep (at least at night)."""
+        low = self.low_step_threshold()
+        return low if low is not None else self.step_threshold_w
 
     def entities(self) -> list[str]:
         ids = [self.grid_entity, *self.extra_grid_entities, *self.extra_pv_entities]
@@ -85,6 +99,18 @@ def base_load(values: list[float], percentile: float = 0.05) -> float:
     if not v:
         return 0.0
     return v[int(percentile * (len(v) - 1))]
+
+
+def find_steps(samples, config: AnalysisConfig) -> list[Step]:
+    """The steps of the residual load: ``step_threshold_w``, and the night
+    threshold (#77) where the PV production of the samples stays near zero
+    around the step."""
+    points = [(s.ts, s.residual) for s in samples if s.residual is not None]
+    low = config.low_step_threshold()
+    if low is None:
+        return detect_steps(points, threshold=config.step_threshold_w)
+    pv = PvQuiet([(s.ts, s.pv) for s in samples if s.pv is not None])
+    return detect_steps(points, threshold=config.step_threshold_w, low_threshold=low, low_ok=pv)
 
 
 def analyze(
@@ -119,7 +145,7 @@ def analyze(
     )
     points = [(s.ts, s.residual) for s in samples if s.residual is not None]
 
-    steps = detect_steps(points, threshold=config.step_threshold_w)
+    steps = find_steps(samples, config)
     known: list[KnownLoad] = [
         resolve_switched_load(c, histories.get(c.entity_id, []), steps, end, config.step_threshold_w)
         for c in config.switched_loads

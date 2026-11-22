@@ -366,6 +366,30 @@ and adapts it to meters reporting every 1 s to 60 s. Neighbouring candidates of 
 are merged, keeping the largest.
 The live view (§ 4.11) runs the same detector on a stream (`StepStream`).
 
+**Night threshold** (#77, `night_step_threshold_w`, empty by default). On a solar
+installation, a lower threshold also finds false steps in the daytime: the PV and grid meters
+drift slightly apart while the sun is up, and most of those artefacts do not coincide with a
+PV jump. So the lower threshold applies only where PV produces nothing:
+
+- candidates are looked for with the lower of the two thresholds (jumps of 60 % of it);
+- a step of at least `step_threshold_w` is always kept, as before;
+- a smaller step, of at least `night_step_threshold_w`, is kept only when the PV production
+  is known and its median stays below 20 W in `[t − 60 s, t)` and in `[t, t + 60 s)`
+  (`steps.pv_quiet`, on the `Sample.pv` values of the day; `report.find_steps`).
+
+Small candidates are judged before the merge, so where PV produces the steps are exactly
+those without the option. The option has no effect without a PV meter
+(`AnalysisConfig.low_step_threshold()` is None), nor when it is not below the step threshold:
+the analysis is then byte-identical. The offline comparison that chose this rule (against a
+lower threshold everywhere, and against dropping only the steps where PV jumped) is in issue
+#77.
+
+Other users of the threshold: switched loads (§ 4.3) keep `step_threshold_w` in their
+tolerance (`max(20 %, threshold / 2)`), so their matching does not loosen; teaching
+(§ 8.6), the self-test (§ 8.7) and the labelled examples (§ 8.9) call an appliance "too low for the
+whole-house curve" (`recognisable`, `too_small`) below the smallest threshold that applies
+(`smallest_step_w()`: the night one with a PV meter).
+
 ### 4.3 Switched loads (`known.py`)
 
 An appliance driven by a Home Assistant entity without its own power sensor (a water heater
@@ -615,12 +639,16 @@ flowchart LR
    kept).
 2. **Steps** (`steps.StepStream`). A jump is judged once the window after it is complete,
    with the same medians as `detect_steps`; a candidate is confirmed once no later one can
-   be merged into it, so `window + merge` after the step (~35 s on a 10 s meter). Before
+   be merged into it, so `window + merge` after the step (~35 s on a 10 s meter). With the
+   night threshold (§ 4.2), every jump is judged once `max(window, 60 s)` has passed, as the
+   minute of PV after a small step must be known (`LiveDetector` keeps the PV of the samples
+   and gives `pv_quiet`); the order, and so the merges, stay those of the night. Before
    that, a **provisional** step comes after 3 readings (or 10 s), from the median of what is
    known after the jump; neighbouring jumps of the same sign share one; the confirmed step
    takes the id of the nearest provisional one of the same sign, and a provisional step no
    confirmed one can claim is **cancelled** (a spike). Provisional steps between 60 % and
-   100 % of the threshold are flagged `small` (the guided mode says "too small") and never
+   100 % of the threshold (the night threshold where PV is quiet) are flagged `small` (the
+   guided mode says "too small") and never
    open an event. The windows come from the meter interval: given (the night's: the median
    of the day), or estimated from the last 100 readings.
 3. **Events** (`live.LivePairer`): one line of the feed. A switch-on (provisional, then
@@ -653,7 +681,7 @@ Tests (`tests/test_live.py`): the samples of the stream equal those of `build_sa
 (PV dropouts, import/export, kW, several meters, battery, sub-meters); replayed synthetic
 days give exactly the steps of `detect_steps` (noise, overlapping loads, multi-phase
 appliances, motor bursts, solar with dropouts, recorder gaps, irregular readings, 2 s
-meters); closed events equal `pair_steps`; a hob is one session with the night's cycle
+meters, the night threshold on a solar day with meter drift); closed events equal `pair_steps`; a hob is one session with the night's cycle
 count; on 60 uses of 6 steady appliances the right one is first in ≥ 80 % and in the top 3
 in ≥ 95 %. A day of a 10 s meter replays in about 0.1 s.
 
@@ -808,7 +836,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 | `GET /api/teaching` | `200 {"teachers": [...]}`: per appliance with a teacher, `{key, name, entity_id, since, days, first_day, last_day, uses, energy_kwh, learned, signature: {id, kind, band, power_w, label, in_registry, linked}, conflict: {id, appliance} \| null, evaluation, per_day}` (§ 8.6) |
 | `POST /api/teaching` | `{"appliance": <key>}`: `200 {"signature", "created", "learned"}`; `404 not_found` (no appliance with a teacher), `422 not_learned` / `not_recognisable`, `409 conflict` (`id`), `400 invalid_teaching` |
 | `GET /api/self_test` | `200 {"enabled", "devices_per_night", "window_days", "min_uses", "last_day", "devices": [...]}`: per tested device `{entity_id, name, appliance, state, tests, nights, first_day, last_day, uses, found, detections, correct, recall, precision, truth_kwh, detected_kwh, energy_ratio, rate, trend, learned, signature, history}` (§ 8.7) |
-| `GET /api/live?since=<seq>&wait=<s>` | The live view's long-poll (§ 8.8): `200 {"seq", "session", "available": true, "reset", "history_s", "threshold_w", "time_zone", "curve", "events", "now"}`, or `200 {"seq", "available": false, "reason", "error"?, "retry_at"?}`; `400 invalid_query` |
+| `GET /api/live?since=<seq>&wait=<s>` | The live view's long-poll (§ 8.8): `200 {"seq", "session", "available": true, "reset", "history_s", "threshold_w", "night_threshold_w", "time_zone", "curve", "events", "now"}`, or `200 {"seq", "available": false, "reason", "error"?, "retry_at"?}`; `400 invalid_query` |
 | `GET /api/live/stats` | `200` the live view's state, counters and timings (§ 8.8); does not start it |
 | `GET /api/live/event?id=<id>&session=<session>` | `200 {"session", "event"}`: one event of the running live session, to label it (§ 8.9); `404 not_found` (cancelled, or pruned 15 min after it ended), `409 session_ended` (another session, or none running), `400 invalid_query`. Does not start the view |
 | `GET /api/examples` | `200 {"last_day", "appliances": [...]}`: per appliance with labelled examples, what the analysed days found of them: `{key, name, measured, total, found, other, pending, signature, link, replace, conflict, disagreement, examples}` (§ 8.9) |
@@ -1612,7 +1640,7 @@ last "now") and sends:
 
 | Message | When |
 |---|---|
-| `{"type": "snapshot", "available": true, "seq", "session", "history_s", "threshold_w", "time_zone", "curve", "events", "now"}` | To a new subscriber at once (the merged copy), and to all when the add-on answers `reset` |
+| `{"type": "snapshot", "available": true, "seq", "session", "history_s", "threshold_w", "night_threshold_w", "time_zone", "curve", "events", "now"}` | To a new subscriber at once (the merged copy), and to all when the add-on answers `reset` |
 | `{"type": "update", "seq", "curve", "events", "now"}` | New samples, events that appeared or changed (whole), the "now" summary; not sent when nothing changed |
 | `{"type": "status", "available": false, "reason", ...}` | `disabled`, `starting`, `overloaded` (`retry_at`), `error` (`error`, `retry_at`), `addon_unavailable` (`message`), `addon_too_old` (`min_version`: 0.12.0, `addon_version`: from the add-on's 404 on `/api/live`), `not_loaded` (the entry unloads); sent once per change |
 
@@ -1785,7 +1813,8 @@ switch-on alone is kept) → saved: `live/label` with `source: "guided"`, `targe
 (tracked in the curve) or `"appliance"`, the event and its explicit times → the sentence of the
 `effect`, **Learn another appliance**. Two switch-ons within 10 s are both offered (*Two steps at
 once*: pick one, or *Neither*); a proposed step that is cancelled goes back to waiting. With no
-step, a rise of the house curve between 30 % and 100 % of the threshold (median of the samples
+step, a rise of the house curve between 30 % and 100 % of the threshold that applies now (the
+night threshold when `night_threshold_w` is set and `now.pv_quiet`; median of the samples
 after the click against the 15 s before) shows **Too weak** after 30 s, with the advice of a
 measuring plug (#14); otherwise **Nothing detected** after 2 minutes; both offer *Try again*.
 If the panel closes while the appliance runs, its switch-on is saved (open example).
@@ -1827,7 +1856,8 @@ Accepted keys and ranges: `grid_entity`, `grid_export_entity`, `pv_entity`, `bat
 (`sensor.*`), `grid_invert`, `battery_invert` (bool), `submeters_mode` (`automatic` or
 `manual`), `submeters` (`sensor.*` list), `excluded_submeters` (`sensor.*` list),
 `switched_loads` (`{entity_id, name?, on_states?}` list), `excluded_switched_loads` (entity id
-list, § 8.2), `step_threshold_w` 50–10000,
+list, § 8.2), `step_threshold_w` 50–10000, `night_step_threshold_w` 50 to the step threshold
+(that of the settings, else of the add-on options, else 300; § 4.2),
 `peak_threshold_w` 100–100000, `analysis_time` `HH:MM`, `backfill_days` 0–365,
 `half_life_days` and `peak_window_days` 1–365, `report_retention_days` 7–3650,
 `review_min_uses` 2–1000, `review_min_days` and `review_wait_days` 1–365, `review_wait_factor`
@@ -1895,7 +1925,8 @@ cannot be read).
   pairings remain wrong and peak breakdowns are approximate.
 - Peaks are explained at the instant of their maximum; a load starting on that very sample is
   not counted yet.
-- Loads below `step_threshold_w`, continuously variable loads and uses shorter than two meter
+- Loads below `step_threshold_w` (below `night_step_threshold_w` while PV produces nothing),
+  continuously variable loads and uses shorter than two meter
   readings are not recognised. Multi-phase appliances (§ 4.9): two appliances running at once
   or back to back make one candidate, a low load next to a cycle is counted in it, one
   appliance can give one signature per programme, and recognised cycles only absorb their

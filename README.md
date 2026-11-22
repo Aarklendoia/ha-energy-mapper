@@ -81,7 +81,8 @@ thermostat), which are grouped into one session with their duty cycle.
 
 **What it recognises badly today:**
 
-- loads below the step threshold (300 W by default): lighting, electronics, fridges
+- loads below the step threshold (300 W by default; with solar panels, the *smallest
+  appliance at night* lowers it while they produce nothing): lighting, electronics, fridges
   (they end up in the base load or in "unexplained");
 - loads whose power varies continuously: EV chargers that modulate, inverter heat pumps and
   air conditioners, induction hobs at high power (a measured EV charger or heat pump is best
@@ -186,6 +187,7 @@ appliances that come from the Energy dashboard, and your changes (excluded, adde
 | Switched appliances | Entity, name, on-states | Energy dashboard | Those of the Energy dashboard, plus yours: an entry here adds one or changes the one with the same entity; removing one of the Energy dashboard from the list excludes it. *On-states*: the states in which the appliance runs (`on` by default). The **polarity is detected automatically**: a pilot-wire radiator whose relay cuts the heating when `on` is found and shown as *Inverted*. Appliances (below) are the simpler way to add one. |
 | | Excluded switches | empty | Switches never measured nor proposed as appliances. Removing a switched appliance of the Energy dashboard from the list above, or deleting an appliance driven by a switch, adds its switch here; remove it to measure it again. An estimate of the Energy dashboard driven by an excluded switch is subtracted like any other estimate. |
 | Thresholds | Smallest appliance (step threshold) | 300 W | Smaller detects more appliances, and more noise. |
+| | Smallest appliance at night | empty | Only with a solar production sensor. Smaller steps, down to this value (50 W to the step threshold, 150 W is a good start), are also kept while the solar panels produce nothing: below 20 W in the minute before and after the step. It catches small evening appliances (TV, lighting) without the false midday steps that come from the solar and grid meters drifting apart. Without a solar sensor it has no effect: lower the step threshold instead. |
 | | Fixed peak threshold | empty | Empty: a peak is *notable* above 80 % of the highest power of the recent days. Set a value (for example your subscribed power) to use it instead. |
 | Analysis and storage | Time of the nightly analysis | 04:30 | Applies after the next analysis. |
 | | Past days analysed on start | 30 | Limited by what the recorder still holds. |
@@ -480,7 +482,8 @@ on/off states come with real-time detection
 
 - An **estimation**, not a measurement: errors of a few percent to tens of percent on a
   signature are normal, more during heavy simultaneous use (cooking).
-- The **step threshold** sets the smallest visible appliance (300 W by default).
+- The **step threshold** sets the smallest visible appliance (300 W by default). With solar
+  panels, the *smallest appliance at night* lowers it only while they produce nothing.
 - The **meter rate** sets the shortest visible use: an appliance must last at least two meter
   readings.
 - The analysis needs the **full day of history** of the grid power sensor in the recorder: do
@@ -653,8 +656,10 @@ regroupés en une seule session avec leur rapport cyclique.
 
 **Ce qu'il reconnaît mal aujourd'hui :**
 
-- les appareils sous le seuil de marche (300 W par défaut) : éclairage, électronique,
-  réfrigérateurs (ils finissent dans la consommation de fond ou dans « non expliqué ») ;
+- les appareils sous le seuil de marche (300 W par défaut ; avec des panneaux solaires, le
+  *plus petit appareil la nuit* l'abaisse quand ils ne produisent rien) : éclairage,
+  électronique, réfrigérateurs (ils finissent dans la consommation de fond ou dans « non
+  expliqué ») ;
 - les appareils dont la puissance varie en continu : borne de recharge qui module, pompe à
   chaleur et climatisation *inverter*, plaque à induction à pleine puissance (une borne ou
   une pompe à chaleur mesurée se déclare de préférence en sous-compteur ; les charges
@@ -767,6 +772,7 @@ viennent du tableau Énergie, et vos changements (exclus, ajoutés ou modifiés)
 | Appareils pilotés | Entité, nom, états de marche | Tableau Énergie | Ceux du tableau Énergie, plus les vôtres : une ligne ici en ajoute un ou modifie celui de même entité ; retirer de la liste un appareil du tableau Énergie l'exclut. *États de marche* : les états dans lesquels l'appareil fonctionne (`on` par défaut). Le **sens est détecté automatiquement** : un radiateur sur fil pilote dont le relais coupe la chauffe quand il est sur `on` est reconnu et affiché *Inversé*. Les appareils (plus bas) sont le moyen le plus simple d'en ajouter un. |
 | | Interrupteurs exclus | vide | Interrupteurs jamais mesurés ni proposés comme appareils. Retirer de la liste ci-dessus un appareil piloté du tableau Énergie, ou supprimer un appareil piloté, ajoute son interrupteur ici ; retirez-le pour le mesurer à nouveau. Une estimation du tableau Énergie pilotée par un interrupteur exclu est retirée comme toute autre estimation. |
 | Seuils | Plus petit appareil (seuil de marche) | 300 W | Plus bas détecte plus d'appareils, et plus de bruit. |
+| | Plus petit appareil la nuit | vide | Seulement avec un capteur de production solaire. Des marches plus petites, jusqu'à cette valeur (de 50 W au seuil de marche, 150 W pour commencer), sont aussi retenues quand les panneaux solaires ne produisent rien : moins de 20 W la minute avant et après la marche. On voit ainsi les petits appareils du soir (télé, éclairage) sans les fausses marches de midi, dues aux compteurs solaire et réseau qui dérivent un peu l'un de l'autre. Sans capteur solaire, aucun effet : baissez plutôt le seuil de marche. |
 | | Seuil fixe des pics | vide | Vide : un pic est *notable* au-dessus de 80 % de la puissance la plus haute des derniers jours. Une valeur (par exemple la puissance souscrite) la remplace. |
 | Analyse et stockage | Heure de l'analyse de nuit | 04:30 | S'applique après la prochaine analyse. |
 | | Jours passés analysés au démarrage | 30 | Limité par ce que le *recorder* contient encore. |
@@ -1096,7 +1102,9 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
 - Une **estimation**, pas une mesure : quelques pour cent à quelques dizaines de pour cent
   d'erreur sur une signature sont normaux, davantage quand beaucoup d'appareils tournent en
   même temps (cuisine).
-- Le **seuil de marche** fixe le plus petit appareil visible (300 W par défaut).
+- Le **seuil de marche** fixe le plus petit appareil visible (300 W par défaut). Avec des
+  panneaux solaires, le *plus petit appareil la nuit* l'abaisse seulement quand ils ne
+  produisent rien.
 - Le **rythme du compteur** fixe l'utilisation la plus courte visible : un appareil doit
   durer au moins deux mesures.
 - L'analyse a besoin de **toute la journée d'historique** du capteur de puissance réseau dans

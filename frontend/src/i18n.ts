@@ -522,6 +522,8 @@ const en = {
   live_know_cycles: "A washing machine or a dishwasher shows live by its first phase only: label it, the night rebuilds the whole cycle.",
   live_know_together: "Two appliances switched on in the same second make one step: switch one on again on its own.",
   live_know_small: "Below {threshold}, an appliance makes no step: neither the live view nor the night sees it.",
+  live_know_small_night:
+    "Below {threshold}, an appliance makes no step: neither the live view nor the night sees it. While the solar panels produce nothing, steps down to {night} are seen.",
   live_know_panel: "The live view only runs while this panel is open.",
 };
 
@@ -1033,6 +1035,8 @@ const fr: Table = {
   live_know_cycles: "Un lave-linge ou un lave-vaisselle n'apparaît en direct que par sa première phase : étiquetez-la, la nuit reconstitue le cycle entier.",
   live_know_together: "Deux appareils allumés à la même seconde ne font qu'une variation : rallumez-en un seul.",
   live_know_small: "Sous {threshold}, un appareil ne fait pas de variation : ni le direct ni la nuit ne le voient.",
+  live_know_small_night:
+    "Sous {threshold}, un appareil ne fait pas de variation : ni le direct ni la nuit ne le voient. Quand les panneaux solaires ne produisent rien, les variations jusqu'à {night} sont vues.",
   live_know_panel: "Le direct ne tourne que quand ce panneau est ouvert.",
 };
 

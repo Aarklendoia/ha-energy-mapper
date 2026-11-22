@@ -282,6 +282,7 @@ OPTIONS_SCHEMA = vol.Schema(
             vol.Schema(
                 {
                     vol.Optional("step_threshold_w"): _number(50, 10000, 10, "W"),
+                    vol.Optional("night_step_threshold_w"): _number(50, 10000, 10, "W"),
                     vol.Optional("peak_threshold_w"): _number(100, 100000, 100, "W"),
                 }
             ),

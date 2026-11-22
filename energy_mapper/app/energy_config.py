@@ -450,6 +450,8 @@ def derive(
     )
     if options.get("step_threshold_w"):
         cfg.step_threshold_w = float(options["step_threshold_w"])
+    if options.get("night_step_threshold_w"):
+        cfg.night_step_threshold_w = float(options["night_step_threshold_w"])
     if options.get("peak_threshold_w"):
         cfg.peak_threshold_w = float(options["peak_threshold_w"])
     out.config = cfg

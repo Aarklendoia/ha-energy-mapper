@@ -68,10 +68,12 @@
             "name": "Thresholds",
             "data": {
               "step_threshold_w": "Smallest appliance",
+              "night_step_threshold_w": "Smallest appliance at night",
               "peak_threshold_w": "Fixed peak threshold"
             },
             "data_description": {
               "step_threshold_w": "Smallest power change considered as an appliance switching.",
+              "night_step_threshold_w": "Optional: smaller power changes, down to this value, are also kept while the solar panels produce nothing (below 20 W in the minute before and after). Between 50 W and the smallest appliance. Only with a solar production sensor; without one, lower the smallest appliance instead. Empty: off.",
               "peak_threshold_w": "Peaks above this power are notable (for example the subscribed power). Empty: 80 % of the recent maximum."
             }
           },

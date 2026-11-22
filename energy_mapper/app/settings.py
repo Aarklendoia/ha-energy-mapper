@@ -30,6 +30,8 @@ BOOL_KEYS = ("grid_invert", "battery_invert")
 # key: (minimum, maximum, integer)
 NUMBER_KEYS = {
     "step_threshold_w": (50, 10000, False),
+    # the night threshold (#77): at most the step threshold (checked below)
+    "night_step_threshold_w": (50, 10000, False),
     "peak_threshold_w": (100, 100000, False),
     "backfill_days": (0, 365, True),
     "half_life_days": (1, 365, True),
@@ -70,6 +72,7 @@ DEFAULTS: dict = {
     "grid_invert": False,
     "battery_invert": False,
     "step_threshold_w": 300.0,
+    "night_step_threshold_w": None,
     "peak_threshold_w": None,
     "review_min_uses": 5,
     "review_min_days": 3,
@@ -126,9 +129,11 @@ def _switched_load(i: int, item) -> dict:
     return out
 
 
-def validate(data) -> dict:
+def validate(data, options: dict | None = None) -> dict:
     """Check and normalise settings; ``None`` values and empty lists are
-    dropped (the key then falls back to the add-on options)."""
+    dropped (the key then falls back to the add-on options). ``options``:
+    the add-on options, for the step threshold the night threshold is
+    compared with when the settings do not set it."""
     if not isinstance(data, dict):
         raise SettingsError("expected a JSON object")
     unknown = set(data) - set(KEYS)
@@ -184,6 +189,13 @@ def validate(data) -> dict:
         out["submeters_mode"] = "manual"
     if out.get("submeters_mode") == "manual" and "excluded_submeters" in out:
         raise SettingsError("excluded_submeters: only with automatic sub-meters")
+    night = out.get("night_step_threshold_w")
+    if night is not None:
+        step = float(out.get("step_threshold_w") or defaults(options or {})["step_threshold_w"])
+        if night > step:
+            raise SettingsError(
+                f"night_step_threshold_w: expected a value between 50 and the step threshold ({step:g})"
+            )
     return out
 
 

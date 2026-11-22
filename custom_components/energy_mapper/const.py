@@ -41,7 +41,7 @@ LIVE_MIN_ADDON: Final = "0.12.0"
 SENSOR_KEYS: Final = ("grid_entity", "grid_export_entity", "pv_entity", "battery_entity")
 LIST_KEYS: Final = ("submeters", "switched_loads")
 BOOL_KEYS: Final = ("grid_invert", "battery_invert")
-THRESHOLD_KEYS: Final = ("step_threshold_w", "peak_threshold_w")
+THRESHOLD_KEYS: Final = ("step_threshold_w", "night_step_threshold_w", "peak_threshold_w")
 # entities whose state tells whether an appliance runs
 SWITCH_DOMAINS: Final = [
     "switch",
