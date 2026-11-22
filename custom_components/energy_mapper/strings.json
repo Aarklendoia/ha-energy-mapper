@@ -287,6 +287,21 @@
     "signatures_to_review": {
       "title": "Energy Mapper: signatures to review",
       "description": "Energy Mapper found recurring signatures that may be appliances (to review: {count}). Open the [Energy Mapper panel]({url}) to name them, wait for more data or ignore them. This notice can be turned off in the options of the integration."
+    },
+    "takeover_removed": {
+      "title": "Energy Mapper: restore {device} in the Energy dashboard?",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Restore {device} in the Energy dashboard",
+            "description": "The appliance {name} had taken over the tracking of {device} in the Energy dashboard. It was deleted, and its energy statistic with it, so the Energy dashboard no longer counts this device. Submit to put {device} back as an individual device, where {name} was. Nothing else is changed; ignore this issue to leave the Energy dashboard as it is."
+          }
+        },
+        "abort": {
+          "not_loaded": "Energy Mapper is not set up.",
+          "nothing_to_restore": "There is nothing to restore any more."
+        }
+      }
     }
   }
 }

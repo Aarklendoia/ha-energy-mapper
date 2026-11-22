@@ -518,6 +518,70 @@ class DeclaredApplianceTests(unittest.TestCase):
         self.assertEqual([s.entity_id for s in d.config.switched_loads], ["switch.water_heater"])
 
 
+class TakeOverTests(unittest.TestCase):
+    """The prefs before and after "take over tracking" (#13): the integration
+    replaces a device of the Energy dashboard by the appliance's statistic, in
+    place, and nests the devices of the old entry in the statistic. The
+    replaced sensor must stop being an input of the analysis."""
+
+    def installation(self):
+        h = meter_with_channels()
+        h.add(sensor("switch.water_heater", "off"), "heater")
+        # an estimate driven by the heater's relay
+        h.add(
+            energy("sensor.heater_estimate_energy", source_entity="switch.water_heater"), "est1", "powercalc"
+        )
+        h.add(power("sensor.heater_estimate_power", source_entity="switch.water_heater"), "est1", "powercalc")
+        # a fixed-power estimate of the kettle (not driven by a switch): subtracted
+        h.add(
+            energy("sensor.kettle_estimate_energy", source_entity="sensor.kettle_plug"), "est2", "powercalc"
+        )
+        h.add(power("sensor.kettle_estimate_power", source_entity="sensor.kettle_plug"), "est2", "powercalc")
+        # a plug measured inside the kettle's estimate
+        h.add(energy("sensor.kettle_base_energy"), "base")
+        h.add(power("sensor.kettle_base_power"), "base")
+        h.devices = [
+            {"stat_consumption": "sensor.heater_estimate_energy", "name": "Heater"},
+            {"stat_consumption": "sensor.kettle_estimate_energy", "name": "Kettle"},
+            {
+                "stat_consumption": "sensor.kettle_base_energy",
+                "included_in_stat": "sensor.kettle_estimate_energy",
+            },
+        ]
+        return h
+
+    def test_before(self):
+        h = self.installation()
+        d = derive(h.prefs(), h.states, h.registry, statistics=known_statistics(learned_registry()))
+        self.assertEqual([s.entity_id for s in d.config.submeters], ["sensor.kettle_estimate_power"])
+        self.assertEqual([s.entity_id for s in d.config.switched_loads], ["switch.water_heater"])
+
+    def test_after(self):
+        h = self.installation()
+        # what the integration writes (custom_components/energy_mapper/takeover.py)
+        h.devices = [
+            {"stat_consumption": HEATER},
+            {"stat_consumption": KETTLE},
+            {"stat_consumption": "sensor.kettle_base_energy", "included_in_stat": KETTLE},
+        ]
+        d = derive(h.prefs(), h.states, h.registry, statistics=known_statistics(learned_registry()))
+        # the replaced estimate is no longer subtracted: the signature it hid
+        # is in the house curve again, and no estimate feeds back into ours
+        self.assertEqual(d.config.submeters, [])
+        # the nested plug stays nested (never subtracted twice)
+        roles = {t.energy_entity: t.role for t in d.tracked}
+        self.assertEqual(roles["sensor.kettle_base_energy"], "nested")
+        self.assertEqual(roles[KETTLE], "energy_mapper")
+        # the relay is still measured, once, with its learned polarity
+        loads = {s.entity_id: s.on_states for s in d.config.switched_loads}
+        self.assertEqual(loads, {"switch.water_heater": ("on",)})
+        self.assertEqual(roles[HEATER], "energy_mapper")
+        self.assertNotIn("unknown_statistic", [f.kind for f in d.findings])
+        # the measured energy is no longer compared with an estimate
+        report = {"start": 0, "end": 86400, "energy_kwh": {"known": {"Water heater": 4.6}}}
+        self.assertEqual(tracking_gaps(report, d.tracked, {}), [])
+
+
 class GapTests(unittest.TestCase):
     def test_underestimated_switched_device(self):
         h = meter_with_channels()

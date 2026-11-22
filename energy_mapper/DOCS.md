@@ -51,6 +51,9 @@ from it, and finds the power sensor (W) that goes with each energy sensor
 An appliance whose estimate you replaced, in the Energy dashboard, by its
 Energy Mapper statistic (`energy_mapper:load_…_energy`) stays measured: the
 add-on maps the statistic back to its relay, with the polarity it learned.
+The integration does that replacement for you (*Take over tracking* on the
+appliance's card, after a confirmation); the replaced sensor is then no longer
+read, so it is no longer subtracted from the house curve.
 
 All other options are manual overrides, for installations without an Energy
 dashboard or when the automatic choice is wrong. With the **Energy Mapper

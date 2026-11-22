@@ -22,6 +22,7 @@ from homeassistant.helpers import config_validation as cv
 from .api import EnergyMapperApiError, EnergyMapperClient, EnergyMapperConnectionError, EnergyMapperError
 from .const import CONF_URL, DOMAIN, OPT_REVIEW_REPAIR, OPT_SETTINGS
 from .coordinator import EnergyMapperConfigEntry, EnergyMapperCoordinator, ReviewError
+from .takeover import TakeoverError
 
 DAY = vol.Match(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -52,6 +53,9 @@ def async_register_commands(hass: HomeAssistant) -> None:
         ws_wait,
         ws_ignore,
         ws_restore,
+        ws_tracking,
+        ws_take_over,
+        ws_undo_take_over,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -406,3 +410,78 @@ def _decision(action: str):
 ws_wait = _decision("wait")
 ws_ignore = _decision("ignore")
 ws_restore = _decision("restore")
+
+
+# ---------------------------------------------------------------------------
+# take over tracking in the Energy dashboard (#13): administrators only
+# ---------------------------------------------------------------------------
+APPLIANCE_KEY = vol.All(str, vol.Length(min=1, max=200))
+
+
+async def _energy(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+    call: Callable[[EnergyMapperCoordinator], Awaitable[dict[str, Any]]],
+) -> None:
+    """Answered by the integration alone (the Energy dashboard prefs and its
+    store), without the add-on."""
+    entry = _entry(hass)
+    if entry is None or entry.state is not ConfigEntryState.LOADED:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "Energy Mapper is not set up")
+        return
+    try:
+        result = await call(entry.runtime_data.coordinator)
+    except TakeoverError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+    else:
+        connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({vol.Required("type"): "energy_mapper/tracking"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_tracking(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The individual devices of the Energy dashboard an appliance may take
+    over, and per appliance with a statistic: whether it is in the dashboard,
+    what it took over, and the devices that are probably it."""
+    await _energy(hass, connection, msg, lambda coordinator: coordinator.async_tracking())
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "energy_mapper/take_over",
+        vol.Required("appliance"): APPLIANCE_KEY,
+        vol.Required("stat_consumption"): vol.All(str, vol.Length(min=1, max=255)),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_take_over(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Replace a device of the Energy dashboard by the appliance's statistic
+    (the panel asked the user to confirm)."""
+    await _energy(
+        hass,
+        connection,
+        msg,
+        lambda coordinator: coordinator.async_take_over(msg["appliance"], msg["stat_consumption"]),
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "energy_mapper/undo_take_over", vol.Required("appliance"): APPLIANCE_KEY}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_undo_take_over(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Put back the device the appliance took over (the panel asked the user
+    to confirm)."""
+    await _energy(
+        hass, connection, msg, lambda coordinator: coordinator.async_undo_take_over(msg["appliance"])
+    )

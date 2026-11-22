@@ -1,7 +1,7 @@
 {
   "domain": "energy_mapper",
   "name": "Energy Mapper",
-  "after_dependencies": ["hassio"],
+  "after_dependencies": ["energy", "hassio", "repairs"],
   "codeowners": ["@sylvaing"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "panel_custom", "recorder", "websocket_api"],

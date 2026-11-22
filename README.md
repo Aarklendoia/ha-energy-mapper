@@ -65,9 +65,10 @@ Technical details: [design document](docs/design.md) and the
   one meter; only sub-meters are measured. Do not use it for billing;
 - name appliances. A signature is `short-2000w`, not "kettle": naming signatures (which then
   become appliances like the switched ones) is the next step of v1;
-- change your configuration or the Energy dashboard: the add-on never calls a service, and the
-  integration only adds its own devices, sensors and statistics (you choose to add them to the
-  Energy dashboard);
+- change your configuration or the Energy dashboard on its own: the add-on never calls a
+  service, and the integration only adds its own devices, sensors and statistics; the one
+  change it makes to the Energy dashboard, *Take over tracking* (below), waits for your
+  confirmation and can be undone;
 - work in real time: the analysis runs at night on the previous day (live detection is
   planned for v2).
 
@@ -367,8 +368,15 @@ appliance. A day's hours appear the morning after, once the night's analysis is 
 imported at once; a day analysed again replaces its hours without double counting.
 
 Do not add an appliance that is already tracked in the Energy dashboard by another sensor
-(for example a powercalc estimate of the same switch): it would be counted twice. Replacing
-it is planned ([#13](https://github.com/sylvaing/ha-energy-mapper/issues/13)). Live power and
+(for example a powercalc estimate of the same switch): it would be counted twice. Use
+**Take over tracking** instead ([#13](https://github.com/sylvaing/ha-energy-mapper/issues/13)):
+on the appliance's card of the panel's *Appliances* tab (administrators), the line *Energy
+dashboard* names the individual device that is probably this appliance (an estimate driven
+by its switch, or a sensor of the switch's own device), or lets you pick one. After you
+confirm, that device is replaced by the appliance's statistic, at the same place, in one
+change: never both. The Energy dashboard then shows Energy Mapper's figures for the past
+days the statistic covers too. *Undo* puts the former device back. If you delete the
+appliance later, a Repairs issue offers to put the former device back. Live power and
 on/off states come with real-time detection
 ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17)).
 
@@ -418,8 +426,8 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
 - [**v1 – Validate & track**](https://github.com/sylvaing/ha-energy-mapper/milestone/2): review
   signatures in the panel (name one, or link it to an existing switch or power sensor), with
   the entity each one probably is, one entry per appliance and per-appliance entities and
-  hourly energy statistics (done), "take
-  over tracking" in the Energy dashboard,
+  hourly energy statistics, "take
+  over tracking" in the Energy dashboard (done),
   learning from measured devices, a nightly self-test with a success rate, variable loads, and
   a benchmark on public NILM datasets ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): real-time
@@ -543,9 +551,10 @@ l'add-on).
 - nomme pas les appareils : une signature s'appelle `short-2000w`, pas « bouilloire ».
   Nommer les signatures (qui deviennent alors des appareils comme les appareils pilotés),
   c'est la prochaine étape de la v1 ;
-- modifie pas votre configuration ni le tableau Énergie : l'add-on n'appelle jamais de
-  service, et l'intégration n'ajoute que ses propres appareils, capteurs et statistiques
-  (c'est vous qui les ajoutez au tableau Énergie) ;
+- modifie pas de lui-même votre configuration ni le tableau Énergie : l'add-on n'appelle
+  jamais de service, et l'intégration n'ajoute que ses propres appareils, capteurs et
+  statistiques ; le seul changement qu'elle fait au tableau Énergie, *Prendre en charge le
+  suivi* (plus bas), attend votre confirmation et peut être annulé ;
 - fonctionne pas en temps réel : l'analyse tourne la nuit sur la veille (la détection en
   direct est prévue en v2).
 
@@ -875,9 +884,17 @@ tous les jours conservés (jusqu'à `report_retention_days`) sont importés d'un
 analysé à nouveau remplace ses heures sans double comptage.
 
 N'ajoutez pas un appareil déjà suivi dans le tableau Énergie par un autre capteur (par
-exemple une estimation powercalc du même interrupteur) : il serait compté deux fois. Le
-remplacement est prévu ([#13](https://github.com/sylvaing/ha-energy-mapper/issues/13)). La
-puissance et l'état de marche en direct viendront avec la détection en temps réel
+exemple une estimation powercalc du même interrupteur) : il serait compté deux fois.
+Utilisez plutôt **Prendre en charge le suivi**
+([#13](https://github.com/sylvaing/ha-energy-mapper/issues/13)) : sur la carte de l'appareil,
+dans l'onglet *Appareils* du panneau (administrateurs), la ligne *Tableau de bord Énergie*
+nomme l'appareil individuel qui est probablement cet appareil (une estimation pilotée par son
+interrupteur, ou un capteur de l'appareil de l'interrupteur), ou vous laisse en choisir un.
+Après confirmation, il est remplacé par la statistique de l'appareil, à la même place, en un
+seul changement : jamais les deux. Le tableau Énergie montre alors les chiffres d'Energy
+Mapper aussi pour les jours passés que couvre la statistique. *Rétablir* remet l'ancien. Si
+vous supprimez l'appareil ensuite, un problème dans Réparations propose de remettre l'ancien.
+La puissance et l'état de marche en direct viendront avec la détection en temps réel
 ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17)).
 
 ### Vie privée
@@ -928,8 +945,8 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
 - [**v1 – Valider et suivre**](https://github.com/sylvaing/ha-energy-mapper/milestone/2) :
   revue des signatures dans le panneau (en nommer une, ou la relier à un interrupteur ou un
   capteur de puissance existant), avec l'entité qu'elle est probablement, une entrée par
-  appareil, entités par appareil et statistiques d'énergie heure par heure (faits),
-  « reprendre le suivi » dans le tableau Énergie, apprentissage à partir des appareils
+  appareil, entités par appareil, statistiques d'énergie heure par heure et « prendre en
+  charge le suivi » dans le tableau Énergie (faits), apprentissage à partir des appareils
   mesurés, auto-contrôle de nuit avec un taux de réussite, charges variables, et évaluation
   sur des jeux de données NILM publics ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : détection en

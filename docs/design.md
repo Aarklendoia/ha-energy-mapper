@@ -597,7 +597,7 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 ## 8. Integration: websocket API, appliances and statistics
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
-administrator. Except `status`, `day_stats` and `appliances`, each command relays one add-on request and
+administrator. Except `status`, `day_stats`, `appliances`, `tracking`, `take_over` and `undo_take_over`, each command relays one add-on request and
 returns its JSON unchanged.
 
 | Command | Parameters | Result |
@@ -614,6 +614,9 @@ returns its JSON unchanged.
 | `energy_mapper/validate` | `signature_id`, `name`, `entity_id`?, `on_states`? (at most 20) | Creates the appliance (§ 8.3, § 8.4): `{"appliance": {"key", "name", "sources"}}`; admin only |
 | `energy_mapper/merge_signature` | `signature_id`, `appliance` (its key) | Adds the signature as a source of that appliance (§ 8.4): `{"appliance": {"key", "name", "sources"}}`; admin only |
 | `energy_mapper/wait`, `energy_mapper/ignore`, `energy_mapper/restore` | `signature_id` | `POST /api/review`: `{"signature"}`; admin only |
+| `energy_mapper/tracking` | – | `{"devices": [{"stat_consumption", "name", "included_in_stat"}], "appliances": [{"key", "statistic_id", "in_dashboard", "taken_over": {"stat_consumption", "name"} \| null, "suggested": [{"stat_consumption", "reason"}]}]}` (§ 8.5); answered by the integration alone; admin only. Integration 0.8.0+ |
+| `energy_mapper/take_over` | `appliance` (key), `stat_consumption` | Replaces that individual device of the Energy dashboard by the appliance's statistic (§ 8.5): `{"key", "statistic_id", "replaced"}`; admin only |
+| `energy_mapper/undo_take_over` | `appliance` (key) | Puts the replaced device back: `{"key", "restored"}`; admin only |
 
 The review commands take `signature_id` (`id` is the websocket message's own id).
 Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized`,
@@ -621,7 +624,11 @@ Errors (`{"code", "message"}`): `invalid_format` (bad parameters), `unauthorized
 default), or the add-on's own code and message (`invalid_day`, `not_found`, `no_grid`,
 `no_data`, `partial_day`, `ha_error`, `internal`), else `http_<status>` / `invalid_response`;
 `validate` and `merge_signature` also answer `already_linked` (the signature or the entity is
-already a source of an appliance) and `not_found` (no such signature or appliance).
+already a source of an appliance) and `not_found` (no such signature or appliance);
+`take_over` and `undo_take_over` answer `not_found` (no such appliance, device or record),
+`already_tracked` (the appliance's statistic is already in the Energy dashboard),
+`no_statistic` (an appliance without a statistic of its own, or not imported yet) and
+`invalid_format` (the device is an Energy Mapper statistic).
 
 Other parts of the integration:
 
@@ -906,8 +913,8 @@ at a time.
   title and the shortcut legend are hidden; a "1 of 34" stepper with previous / next stands
   above the detail and the segmented control stacks.
 
-Not in this version: the other proposals of the same section, "take over tracking" (#13) and
-"probable sub-meter" (a power sensor whose steps coincide with the whole-house steps).
+Not in this version: "probable sub-meter" (a power sensor whose steps coincide with the
+whole-house steps). "Take over tracking" (#13) is on the appliance cards (§ 8.5).
 
 ### 8.4 Entity suggestions (#41, #43)
 
@@ -1084,6 +1091,61 @@ pushes the appliances and records `validate` with the appliance's key (`POST /ap
 the signature is `validated` and labelled with the appliance's name. A signature already used
 by an appliance is refused (`already_linked`).
 
+### 8.5 Take over tracking in the Energy dashboard (#13)
+
+Many users already track a device in the Energy dashboard with an estimate (a powercalc sensor
+driven by its relay, a fixed-power template). Once Energy Mapper measures the appliance, its
+hourly statistic (§ 8.1) can replace that entry. Two sources for one device would count it
+twice, so the replacement is a single update of `device_consumption`.
+
+**Pure rules** (`custom_components/energy_mapper/takeover.py`, unit tested on plain prefs):
+
+- *Candidates*: every individual device that is not an Energy Mapper statistic. *Suggested*
+  for an appliance (`suggestion`): its energy sensor's `source_entity` is one of the
+  appliance's relays (`estimate`), or the sensor, or its `source_entity`, belongs to the Home
+  Assistant device of one of its relays (`device`, a smart plug's own energy sensor). A
+  signature-only appliance gets no suggestion; the user picks. Only appliances with a
+  statistic of their own (a relay or a signature source) are listed; one measured by a power
+  sensor only is not.
+- *Take over* (`take_over`): the entry is replaced **in place** by
+  `{"stat_consumption": <statistic>}`, keeping its `included_in_stat`; no `name` (the
+  statistic's metadata name is the appliance's and follows renames), no `stat_rate` (it was
+  the estimate's power). Devices nested in the old entry (`included_in_stat`) are nested in
+  the statistic. Refused when the statistic is already in the dashboard (`already_tracked`),
+  the device is gone (`not_found`, the prefs changed since the panel loaded) or is one of
+  ours. The record `{statistic_id, replaced, children}` is returned.
+- *Undo* (`restore`): the old entry takes the statistic's place (with the statistic's current
+  `included_in_stat`); if the old entry is already back (re-added by hand) the statistic just
+  leaves; if the statistic is gone too, the old entry is appended. Devices nested in the
+  statistic are nested in the old entry again. The statistic always leaves.
+
+**Integration** (`coordinator.py`): the prefs are read and written through Home Assistant's
+energy manager (`energy.data.async_get_manager`, `async_update({"device_consumption": …})`),
+so the other entries and the sources are untouched, under a lock. A take-over also needs the
+statistic to be imported already (`no_statistic` otherwise: the dashboard would show
+nothing). The records live in the integration's store (`takeovers`: appliance key →
+`{statistic_id, replaced, children, name, at}`), in Home Assistant's backups. A new take-over
+overwrites a stale record of the same appliance.
+
+**Deleted appliance**: deleting (or merging away) an appliance clears its statistic. When it
+had taken over a device, a fixable Repairs issue `takeover_removed_<key>` (warning; recreated
+at start-up, issues not being persistent) explains it; its fix flow (`repairs.py`) confirms,
+then runs the undo. Ignoring it leaves the dashboard as it is.
+
+**Panel** (Appliances tab, administrators; `frontend/src/takeover.ts`, unit tested): under
+each card with a statistic, a line *Energy dashboard*: "replaces *Boiler*" with *Undo*; "In
+the Energy dashboard" (added by hand: nothing to do); "*Boiler* is probably this appliance"
+or "Not in the Energy dashboard" with *Take over tracking*. The action opens a confirmation
+inside the card: a picker of the devices (suggestions first, preselected, then the others by
+name), a text naming both sides and saying that past days change too, *Replace* / *Cancel*.
+*Undo* has its own confirmation (*Put back*). Nothing changes before the confirmation.
+
+**Add-on side**: nothing new. The prefs are read live before each analysis (§ 5), so the
+replaced sensor is no longer an input: a subtracted estimate stops being subtracted (no
+feedback with the appliance's own estimate, and the signature it hid is in the curve again),
+a relay's estimate gives way to the statistic, which keeps the relay measured with its
+learned polarity, and the nested devices stay `nested`. Covered by `tests/test_energy_config.py`.
+
 ## 9. Settings and precedence
 
 The settings have three possible sources, resolved **key by key**:
@@ -1191,7 +1253,14 @@ cannot be read).
   energy is the sensor's own.
 - Review decisions live in the registry: a registry rebuilt from scratch (unreadable file)
   proposes the ignored and waiting signatures again (appliances are not affected).
-- The review does not propose "take over tracking" (#13) or "probable sub-meter" yet.
+- The review does not propose "probable sub-meter" yet.
+- Take over tracking (#13) suggests devices from relays only (estimate source or Home
+  Assistant device); a signature appliance's device is picked by hand. Merging away a
+  taken-over appliance raises the same Repairs issue as a deletion; restoring then counts
+  the former device next to the target appliance if the target's statistic is in the
+  dashboard too (the target now includes the merged part): the user decides. The Energy
+  dashboard shows the statistic for past days as well, so the days before the statistic's
+  first hour (retention) show nothing for that device until *Undo*.
 - Entity suggestions compare the state of the candidates and two attributes only
   (`climate.hvac_action`, `humidifier.action`), start after the first nightly run following
   the update, and cannot see entities the recorder excludes. Two entities that always change
@@ -1210,6 +1279,6 @@ cannot be read).
 
 | Milestone | Issues |
 |---|---|
-| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13), learn from measured devices (#14), nightly self-test (#15), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
+| [v1 – Validate & track](https://github.com/sylvaing/ha-energy-mapper/milestone/2) | Review of the signatures in the panel (#10, done), entity suggestions (#41, #43, done), one config subentry per appliance (#11, done), per-appliance entities (#12, done), take over tracking in the Energy dashboard (#13, done), learn from measured devices (#14), nightly self-test (#15), variable loads (#16), public-dataset benchmark with NILMTK metrics (#28) |
 | [v2 – Live](https://github.com/sylvaing/ha-energy-mapper/milestone/3) | Real-time detection (#17), per-phase analysis (#18), multi-phase appliance cycles (#26) |
 | [v3 – Publish](https://github.com/sylvaing/ha-energy-mapper/milestone/4) | Standalone Docker image for Container/Core (#19), release process and store listings (#20) |

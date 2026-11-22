@@ -177,6 +177,27 @@
             return { entry_id: "dev-entry", appliances: scenario === "empty" ? [] : APPLIANCE_LIST };
           case "recorder/statistics_during_period":
             return statistics(msg);
+          case "energy_mapper/tracking":
+            return tracking();
+          case "energy_mapper/take_over": {
+            const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
+            const i = DASHBOARD.findIndex((d) => d.stat_consumption === msg.stat_consumption);
+            if (!a || i < 0) throw { code: "not_found", message: `no device ${msg.stat_consumption}` };
+            if (DASHBOARD.some((d) => d.stat_consumption === a.statistic_id))
+              throw { code: "already_tracked", message: `${a.statistic_id} is already in the Energy dashboard` };
+            TAKEOVERS[a.key] = { ...DASHBOARD[i] };
+            DASHBOARD[i] = { stat_consumption: a.statistic_id, name: a.name };
+            return { key: a.key };
+          }
+          case "energy_mapper/undo_take_over": {
+            const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
+            const old = a && TAKEOVERS[a.key];
+            if (!old) throw { code: "not_found", message: `${msg.appliance} took over no device` };
+            const i = DASHBOARD.findIndex((d) => d.stat_consumption === a.statistic_id);
+            DASHBOARD[i] = old;
+            delete TAKEOVERS[a.key];
+            return { key: a.key };
+          }
           case "energy_mapper/analyze":
             await sleep(1500);
             return { day: msg.day, ok: true };
@@ -373,6 +394,33 @@
           sources,
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
+      // the individual devices of a synthetic Energy dashboard (#13)
+      const DASHBOARD = [
+        { stat_consumption: "sensor.fridge_plug_energy", name: "Fridge plug" },
+        { stat_consumption: "sensor.water_heater_estimated_energy", name: "Water heater (estimate)" },
+        { stat_consumption: "sensor.dryer_energy", name: "Dryer" },
+        { stat_consumption: stat("load:switch.radiator_bedroom"), name: "Bedroom radiator" },
+      ];
+      const TAKEOVERS = {};
+      const SUGGESTED = { "load:switch.water_heater": "sensor.water_heater_estimated_energy" };
+      function tracking() {
+        const own = (s) => s.startsWith("energy_mapper:");
+        return {
+          devices: DASHBOARD.filter((d) => !own(d.stat_consumption)).map((d) => ({ ...d, included_in_stat: null })),
+          appliances: APPLIANCE_LIST.filter((a) => a.statistic_id).map((a) => {
+            const in_dashboard = DASHBOARD.some((d) => d.stat_consumption === a.statistic_id);
+            const old = TAKEOVERS[a.key];
+            const s = SUGGESTED[a.key];
+            return {
+              key: a.key,
+              statistic_id: a.statistic_id,
+              in_dashboard,
+              taken_over: in_dashboard && old ? { stat_consumption: old.stat_consumption, name: old.name } : null,
+              suggested: !in_dashboard && s && DASHBOARD.some((d) => d.stat_consumption === s) ? [{ stat_consumption: s, reason: "estimate" }] : [],
+            };
+          }),
+        };
+      }
       // appliances a signature can be merged into (#43)
       const APPLIANCES = APPLIANCE_LIST.map(({ key, name }) => ({ key, name }));
 
