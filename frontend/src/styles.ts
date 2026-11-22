@@ -118,12 +118,31 @@ export const panelStyles = css`
     line-height: 20px;
     text-align: center;
   }
+  /* the pulsing dot of the Live tab (#17) while it streams */
+  @keyframes tab-live-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+  .tab-live {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--error-color, #db4437);
+    animation: tab-live-pulse 1.4s infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .tab-live {
+      animation: none;
+    }
+  }
   .narrow .tabs {
     padding: 0;
     gap: 0;
   }
   .narrow .tab {
-    flex: 1 1 0;
+    flex: 1 0 auto;
     padding: 0 var(--ha-space-1, 4px);
     font-size: var(--ha-font-size-s, 13px);
     gap: 6px;

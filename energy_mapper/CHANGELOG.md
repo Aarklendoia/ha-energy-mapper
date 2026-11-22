@@ -61,6 +61,22 @@
   stored in the appliances' subentries (so in every backup), follow merges,
   and the night's `link` is applied automatically. `energy_mapper/appliances`
   shows each appliance's examples and what the night found of them.
+- Panel: the *Live* tab (#17, part 4 of 4), for every user, after *To review*,
+  with a pulsing dot while it streams. It subscribes only while it is shown
+  and the page is visible. The house curve of the last 15 minutes with a
+  marker on each switch-on ("?" to label, "✓" known; select one to label
+  it); *Now*: the current power, what probably runs, the plugs and switches
+  on, the unidentified rest and a split bar; *What just happened*: one line
+  per event, completed by its stop, with its best candidate, a tag (new, seen
+  before, known, labelled by you), the reasons of the candidates in words and
+  the filter *To label*. Administrators label a line inline (candidates with
+  score bars, a name with frequent names for that power, how to track it,
+  the effect before and after saving), hide it (*Ignore*) or never see that
+  signature again (*⋯*), and use the guided mode *I'm switching an appliance
+  on* (two steps at once, nothing detected, too weak for the curve). Every
+  status of the stream has its message. English and French, light and dark,
+  from 360 px wide, keyboard accessible. The dev harness simulates a live
+  stream.
 
 ## 0.11.0
 

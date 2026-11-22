@@ -18,9 +18,11 @@ test("the tab comes from ?tab=, the Repairs link opens To review, else Today", (
 });
 
 test("To review is for administrators with a review only", () => {
-  assert.deepEqual(availableTabs(true), ["today", "appliances", "review"]);
-  assert.deepEqual(availableTabs(false), ["today", "appliances"]);
-  assert.deepEqual(availableTabs(true, false), ["today", "appliances"]);
+  assert.deepEqual(availableTabs(true), ["today", "appliances", "review", "live"]);
+  assert.deepEqual(availableTabs(false), ["today", "appliances", "live"]);
+  assert.deepEqual(availableTabs(true, false), ["today", "appliances", "live"]);
+  assert.equal(shownTab("live", availableTabs(false)), "live");
+  assert.equal(tabFromSearch("?tab=live"), "live");
   assert.equal(shownTab("review", availableTabs(false)), "today");
   assert.equal(shownTab("review", availableTabs(true)), "review");
   assert.equal(shownTab("appliances", availableTabs(false)), "appliances");
@@ -38,11 +40,12 @@ test("the tab is written to the URL next to the day", () => {
 test("arrow keys, Home and End move between the tabs", () => {
   const all = availableTabs(true);
   assert.equal(tabForKey(all, "today", "ArrowRight"), "appliances");
-  assert.equal(tabForKey(all, "review", "ArrowRight"), "today");
-  assert.equal(tabForKey(all, "today", "ArrowLeft"), "review");
+  assert.equal(tabForKey(all, "review", "ArrowRight"), "live");
+  assert.equal(tabForKey(all, "live", "ArrowRight"), "today");
+  assert.equal(tabForKey(all, "today", "ArrowLeft"), "live");
   assert.equal(tabForKey(all, "appliances", "Home"), "today");
-  assert.equal(tabForKey(all, "today", "End"), "review");
-  assert.equal(tabForKey(availableTabs(false), "appliances", "ArrowRight"), "today");
+  assert.equal(tabForKey(all, "today", "End"), "live");
+  assert.equal(tabForKey(availableTabs(false), "appliances", "ArrowRight"), "live");
   assert.equal(tabForKey(all, "today", "Enter"), null);
 });
 
