@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 
 from .activations import find_cycling_sessions, pair_steps, validate_activations
+from .cycles import CycleConfig, Phase, attribute, find_cycles
 from .known import KnownLoad, SwitchedLoadConfig, resolve_switched_load
 from .signal import build_samples, parse_numeric, scaled, sum_series
 from .signatures import cluster
@@ -51,6 +52,10 @@ class AnalysisConfig:
     top_peaks: int = 5
     curve_resolution_s: int = 60
     context_s: int = 3 * 3600  # history read before the period (loads already on)
+    # multi-phase appliances (#26): the templates a candidate cycle is matched
+    # to, ``{registry id: [phase dicts]}`` (none: candidates are only listed)
+    cycle_templates: dict[str, list[dict]] = field(default_factory=dict)
+    cycles: CycleConfig = field(default_factory=CycleConfig)
 
     def entities(self) -> list[str]:
         ids = [self.grid_entity, *self.extra_grid_entities, *self.extra_pv_entities]
@@ -124,7 +129,15 @@ def analyze(
     in_period = [p for p in points if start <= p[0] < end]
     base_est = base_load(_minute_means(in_period))
     pairs = validate_activations(pairs, points, base_est)
-    acts = [a for a in sessions + pairs if a.end > start and a.start < end]
+    candidates = find_cycles(points, base_est, sessions + pairs, known, start, end, config.cycles)
+    templates = {}
+    for tid, phases in (config.cycle_templates or {}).items():
+        try:
+            templates[tid] = [Phase.from_dict(p) for p in phases]
+        except (KeyError, TypeError, ValueError):
+            continue
+    every = attribute(candidates, sessions + pairs, {k: v for k, v in templates.items() if v}, config.cycles)
+    acts = [a for a in every if a.end > start and a.start < end]
     signatures = cluster(acts, local_hour=local_hour)
 
     curve, totals = _curve(samples, config, known, acts, start, end)
@@ -167,19 +180,8 @@ def analyze(
             }
             for k in known
         ],
-        "activations": [
-            {
-                "start": a.start,
-                "end": a.end,
-                "power_w": round(a.power_w),
-                "cycling": a.cycling,
-                "duty": a.duty,
-                "on_s": a.on_s,
-                "period_s": a.period_s,
-                "signature": a.signature,
-            }
-            for a in acts
-        ],
+        "activations": [_activation(a) for a in acts],
+        "cycles": [c.to_dict() for c in candidates],
         "quality": {
             "samples": len(in_period),
             "steps": sum(1 for s in steps if start <= s.ts < end),
@@ -188,6 +190,24 @@ def analyze(
             "compute_s": round(time.perf_counter() - t0, 2),
         },
     }
+
+
+def _activation(a) -> dict:
+    out = {
+        "start": a.start,
+        "end": a.end,
+        "power_w": round(a.power_w),
+        "cycling": a.cycling,
+        "duty": a.duty,
+        "on_s": a.on_s,
+        "period_s": a.period_s,
+        "signature": a.signature,
+    }
+    if getattr(a, "multiphase", False):
+        # a recognised cycle (#26): power_w is its mean power
+        out["multiphase"] = True
+        out["phases"] = [p.to_dict() for p in a.phases]
+    return out
 
 
 def _curve(samples, config, known, acts, start, end):

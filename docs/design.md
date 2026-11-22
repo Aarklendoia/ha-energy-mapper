@@ -166,7 +166,8 @@ sequenceDiagram
 **Names of the signatures in the panel** (`frontend/src/names.ts`, unit tested, #52). A
 signature with a label shows it. One without gets a provisional name built from the
 signature itself, in the user's language: the power rounded ("940 W", "2.6 kW"), the usual
-duration rounded ("~50 min", "~1 h 30") or "in cycles" for a cycling one, and when it runs,
+duration rounded ("~50 min", "~1 h 30") or "in cycles" for a cycling one ("Cycle with
+2.1 kW heating, ~1 h 30" for a multi-phase one, § 4.9), and when it runs,
 from the registry's 24-hour histogram: the part of the day holding most of the uses
 (morning 6–11 h, midday 11–14 h, afternoon 14–18 h, evening 18–22 h, night 22–6 h), two
 parts ("at midday and in the evening"), or "all day" when they are spread. A missing field
@@ -318,7 +319,9 @@ flowchart TD
   K --> C[find_cycling_sessions: alternating steps of similar size]
   C --> P[pair_steps: on-step closest in size]
   P --> V[validate_activations: drop phantom pairings]
-  V --> G[cluster: daily signatures]
+  V --> MC[find_cycles: candidate multi-phase cycles]
+  MC --> MA[attribute: recognised cycles replace their activations]
+  MA --> G[cluster: daily signatures]
   G --> R[curve, totals, peaks, quality: report]
   R --> RG[registry.update across days]
 ```
@@ -446,6 +449,14 @@ the stored day summaries.
   its old ones to it. About 20 bytes each in the compact JSON of the API (12 KB at the cap, 1 to
   2 KB for a daily appliance). A registry without them (add-on before 0.9.0) triggers the
   maintenance at the next start, so they fill at once from the stored summaries.
+- **Multi-phase signatures** (§ 4.9): the candidate cycles of the stored days are clustered on
+  their phase sequences; a cluster of at least `min_cycles` (3) is a signature of kind
+  `multiphase`, band `cycle`, id `cycle-<heating power>w`, with its template in `phases` and
+  the weighted median energy of one cycle in `cycle_kwh` (plus the usual fields; `power_w` is
+  the heating power, `duration_s` the cycle's). Identity: the previous `multiphase` signature
+  whose template is within `cycle_distance` (0.6), labelled first; an expected one (no template
+  yet) by its power. Recognised cycles (`multiphase` activations) are not clustered with the
+  steady activations.
 - **Registry ids in daily reports**: `annotate_report()` adds `registry_id` to the activations
   (nearest signature, same rule), to the daily signatures (majority of their activations) and
   to the signature parts of the peaks. The API applies it when serving a report, so the ids are
@@ -458,6 +469,68 @@ the stored day summaries.
   `peak_threshold_w` when set. Daily reports still list the day's own top episodes, so a normal
   day is never empty; only the flag `notable` depends on this threshold. The days of the first
   backfill (analysed newest first) only know the days stored before them.
+
+### 4.9 Multi-phase appliances (`cycles.py`, #26)
+
+A dishwasher, a washing machine or a tumble dryer runs a sequence of phases of very different
+powers: water heating (~2 kW, 10–30 min), wash or circulation (a motor or a pump, 50–500 W,
+often in bursts), spin, drying (a heater cycling on its thermostat). The step engine sees each
+heating phase as an unrelated steady activation and misses the low-power phases. A first,
+light version (standard library, deterministic, a few ms per day) groups them:
+
+1. **Candidate cycles** (`find_cycles`). Per minute, the residual load minus the base, the
+   switched loads and the activations longer than 2.5 h (a water heater) is *active* from
+   `low_w` (50 W): a local threshold far below the step threshold. Active minutes with pauses
+   shorter than `max_gap_s` (10 min) form segments. A segment is a candidate when it contains a
+   heating-like activation (steady, at least 1 kW, 5 min to 2 h), once bounded to 20 min before
+   its first heating and 100 min after its last (a TV or a fridge next to it must not stretch it
+   for hours), lasts 30 min to 4 h, has at least 10 min of activity outside its heating phases
+   and at least one heating phase. Its *members* are the activations inside it that can be one
+   of its phases (not a cycling session such as a hob, not a short burst of heating power such
+   as a kettle). Its own power, minute by minute, is the load minus the base, the switched loads
+   and every non-member activation.
+2. **Phases** (`segment`). Each minute is classified (heat from 800 W, motor from 50 W, idle),
+   smoothed with a median of three, split into runs; runs shorter than 5 min are merged into
+   the neighbour of the closest mean power. Idle runs are not phases. A phase is
+   `{kind, offset_s, duration_s, power_w}` (mean power).
+3. **Distance** (`distance`). Dynamic time warping on the phase sequences, where each phase
+   weighs its share of its cycle's energy, counted once (a warp step only pays for the phase it
+   adds), so a short low-power phase (a fridge starting next to the cycle, a heating split in
+   two) costs little; leading and trailing phases may be skipped at the highest cost times
+   their weight. A pair costs `|log2 power ratio| + 0.5 |log2 duration ratio| + 2 x the
+   difference of their positions in the cycle` (capped at 3): the second heating of a
+   dishwasher is not the single one of a washing machine. Plus `0.5 |log2|` of the energy ratio
+   and `0.25 |log2|` of the span ratio.
+4. **Templates** (registry, § 4.8). Deterministic leader clustering with medoids (in start
+   order, a candidate joins the nearest medoid within the distance or starts a cluster; medoids
+   recomputed, three passes). The template is the medoid's phases, each one's power, duration
+   and offset replaced by the weighted medians over the members' phases aligned to it.
+5. **Attribution** (`attribute`, in `analyze()`). `AnalysisConfig.cycle_templates` holds the
+   templates of the `multiphase` signatures the user **validated** (named by an appliance, or
+   validated in the review; `registry.cycle_templates`), so that nothing moves before the user
+   agreed. A candidate within `match_distance` (0.6) of a template, trimmed to the phases the
+   template aligns, becomes one `CycleActivation` of that signature (its exact per-minute power;
+   `power_w` its mean power) and replaces its member activations: the heating phases no longer
+   count for their steady signatures, and the low-power phases leave *other*. The curve, the
+   peaks, the hourly statistics (`Matcher` returns the template id of a `multiphase`
+   activation) and the daily signatures (kind `multiphase`) use it like any activation.
+
+**Evaluation** on synthetic cycles (`tests/test_cycles.py`, `--eval`: a dishwasher, a washing
+machine and a tumble dryer on about half of the days each, random phase durations and powers,
+the motor in bursts, noise, a fridge, kettles, an oven, a hob, a water heater and a TV; 60 days,
+three seeds, every learned template used): precision 0.84–0.89, recall 0.62–0.64 of all the
+cycles and 0.74–0.83 of the cycles that do not overlap another appliance's; median energy error
+per recognised cycle 3–10 % (biased upwards by 2–12 %: low loads running during the cycle), and
+1–3 % on the heating phases. The false positives are almost all a recurring "oven + fridge"
+pattern, which the user would not validate. Cost: about 3 ms per day for the candidates, and
+under 1 s for the registry's clustering of 200 days (345 candidates) on amd64.
+
+**Left for later**: subsequence matching (a candidate that holds two appliances run back to
+back, or a cycle followed by a TV), a local base (a fridge or a TV next to a cycle is counted in
+it), merging the templates of one appliance's programmes, a phase timeline in the panel, an
+evaluation on real ground truth (Home Connect appliances, smart plugs, #14) with the CPU and
+memory cost on aarch64, and comparing with the other leads of #26 (hidden semi-Markov models,
+deep-learning NILM).
 
 ## 5. Using the Energy dashboard
 
@@ -557,8 +630,9 @@ summary with `curve: []` and `curve_pruned: true`.
 | `curve` | Per-minute rows `{t, house, grid, pv, submetered, estimated, base, known: {name: W}, signatures: {daily id: W}, other}` |
 | `peaks` | `{start, end, max_ts, house_w, grid_w, pv_w, parts: [{kind: submetered\|estimated\|known\|signature, name, power_w, since?, registry_id?}], unexplained_w, notable}` |
 | `known_loads` | Switched loads: `{name, entity_id, power_w, transitions, matched, on_states, inverted, on_s}` |
-| `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}` |
-| `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}` |
+| `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}`; a recognised multi-phase cycle (add-on 0.10.0+) adds `multiphase: true` and `phases`, its `power_w` is its mean power and its `signature` the registry id of its template |
+| `cycles` | Candidate multi-phase cycles (add-on 0.10.0+): `{start, end, power_w (heating), energy_kwh, phases: [{kind: heat\|motor, offset_s, duration_s, power_w}], members, template, distance}` |
+| `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
 | `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}` |
 | `config` | Sensors used: `grid_entity`, `extra_grid_entities`, `grid_export_entity`, `pv_entity`, `extra_pv_entities`, `battery_entity`, `tracked` (`{name, energy_entity, power_entity, role, source_entity}`), `findings` |
 | `findings` | `{kind, entity_id, detail}` (derive findings and tracking gaps) |
@@ -571,7 +645,7 @@ JSON in and out; request bodies are limited to 64 KB (413 above).
 
 | Request | Answer |
 |---|---|
-| `GET /api/health` | `200 {"status": "ok", "version": "0.9.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
+| `GET /api/health` | `200 {"status": "ok", "version": "0.10.0", "last_run": <unix time \| null>, "days": <full reports>, "signatures": <registry size>, "storage_bytes": <int>}` |
 | `GET /api/days` | `200 {"days": [...], "summary_days": [...], "generated": {day: <unix time>}}`: days with a full report, and older days with only a summary, ascending; `generated`: when each full report was made (`generated_at`) |
 | `GET /api/report/YYYY-MM-DD` | `200` the report with registry ids; `400 {"error": "invalid_day"}`; `404 {"error": "not_found"}` |
 | `GET /api/hourly/YYYY-MM-DD` | `200` the hourly breakdown of the day (`nilm_core/hourly.py`, § 8.1); `400 invalid_day`; `404 not_found` when the day has no per-minute curve |
@@ -872,8 +946,10 @@ at a time.
   *Restore* / *Ignore* for the waiting, *Restore* for the ignored (one websocket call per
   signature, then one reload).
 - **Detail** (right): "Signature 3 of 29", the provisional name as title (`h2`, focusable),
-  previous / next (no wrap); facts (power, cycle for a cycling signature, usual duration, runs
-  per week, energy observed, first seen); the **day raster** (#65, `raster.ts`): one row per
+  previous / next (no wrap); facts (power, cycle for a cycling signature, usual duration, energy
+  per cycle for a multi-phase one, runs per week, energy observed, first seen, and for a
+  multi-phase one its phases on a full-width line: "motor 92 W 8 min → heating 2.1 kW 20 min →
+  …", `phasesSummary` in `names.ts`); the **day raster** (#65, `raster.ts`): one row per
   local day from the day before today (or a later occurrence) back to `first_seen`, at most 60,
   empty days included, the most recent on top; each occurrence of the registry (`occurrences`,
   add-on 0.9.0+) is a block in `--primary-color`, as wide as its duration (at least 3 px) with
@@ -1240,7 +1316,10 @@ cannot be read).
 - Peaks are explained at the instant of their maximum; a load starting on that very sample is
   not counted yet.
 - Loads below `step_threshold_w`, continuously variable loads and uses shorter than two meter
-  readings are not recognised; multi-phase appliances produce one signature per phase.
+  readings are not recognised. Multi-phase appliances (§ 4.9): two appliances running at once
+  or back to back make one candidate, a low load next to a cycle is counted in it, one
+  appliance can give one signature per programme, and recognised cycles only absorb their
+  activations once the user validated the signature.
 - Activations longer than 6 hours are not paired.
 - Three-phase installations are analysed on the sum of the phases.
 - The analysis depends on the recorder history; the backfill is limited by `purge_keep_days`.

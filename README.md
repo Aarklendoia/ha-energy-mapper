@@ -85,8 +85,13 @@ thermostat), which are grouped into one session with their duty cycle.
 - loads whose power varies continuously: EV chargers that modulate, inverter heat pumps and
   air conditioners, induction hobs at high power (a measured EV charger or heat pump is best
   declared as a sub-meter; variable loads will be handled in [#16](https://github.com/sylvaing/ha-energy-mapper/issues/16));
-- multi-phase appliances (dishwasher, washing machine, dryer) appear as several unrelated
-  signatures, one per heating phase ([#26](https://github.com/sylvaing/ha-energy-mapper/issues/26));
+- multi-phase appliances (dishwasher, washing machine, dryer): a first version groups their
+  heating and low-power phases into **cycles** and proposes each recurring programme as one
+  *multi-phase cycle* signature ("Cycle with 2 kW heating, ~1 h 30", with its phases); once
+  you name it, its cycles are counted as one use, low-power phases included. Two appliances
+  running at once, or a low load next to a cycle (a TV), still blur it, and one appliance can
+  give several such signatures (one per programme)
+  ([#26](https://github.com/sylvaing/ha-energy-mapper/issues/26));
 - events shorter than two meter readings, and several appliances of similar size switching
   at the same moment (some pairings are then wrong).
 
@@ -573,8 +578,13 @@ regroupés en une seule session avec leur rapport cyclique.
   chaleur et climatisation *inverter*, plaque à induction à pleine puissance (une borne ou
   une pompe à chaleur mesurée se déclare de préférence en sous-compteur ; les charges
   variables seront traitées dans [#16](https://github.com/sylvaing/ha-energy-mapper/issues/16)) ;
-- les appareils à plusieurs phases (lave-vaisselle, lave-linge, sèche-linge) apparaissent
-  comme plusieurs signatures sans lien, une par phase de chauffe
+- les appareils à plusieurs phases (lave-vaisselle, lave-linge, sèche-linge) : une première
+  version regroupe leurs phases de chauffe et de faible puissance en **cycles** et propose
+  chaque programme récurrent comme une seule signature *cycle à plusieurs phases* (« Cycle
+  avec chauffe de 2 kW, ~1 h 30 », avec ses phases) ; une fois nommée, ses cycles comptent
+  pour une seule utilisation, phases de faible puissance comprises. Deux appareils en même
+  temps, ou une petite charge à côté d'un cycle (une télévision), le brouillent encore, et un
+  appareil peut donner plusieurs signatures de ce type (une par programme)
   ([#26](https://github.com/sylvaing/ha-energy-mapper/issues/26)) ;
 - les événements plus courts que deux mesures du compteur, et plusieurs appareils de
   puissance voisine qui basculent au même moment (certaines associations sont alors fausses).

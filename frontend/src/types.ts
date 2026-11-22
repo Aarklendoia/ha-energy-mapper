@@ -110,6 +110,17 @@ export interface Activation {
   /** the daily signature id */
   signature: string;
   registry_id?: string | null;
+  /** a recognised multi-phase cycle (#26): power_w is its mean power */
+  multiphase?: boolean;
+  phases?: CyclePhase[];
+}
+
+/** One phase of a multi-phase cycle (#26). */
+export interface CyclePhase {
+  kind: "heat" | "motor" | string;
+  offset_s: number;
+  duration_s: number;
+  power_w: number;
 }
 
 export interface KnownLoad {
@@ -149,7 +160,11 @@ export interface Report {
 
 export interface RegistrySignature {
   id: string;
-  kind: "steady" | "cycling" | string;
+  kind: "steady" | "cycling" | "multiphase" | string;
+  /** multiphase (#26): the template, its phases in order */
+  phases?: CyclePhase[];
+  /** multiphase: typical energy of one cycle (kWh) */
+  cycle_kwh?: number | null;
   band: string;
   label: string | null;
   power_w: number;

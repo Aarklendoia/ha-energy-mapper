@@ -18,6 +18,7 @@ from nilm_core.correlation import CorrelationConfig
 from nilm_core.correlation import suggest as correlate
 from nilm_core.registry import (
     RegistryConfig,
+    cycle_templates,
     day_max_w,
     empty_registry,
     expected_signature,
@@ -441,6 +442,7 @@ class Analyzer:
             raise AnalysisError("partial_day", f"{day}: the recorder history starts after midnight")
         tz = ctx.tz
         cfg.peak_reference_w = self.peak_reference(day)
+        cfg.cycle_templates = cycle_templates(self.store.load_registry())
         report = analyze(
             histories, cfg, start, end, local_hour=lambda ts: dt.datetime.fromtimestamp(ts, tz).hour
         )
