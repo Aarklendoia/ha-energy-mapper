@@ -180,8 +180,8 @@ in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow 
 and End move between them; on a `narrow` screen they share the width): **Today** (the day
 picker, summary card, the day card (timeline or stacked chart), what used energy, peaks,
 findings and the quality line),
-**Appliances** (the signature registry and the switched loads; redone by #54) and **To
-review** (administrators whose add-on has a review; a badge counts the proposed signatures).
+**Appliances** (one card per appliance, then the signature registry and the switched
+loads collapsed under "All signatures", #54) and **To review** (administrators whose add-on has a review; a badge counts the proposed signatures).
 The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
 pushed, like the day); `?review=1`, the link of the Repairs notice, opens *To review* and is
 replaced by `tab=review`. A non-administrator asking for `tab=review` gets *Today*. On
@@ -260,6 +260,38 @@ time window and "notable", then what ran with the names of the list and their po
 the unexplained power; selecting a peak zooms the timeline (or the chart) on it. Below, the findings,
 collapsed under "N things to check" (`<details>`). The switched loads card is on
 *Appliances* only.
+
+**Appliances tab** (`frontend/src/appliances.ts`, unit tested, #54). The day picker
+(without *Analyse*), then one card per appliance, the config subentries of the integration
+(`energy_mapper/appliances`). A card shows the name; how it is tracked, from its sources:
+*Recognised in the curve* (signature), *Switch* (switched load), *Power sensor* (sub-meter),
+or *Merged: …* for several, and *estimated* or *measured*; the energy of the period; the runs
+of the day; the last day the add-on saw it run (the latest `last_seen` of its signatures
+and switched loads in the registry); and a mini histogram of its daily energy over the 7 days
+ending on the selected day (30 for the 30-day period), the selected day in full colour. The
+day's energy and runs come from the rows of *What used energy* of that day's report (the
+series of its switched loads, matched by entity through `known_loads`, and of its
+signatures, `sig:<registry id>`), so the card agrees with *Today*; a day without a report
+falls back to the statistics. The daily energy comes from Home Assistant's long-term
+statistics that the integration imports for each appliance (§ 8.1): one
+`recorder/statistics_during_period` request (`period: "day"`, `types: ["change"]`) for the
+30 days ending on the selected day, made while the tab is shown and again after a refresh or
+an analysis; days are those of Home Assistant's time zone. Period chips *Day* / *7 days* /
+*30 days* (`aria-pressed`) are shown when the statistics could be read: the 7- and 30-day
+cards give the sum and "used N of 7 days" instead of runs. Without statistics (an older
+Home Assistant, or none imported yet) the cards show the day of the report only, with a
+hint. An appliance measured by a power sensor only has no series in the report and no
+statistic of its own: its card says its energy is in its own sensor. Cards are sorted by
+the energy of the period, then by name; a card is the dot colour of its chart series. A card
+that ran that day is a button: it selects its series on *Today* (`selectedAppliance`, the
+series with most energy for a merged appliance) and switches tab, where the timeline and the
+list highlight it. Administrators get a *Settings* link on each card to the integration page
+(`/config/integrations/integration/energy_mapper`, through Home Assistant's own navigation),
+where the appliance's subentry is reconfigured (rename, link, merge); non-administrators see
+the cards without it. Below the cards, the signature registry (table, or a list on `narrow`
+screens) and the switched loads are collapsed under "All signatures (N)" (`<details>`),
+open when the integration is older than 0.7.0 (no cards). The grid has as many columns as fit
+240 px; on a phone the cards take the width.
 
 **Narrow widths** (#53). The panel fits from 360 px up without horizontal page scroll:
 toolbars and chips wrap, long names and entity ids break (`overflow-wrap: anywhere` on the
@@ -557,7 +589,7 @@ Other paths answer `404 {"error": "not_found"}`, other methods on known paths
 ## 8. Integration: websocket API, appliances and statistics
 
 Registered once in `async_setup`. Every command needs an authenticated user; `analyze` needs an
-administrator. Except `status` and `day_stats`, each command relays one add-on request and
+administrator. Except `status`, `day_stats` and `appliances`, each command relays one add-on request and
 returns its JSON unchanged.
 
 | Command | Parameters | Result |
@@ -568,6 +600,7 @@ returns its JSON unchanged.
 | `energy_mapper/analyze` | `day` | `POST /api/analyze?day=<day>` (timeout 600 s; admin only) |
 | `energy_mapper/day_stats` | `days`: list of at most 62 days | `{"days": {"YYYY-MM-DD": {"house_kwh", "max_house_w", "notable_peaks", "last_notable"}}}`; days without a report are left out. The integration reads the reports (4 at a time) and caches the totals (up to 400 days; an analysis invalidates its day). |
 | `energy_mapper/signatures` | – | `GET /api/signatures` |
+| `energy_mapper/appliances` | – | `{"entry_id", "appliances": [{"key", "name", "subentry_id", "statistic_id", "power_w", "sources"}]}`: the appliance subentries, sorted by name, for every user (the panel's *Appliances* tab, #54). Answered by the integration alone; `statistic_id` is null for an appliance without a statistic of its own (power sensor only). Integration 0.7.0+. |
 | `energy_mapper/settings` | – | `GET /api/settings` (settings are changed in the options flow) |
 | `energy_mapper/review` | – | `GET /api/review`, `"repair"` (the notice is on) and `"appliances"` (`[{key, name}]` of the subentries, sorted by name: what a signature can be merged into); admin only |
 | `energy_mapper/validate` | `signature_id`, `name`, `entity_id`?, `on_states`? (at most 20) | Creates the appliance (§ 8.3, § 8.4): `{"appliance": {"key", "name", "sources"}}`; admin only |

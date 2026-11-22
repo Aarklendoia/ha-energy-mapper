@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
+from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.energy_mapper.appliances import SUBENTRY_TYPE, appliance_of_key, statistic_id
 from custom_components.energy_mapper.const import CONF_DISCOVERED, CONF_URL, DOMAIN, OPT_SETTINGS
@@ -591,3 +592,49 @@ async def test_adoption_and_old_addon(
     await refresh(hass, entry)
     assert coordinator.appliances_api is False
     assert pushed(aioclient_mock) == []
+
+
+async def test_appliances_command(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    aioclient_mock: AiohttpClientMocker,
+    entry: MockConfigEntry,
+) -> None:
+    """energy_mapper/appliances (#54): the subentries for every user, read-only."""
+    mock_addon(aioclient_mock, two_days(), full_registry())
+    await setup(hass, entry)
+    await reconfigure(
+        hass, entry, "signature:medium-2000w", "link_sensor", {"entity_id": "sensor.plug_power"}
+    )
+    calls = len(aioclient_mock.mock_calls)
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id({"type": "energy_mapper/appliances"})
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    result = msg["result"]
+    assert result["entry_id"] == entry.entry_id
+    subs = subentries(entry)
+    by_key = {a["key"]: a for a in result["appliances"]}
+    # sorted by name
+    assert [a["name"] for a in result["appliances"]] == ["Kettle", "Tea kettle", "Water heater"]
+    heater = by_key["load:switch.water_heater"]
+    assert heater["subentry_id"] == subs["load:switch.water_heater"].subentry_id
+    assert heater["statistic_id"] == HEATER
+    assert heater["sources"] == [{"type": "switched_load", "entity_id": "switch.water_heater"}]
+    assert "power_w" in heater
+    assert by_key["signature:short-2000w"]["statistic_id"] == KETTLE
+    # measured by a power sensor only: no statistic of its own
+    tea = by_key["signature:medium-2000w"]
+    assert tea["statistic_id"] is None
+    assert tea["sources"] == [{"type": "submeter", "entity_id": "sensor.plug_power"}]
+    # answered by the integration alone
+    assert len(aioclient_mock.mock_calls) == calls
+
+    # not set up
+    await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    await client.send_json_auto_id({"type": "energy_mapper/appliances"})
+    msg = await client.receive_json()
+    assert msg["error"]["code"] == "not_loaded"
