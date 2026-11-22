@@ -287,6 +287,21 @@
     "signatures_to_review": {
       "title": "Energy Mapper : signatures à examiner",
       "description": "Energy Mapper a trouvé des signatures récurrentes qui peuvent être des appareils (à examiner : {count}). Ouvrez le [panneau Energy Mapper]({url}) pour les nommer, attendre plus de données ou les ignorer. Cet avis peut être désactivé dans les options de l'intégration."
+    },
+    "takeover_removed": {
+      "title": "Energy Mapper : remettre {device} dans le tableau de bord Énergie ?",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remettre {device} dans le tableau de bord Énergie",
+            "description": "L'appareil {name} avait pris en charge le suivi de {device} dans le tableau de bord Énergie. Il a été supprimé, avec sa statistique d'énergie : le tableau de bord Énergie ne compte plus cet appareil. Validez pour remettre {device} comme appareil individuel, à la place de {name}. Rien d'autre n'est modifié ; ignorez ce problème pour laisser le tableau de bord Énergie tel quel."
+          }
+        },
+        "abort": {
+          "not_loaded": "Energy Mapper n'est pas configuré.",
+          "nothing_to_restore": "Il n'y a plus rien à remettre."
+        }
+      }
     }
   }
 }

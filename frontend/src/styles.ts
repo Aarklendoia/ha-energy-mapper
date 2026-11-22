@@ -1748,6 +1748,48 @@ export const panelStyles = css`
   .appliance-bar.zero {
     background: var(--disabled-color, #bdbdbd);
   }
+  .appliance-takeover {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border-top: 1px solid var(--divider-color);
+    padding: 8px 12px;
+    font-size: var(--ha-font-size-s, 13px);
+    color: var(--secondary-text-color);
+  }
+  .takeover-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px 8px;
+  }
+  .takeover-line > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .takeover-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    color: var(--primary-text-color);
+  }
+  .takeover-confirm p {
+    margin: 0;
+  }
+  .takeover-confirm select {
+    width: 100%;
+    max-width: 100%;
+  }
+  .takeover-error {
+    color: var(--error-color);
+  }
+  .takeover-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
   .appliance-actions {
     display: flex;
     justify-content: flex-end;

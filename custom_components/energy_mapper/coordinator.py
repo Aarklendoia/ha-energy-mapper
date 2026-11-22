@@ -52,6 +52,7 @@ from .statistics import (
     hourly_values,
 )
 from .statistics import async_merge as async_merge_statistics
+from .takeover import TakeoverError, in_dashboard, label, pickable, restore, suggestion, take_over
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ type EnergyMapperConfigEntry = ConfigEntry[EnergyMapperData]
 
 STORAGE_VERSION = 1
 EXCLUDED_KEY = "excluded_switched_loads"
+# Repairs issue offering to restore the device an appliance took over in the
+# Energy dashboard, once that appliance is deleted (#13)
+ISSUE_TAKEOVER_PREFIX = "takeover_removed_"
 
 
 class ReviewError(Exception):
@@ -160,6 +164,10 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._warned_old_addon = False
         # signatures waiting for a review (None: unknown, or an add-on before 0.6.0)
         self.review_count: int | None = None
+        # appliance key -> the Energy dashboard device its statistic replaced
+        # (#13): {"statistic_id", "replaced", "children", "name", "at"}
+        self.takeovers: dict[str, dict[str, Any]] = {}
+        self._energy_lock = asyncio.Lock()
 
     # -- persistence ----------------------------------------------------------
     async def async_load(self) -> None:
@@ -170,8 +178,18 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.powers = dict(data.get("powers") or {})
         self.declared = bool(data.get("declared"))
         self._reimport = set(data.get("reimport") or [])
+        self.takeovers = {
+            k: v
+            for k, v in (data.get("takeovers") or {}).items()
+            if isinstance(v, dict) and v.get("replaced")
+        }
         self._known = self.appliances_by_subentry()
         self.appliances = {a.key: a for a in self._known.values()}
+        # the Repairs issues of deleted appliances are not persistent
+        keys = {a.key for a in self._known.values()}
+        for key in self.takeovers:
+            if key not in keys:
+                self._async_takeover_issue(key)
 
     async def _async_save(self) -> None:
         await self._store.async_save(
@@ -182,6 +200,7 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "powers": self.powers,
                 "declared": self.declared,
                 "reimport": sorted(self._reimport),
+                "takeovers": self.takeovers,
             }
         )
 
@@ -239,6 +258,11 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         async_clear(self.hass, {a.statistic_id for a in removed} - used)
         for a in removed:
             self.last_seen.pop(a.key, None)
+        # a deleted appliance that had taken over a device of the Energy
+        # dashboard: its statistic is gone, offer to put the device back
+        for a in removed:
+            if a.key in self.takeovers and a.key not in {c.key for c in current.values()}:
+                self._async_takeover_issue(a.key)
         for sid, a in current.items():
             old = previous.get(sid)
             if old is not None and old.name != a.name:
@@ -441,6 +465,154 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         answer = await self.client.review_decision(sid, action)
         await self.async_update_review()
         return answer
+
+    # -- take over tracking in the Energy dashboard (#13) ---------------------
+    async def _async_energy_manager(self) -> Any:
+        # imported here: the energy integration is only needed for this
+        from homeassistant.components.energy.data import async_get_manager  # noqa: PLC0415
+
+        return await async_get_manager(self.hass)
+
+    def _entity_maps(self, entity_ids: Iterable[str]) -> tuple[dict[str, str | None], dict[str, str | None]]:
+        """(source_entity, device id) of these entities and of their sources."""
+        ent_reg = er.async_get(self.hass)
+        source_of: dict[str, str | None] = {}
+        device_of: dict[str, str | None] = {}
+        todo = list(entity_ids)
+        while todo:
+            entity_id = todo.pop()
+            if entity_id in device_of:
+                continue
+            entity = ent_reg.async_get(entity_id)
+            device_of[entity_id] = entity.device_id if entity else None
+            state = self.hass.states.get(entity_id)
+            source = state.attributes.get("source_entity") if state else None
+            source_of[entity_id] = source if isinstance(source, str) else None
+            if source_of[entity_id]:
+                todo.append(source_of[entity_id])
+        return source_of, device_of
+
+    def _names(self, devices: Iterable[dict[str, Any]]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for d in devices:
+            stat = d.get("stat_consumption")
+            state = self.hass.states.get(stat) if stat else None
+            if state is not None and state.name:
+                out[stat] = state.name
+        return out
+
+    async def async_tracking(self) -> dict[str, Any]:
+        """For the panel: the individual devices of the Energy dashboard that
+        an appliance may take over, and for each appliance with a statistic
+        of its own whether that statistic is in the dashboard, which device
+        it took over, and the devices that are probably it."""
+        manager = await self._async_energy_manager()
+        devices = [dict(d) for d in (manager.data or {}).get("device_consumption") or []]
+        candidates = pickable(devices)
+        appliances = [a for a in self.appliances_by_subentry().values() if a.estimated]
+        relays = {a.key: [s.id for s in a.sources if s.type == KIND_LOAD] for a in appliances}
+        source_of, device_of = self._entity_maps(
+            [*(d["stat_consumption"] for d in candidates), *(r for rs in relays.values() for r in rs)]
+        )
+        names = self._names(devices)
+        out: list[dict[str, Any]] = []
+        for a in sorted(appliances, key=lambda a: (a.name.casefold(), a.key)):
+            tracked = in_dashboard(devices, a.statistic_id)
+            record = self.takeovers.get(a.key)
+            suggested = []
+            if not tracked:
+                for d in candidates:
+                    reason = suggestion(d, relays[a.key], source_of, device_of)
+                    if reason:
+                        suggested.append({"stat_consumption": d["stat_consumption"], "reason": reason})
+            out.append(
+                {
+                    "key": a.key,
+                    "statistic_id": a.statistic_id,
+                    "in_dashboard": tracked,
+                    "taken_over": (
+                        {
+                            "stat_consumption": record["replaced"]["stat_consumption"],
+                            "name": label(record["replaced"], names),
+                        }
+                        if record and tracked
+                        else None
+                    ),
+                    "suggested": suggested,
+                }
+            )
+        return {
+            "devices": [
+                {
+                    "stat_consumption": d["stat_consumption"],
+                    "name": label(d, names),
+                    "included_in_stat": d.get("included_in_stat"),
+                }
+                for d in candidates
+            ],
+            "appliances": out,
+        }
+
+    async def async_take_over(self, key: str, stat_consumption: str) -> dict[str, Any]:
+        """Replace the Energy dashboard device ``stat_consumption`` by the
+        statistic of the appliance ``key``, in one update of the prefs (never
+        both), and remember what was replaced for *Undo*. The user confirmed
+        it in the panel."""
+        async with self._energy_lock:
+            appliance = next((a for a in self.appliances_by_subentry().values() if a.key == key), None)
+            if appliance is None:
+                raise TakeoverError("not_found", f"no appliance {key}")
+            if not appliance.estimated:
+                raise TakeoverError("no_statistic", f"{appliance.name} has no statistic of its own")
+            if appliance.statistic_id not in await async_statistic_ids(self.hass):
+                raise TakeoverError("no_statistic", f"{appliance.name}: no hourly energy imported yet")
+            manager = await self._async_energy_manager()
+            devices = list((manager.data or {}).get("device_consumption") or [])
+            new_devices, record = take_over(devices, stat_consumption, appliance.statistic_id)
+            record.update(name=appliance.name, at=dt.datetime.now(dt.UTC).isoformat())
+            await manager.async_update({"device_consumption": new_devices})
+            self.takeovers[key] = record
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TAKEOVER_PREFIX + key)
+            await self._async_save()
+        _LOGGER.info("%s takes over %s in the Energy dashboard", appliance.name, stat_consumption)
+        return {"key": key, "statistic_id": appliance.statistic_id, "replaced": record["replaced"]}
+
+    async def async_undo_take_over(self, key: str) -> dict[str, Any]:
+        """Put back the Energy dashboard device the appliance ``key`` took
+        over, in place of its statistic (never both). Also the fix of the
+        Repairs issue of a deleted appliance."""
+        async with self._energy_lock:
+            record = self.takeovers.get(key)
+            if record is None:
+                raise TakeoverError("not_found", f"{key} took over no device")
+            manager = await self._async_energy_manager()
+            devices = list((manager.data or {}).get("device_consumption") or [])
+            await manager.async_update({"device_consumption": restore(devices, record)})
+            del self.takeovers[key]
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_TAKEOVER_PREFIX + key)
+            await self._async_save()
+        _LOGGER.info("%s restored in the Energy dashboard", record["replaced"].get("stat_consumption"))
+        return {"key": key, "restored": record["replaced"]}
+
+    @callback
+    def _async_takeover_issue(self, key: str) -> None:
+        """A fixable Repairs issue: the appliance ``key`` is deleted, its
+        statistic with it; restore the device it took over?"""
+        record = self.takeovers[key]
+        replaced = record["replaced"]
+        state = self.hass.states.get(replaced.get("stat_consumption") or "")
+        device = str(replaced.get("name") or (state.name if state else None) or replaced["stat_consumption"])
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_TAKEOVER_PREFIX + key,
+            is_fixable=True,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="takeover_removed",
+            translation_placeholders={"name": str(record.get("name") or key), "device": device},
+            data={"entry_id": self.config_entry.entry_id, "key": key},
+        )
 
     # -- polling --------------------------------------------------------------
     async def _async_update_data(self) -> dict[str, Any]:

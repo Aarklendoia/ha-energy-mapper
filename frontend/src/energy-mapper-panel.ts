@@ -29,6 +29,7 @@ import {
   statsRequest,
   type Tracking,
 } from "./appliances.ts";
+import { energyState, pickList, preselected, type TrackingListing } from "./takeover.ts";
 import "./chart.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
@@ -223,6 +224,8 @@ export class EnergyMapperPanel extends LitElement {
     _appliances: { state: true },
     _period: { state: true },
     _applianceStats: { state: true },
+    _tracking: { state: true },
+    _takeover: { state: true },
   };
 
   static override styles = panelStyles;
@@ -281,6 +284,11 @@ export class EnergyMapperPanel extends LitElement {
   /** daily energy of the appliances, 30 days to the selected day (energy
    * null: the statistics could not be read) */
   declare _applianceStats: { key: string; energy: DailyEnergy | null } | null;
+  /** take over tracking in the Energy dashboard (#13, administrators; null: not available) */
+  declare _tracking: TrackingListing | null;
+  /** the confirmation open on an appliance card: take over (with the device
+   * picked) or undo; busy while the integration applies it */
+  declare _takeover: { key: string; mode: "take" | "undo"; stat: string; busy: boolean; error: string | null } | null;
 
   private started = false;
   private requestId = 0;
@@ -327,6 +335,8 @@ export class EnergyMapperPanel extends LitElement {
     this._appliances = null;
     this._period = "day";
     this._applianceStats = null;
+    this._tracking = null;
+    this._takeover = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -439,6 +449,7 @@ export class EnergyMapperPanel extends LitElement {
         this.ws<Registry>({ type: "energy_mapper/signatures" }),
         this.loadReview(),
         this.loadAppliances(),
+        this.loadTracking(),
       ]);
       this._days = days;
       this._registry = registry;
@@ -479,6 +490,47 @@ export class EnergyMapperPanel extends LitElement {
     } catch {
       this._appliances = null;
     }
+  }
+
+  /** What the appliances can take over in the Energy dashboard (#13):
+   * administrators, integration 0.8.0+; else nothing is offered. */
+  private async loadTracking(): Promise<void> {
+    if (!this.isAdmin) {
+      this._tracking = null;
+      return;
+    }
+    try {
+      this._tracking = await this.ws<TrackingListing>({ type: "energy_mapper/tracking" });
+    } catch {
+      this._tracking = null;
+    }
+  }
+
+  /** Take over, or undo, after the confirmation on the card. */
+  private async applyTakeover(name: string): Promise<void> {
+    const form = this._takeover;
+    if (!form || form.busy || (form.mode === "take" && !form.stat)) return;
+    const state = energyState(this._tracking, form.key);
+    const device =
+      form.mode === "undo"
+        ? state.kind === "taken_over"
+          ? state.device
+          : ""
+        : (this._tracking?.devices.find((d) => d.stat_consumption === form.stat)?.name ?? form.stat);
+    this._takeover = { ...form, busy: true, error: null };
+    try {
+      if (form.mode === "take") {
+        await this.ws({ type: "energy_mapper/take_over", appliance: form.key, stat_consumption: form.stat });
+        this._notice = this.t("takeover_done", { name, device });
+      } else {
+        await this.ws({ type: "energy_mapper/undo_take_over", appliance: form.key });
+        this._notice = this.t("takeover_undone", { device });
+      }
+      this._takeover = null;
+    } catch (err) {
+      if (this._takeover) this._takeover = { ...this._takeover, busy: false, error: this.errorText(err) };
+    }
+    await this.loadTracking();
   }
 
   /** The daily energy of the appliances (recorder statistics, one request
@@ -1034,6 +1086,7 @@ export class EnergyMapperPanel extends LitElement {
             ${body}
           </button>`
         : html`<div class="appliance-main">${body}</div>`}
+      ${this.isAdmin ? this.renderTakeover(c, t) : nothing}
       ${this.isAdmin
         ? html`<div class="appliance-actions">
             <a
@@ -1049,6 +1102,77 @@ export class EnergyMapperPanel extends LitElement {
           </div>`
         : nothing}
     </li>`;
+  }
+
+  /** The Energy dashboard line of an appliance card (#13, administrators):
+   * what it took over (Undo), or the device it probably is (Take over
+   * tracking), and the confirmation step before anything changes. */
+  private renderTakeover(c: ApplianceCard, t: Translate): TemplateResult | typeof nothing {
+    const state = energyState(this._tracking, c.key);
+    if (state.kind === "none") return nothing;
+    const form = this._takeover?.key === c.key ? this._takeover : null;
+    const open = (mode: "take" | "undo") =>
+      (this._takeover = { key: c.key, mode, stat: mode === "take" ? preselected(this._tracking, c.key) : "", busy: false, error: null });
+    const cancel = () => (this._takeover = null);
+    let line: TemplateResult;
+    if (state.kind === "taken_over") {
+      line = html`<span>${t("takeover_replaces", { device: state.device })}</span>
+        ${form ? nothing : this.textButton(t("takeover_undo"), () => open("undo"))}`;
+    } else if (state.kind === "tracked") {
+      line = html`<span>${t("takeover_tracked")}</span>`;
+    } else {
+      line = html`<span
+          >${state.kind === "suggested" ? t("takeover_suggested", { device: state.device.name }) : t("takeover_available")}</span
+        >
+        ${form ? nothing : this.textButton(t("takeover_action"), () => open("take"))}`;
+    }
+    let confirm: TemplateResult | typeof nothing = nothing;
+    if (form?.mode === "undo" && state.kind === "taken_over") {
+      confirm = html`<div class="takeover-confirm" role="group" aria-label=${t("takeover_undo")}>
+        <p>${t("takeover_undo_confirm", { device: state.device, name: c.name })}</p>
+        ${form.error ? html`<p class="takeover-error" role="alert">${form.error}</p>` : nothing}
+        <div class="takeover-buttons">
+          ${this.textButton(t("takeover_cancel"), cancel, form.busy)}
+          ${this.textButton(t("takeover_put_back"), () => void this.applyTakeover(c.name), form.busy, "accent")}
+        </div>
+      </div>`;
+    } else if (form?.mode === "take") {
+      const choices = pickList(this._tracking, c.key);
+      const picked = choices.find((x) => x.device.stat_consumption === form.stat)?.device;
+      const selectId = `takeover-${c.key}`;
+      confirm = html`<div class="takeover-confirm" role="group" aria-label=${t("takeover_action")}>
+        <label class="field" for=${selectId}>
+          <span>${t("takeover_device")}</span>
+          <select
+            id=${selectId}
+            class="text-input"
+            .value=${form.stat}
+            ?disabled=${form.busy}
+            @change=${(ev: Event) => {
+              if (this._takeover) this._takeover = { ...this._takeover, stat: (ev.target as HTMLSelectElement).value, error: null };
+            }}
+          >
+            <option value="" ?selected=${!form.stat}></option>
+            ${choices.map(
+              (x) =>
+                html`<option value=${x.device.stat_consumption} ?selected=${x.device.stat_consumption === form.stat}>
+                  ${x.suggested ? t("takeover_suggestion", { name: x.device.name }) : x.device.name}
+                </option>`,
+            )}
+          </select>
+        </label>
+        <p>${picked ? t("takeover_confirm", { device: picked.name, name: c.name }) : t("takeover_confirm_pick")}</p>
+        ${form.error ? html`<p class="takeover-error" role="alert">${form.error}</p>` : nothing}
+        <div class="takeover-buttons">
+          ${this.textButton(t("takeover_cancel"), cancel, form.busy)}
+          ${this.textButton(t("takeover_replace"), () => void this.applyTakeover(c.name), form.busy || !picked, "accent")}
+        </div>
+      </div>`;
+    }
+    return html`<div class="appliance-takeover">
+      <div class="takeover-line">${line}</div>
+      ${confirm}
+    </div>`;
   }
 
   /** The daily energy of the last 7 (or 30) days; the selected day stands out. */

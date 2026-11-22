@@ -27,7 +27,13 @@ from homeassistant.helpers.typing import ConfigType
 from .api import EnergyMapperClient
 from .appliances import SUBENTRY_TYPE, Appliance, appliance_of_key
 from .const import CONF_URL, DOMAIN, ISSUE_REVIEW
-from .coordinator import STORAGE_VERSION, EnergyMapperConfigEntry, EnergyMapperCoordinator, EnergyMapperData
+from .coordinator import (
+    ISSUE_TAKEOVER_PREFIX,
+    STORAGE_VERSION,
+    EnergyMapperConfigEntry,
+    EnergyMapperCoordinator,
+    EnergyMapperData,
+)
 from .panel import async_register_panel, async_unregister_panel
 from .websocket import async_register_commands
 
@@ -148,3 +154,6 @@ async def async_remove_entry(hass: HomeAssistant, entry: EnergyMapperConfigEntry
     """Forget what the entities showed; the statistics are kept (a reinstall continues them)."""
     await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
     ir.async_delete_issue(hass, DOMAIN, ISSUE_REVIEW)
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if domain == DOMAIN and issue_id.startswith(ISSUE_TAKEOVER_PREFIX):
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
