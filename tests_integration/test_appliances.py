@@ -617,8 +617,11 @@ async def test_appliances_command(
     assert result["entry_id"] == entry.entry_id
     subs = subentries(entry)
     by_key = {a["key"]: a for a in result["appliances"]}
-    # sorted by name
-    assert [a["name"] for a in result["appliances"]] == ["Kettle", "Tea kettle", "Water heater"]
+    # all the subentries, sorted by name (the labelled signature left by the
+    # link to a sensor is discovered again as an appliance of its own)
+    assert {a["subentry_id"] for a in result["appliances"]} == {s.subentry_id for s in subs.values()}
+    names = [a["name"].casefold() for a in result["appliances"]]
+    assert names == sorted(names)
     heater = by_key["load:switch.water_heater"]
     assert heater["subentry_id"] == subs["load:switch.water_heater"].subentry_id
     assert heater["statistic_id"] == HEATER
