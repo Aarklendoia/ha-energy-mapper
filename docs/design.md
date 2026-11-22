@@ -184,14 +184,15 @@ legend, its tooltip, the peaks, the signature table and the review use it; the r
 stays as secondary text or tooltip, for debugging. Two alike names in the legend get a
 number ("(2)"), since the legend toggles series by name.
 
-**Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds three tabs
+**Tabs** (`frontend/src/tabs.ts`, unit tested, #47). The panel header holds four tabs
 in the style of Home Assistant's `ha-tab` (own buttons, `role="tablist"`, arrow keys, Home
-and End move between them; on a `narrow` screen they share the width): **Today** (the day
+and End move between them; on a `narrow` screen they share the width, each as wide as its label): **Today** (the day
 picker, summary card, the day card (timeline or stacked chart), what used energy, peaks,
 findings and the quality line),
 **Appliances** (one card per appliance, then the signature registry and the switched
-loads collapsed under "All signatures", #54) and **To review** (administrators whose add-on has a review; a badge counts the proposed signatures).
-The tab is kept in the URL, `?tab=today|appliances|review`, next to `?day=` (replaced, not
+loads collapsed under "All signatures", #54), **To review** (administrators whose add-on has a review; a badge counts the proposed signatures)
+and **Live** (every user, § 8.10; a pulsing dot while it streams).
+The tab is kept in the URL, `?tab=today|appliances|review|live`, next to `?day=` (replaced, not
 pushed, like the day); `?review=1`, the link of the Repairs notice, opens *To review* and is
 replaced by `tab=review`. A non-administrator asking for `tab=review` gets *Today*. On
 *Today*, administrators see a banner "N appliances waiting for a name → Start reviewing"
@@ -1710,6 +1711,96 @@ target and effect, the guided mode's explicit times, an open new appliance compl
 through `async_live_events` (and through `LiveHub`), a cancelled event, entity tracks and their
 refusals, errors and the admin check, the night's link applied from `GET /api/examples`, merges
 keeping the examples, the bound of 20.
+
+### 8.10 The Live tab (#17)
+
+Phase 1 of #17, part 4: the panel side of the live view (§ 8.8) and of the labels (§ 8.9).
+The tab is its own element (`frontend/src/live-view.ts`, `energy-mapper-live`), rendered by
+the panel only while the tab is shown: it subscribes to `energy_mapper/live/subscribe`
+(`hass.connection.subscribeMessage`) when it is connected and the page is visible, and
+unsubscribes when it is removed (another tab, the panel closed) or the page is hidden
+(`visibilitychange`). The tab label carries a pulsing dot while the stream is up
+(`live-state` event; no animation with `prefers-reduced-motion`). Every user sees the tab;
+labelling and the guided mode are for administrators (`live/label` is admin only).
+
+**The stream in the panel** (`frontend/src/live.ts`, unit tested). `applyMessage` folds the
+messages into a store: a `snapshot` replaces the curve and the "now" summary and adds its
+events, each tagged with the live session it came from (`stream`, sent back when labelling);
+events that ran or were provisional and are missing from a new snapshot are dropped. An
+`update` appends its samples (the curve is trimmed to `history_s`) and replaces each event it
+carries unless the panel holds a newer `seq`; a `cancelled` event disappears. A `status` keeps
+the feed (it can still be labelled by its times) but forgets the curve and what runs. Ended
+events stay in the feed for an hour (`FEED_KEEP_S`), longer than the integration keeps them
+(15 min). The panel's clock follows the stream's (`clockOffset`: the newest sample is "now"),
+so relative times and the guided mode do not depend on the browser's clock.
+
+**Screens** (as the validated mock-ups, top to bottom; on a phone the cards stack, *Now* and
+the guided mode above the feed, *Good to know* last):
+
+| Card | Content |
+|---|---|
+| Curve | The house power of the last 15 minutes (ECharts, `live-chart.ts`: the house as a step line with its area, the unidentified power, `residual_w`, as a grey area) and a marker on each switch-on: "?" to label (warning colour), "✓" known or labelled (success colour). A click on a marker opens the labelling of its event (or focuses its line). Legend under the chart |
+| Now | `now.house_w` in large type; the running events (newest first) with their best candidate, "Looks like…" or "Unknown, +850 W" (dashed dot until named), the sub-meters drawing power, the switches that are on, and "Background and not identified" (`unidentified_w`); a split bar of those powers |
+| What just happened | One line per event, newest first: the step, a title (the best candidate's name, "Looks like “2 kW appliance, ~15 min”" for an unnamed signature, "Unknown"; "X: stopped" for an off-step whose switch-on was not seen), a tag (*new*, *seen before*, *known*, *labelled by you*), when ("20 s ago", the clock time after an hour), then *running for* / *ran for* / *switches on and off (8 times in 6 min)*, the recognition score, *provisional* (greyed) and *the solar output moved*. Chips *All* / *To label (n)*. Administrators get **It's…**, **Ignore** (hides the line in this panel only) and, when the best candidate is an unnamed signature, a "⋯" menu **Never propose this again** (`target: "ignore"`) |
+| I'm switching an appliance on | The guided mode (below), administrators |
+| Good to know | The limits: cycles seen by their first phase, two appliances in the same second, below the threshold, only while the panel is open |
+
+Steps below `threshold_w` are not in the stream (the add-on's pairer opens no event for a
+`small` provisional step), so the feed has no greyed "below the threshold" lines; the footer
+and *Good to know* say it instead.
+
+**Lines and words** (`frontend/src/live-feed.ts`, unit tested). The best candidate is the first
+one of confidence *maybe* or better. A candidate is *named* when it has an appliance or a label
+(from the event or from the registry); its name is the appliance's, the label, the switch's
+friendly name, or the provisional name of the registry signature (§ 3, `names.ts`). Its
+structured `reason` is put in words: *Appliance already named* / *Seen 23 times, without a
+name* (the registry's `count`), *not recognised at night yet* (`expected`), *same power
+(2.1 kW)* (`distance` ≤ 0.5) or *usually 1.1 kW*, *usually at this time* (`usual_hour`), *3.5
+times a week* (`per_week`), *the solar output moved at the same time*; a switch: *Water heater
+relay changed 4 s before/after*.
+
+**Inline labelling** (under the line, one at a time): a mini zoom of the house curve around the
+event (a step path, the event's span shaded), what is known about it, the candidates as toggle
+buttons with their reason and a score bar, a name field (with the existing appliances as
+suggestions) and quick picks of frequent names for that power (`appliance-names.ts`: a small
+static English and French list per power band, without the names already taken), *How to track
+it* (curve, switch, power sensor, with Home Assistant's entity picker when needed), a sentence
+saying what saving will do, then **Save** and the errors. The plan (`labelPlan`): a picked
+candidate that belongs to an appliance → `target: "appliance"` (with its `signature_id`); a
+picked unnamed signature → `target: "signature"` with the name typed (an existing appliance's
+name instead: merged into it); a switch without appliance → `new` tracked by it; nothing picked
+→ the typed name is an existing appliance (`appliance`) or a `new` one with its track. The
+message carries `event_id`, `session` and the event's `t_on`, `power_w` (and `t_off` once it
+stopped), so a label still works after the live session ended. After saving, the line becomes
+*labelled by you* and shows the sentence built from the answer's `effect` (`resultEffect`), and
+the panel reloads the appliances, the registry and the review.
+
+**Guided mode** (`frontend/src/guided.ts`, a pure state machine, unit tested): *Which
+appliance?* (a name; an existing appliance's name adds to it) → **I'm switching it on** (the
+stream's time is noted) → *Switch it on now*, waiting up to 2 minutes for a switch-on dated
+after the click (3 s of slack) → *Detected: +850 W at 14:32:05, is it?* **Yes** / **Not it,
+keep waiting** (that event is not proposed again, a minute more at least) → *Switch it off
+whenever you like*, until the event stops or **Finish without the stop** (after 30 minutes the
+switch-on alone is kept) → saved: `live/label` with `source: "guided"`, `target: "new"`
+(tracked in the curve) or `"appliance"`, the event and its explicit times → the sentence of the
+`effect`, **Learn another appliance**. Two switch-ons within 10 s are both offered (*Two steps at
+once*: pick one, or *Neither*); a proposed step that is cancelled goes back to waiting. With no
+step, a rise of the house curve between 30 % and 100 % of the threshold (median of the samples
+after the click against the 15 s before) shows **Too weak** after 30 s, with the advice of a
+measuring plug (#14); otherwise **Nothing detected** after 2 minutes; both offer *Try again*.
+If the panel closes while the appliance runs, its switch-on is saved (open example).
+
+Every status reason of the stream has its message (`statusView`): *connecting*, *disabled*
+(the `live_view` option), *starting*, *overloaded* (with `retry_at`), *error*,
+*addon_unavailable*, *addon_too_old* (with `min_version` and the installed version) and
+*not_loaded*; with nothing to show, the tab holds only that message and *Good to know*.
+
+**Dev harness.** `frontend/dev/index.html` simulates the stream with invented data: a snapshot
+of 15 minutes (an unnamed appliance running, a named one that ran, a hob in cycles, a fresh
++850 W switch-on), then an update every 2 seconds with appliances starting at random (a
+spike that is cancelled among them); the dev bar picks the status (`live=`), turns the random
+appliances off (`random=0`) and adds a +850 W switch-on, its stop, a +180 W rise (too weak) or
+two switch-ons at once, to try the guided mode. `live/label` answers in memory.
 
 ## 9. Settings and precedence
 

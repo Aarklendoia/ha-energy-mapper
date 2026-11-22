@@ -69,8 +69,9 @@ Technical details: [design document](docs/design.md) and the
   service, and the integration only adds its own devices, sensors and statistics; the one
   change it makes to the Energy dashboard, *Take over tracking* (below), waits for your
   confirmation and can be undone;
-- work in real time: the analysis runs at night on the previous day (live detection is
-  planned for v2).
+- work in real time for its figures: the analysis runs at night on the previous day. The
+  *Live* tab shows the steps as they happen, to label appliances, but the appliances' power
+  and on/off entities are not live yet (planned for v2).
 
 **What it recognises well today:** appliances that draw a steady power of a few hundred watts
 or more and switch cleanly: kettle, oven, toaster, water heater, electric radiators, the
@@ -204,11 +205,11 @@ without the integration. See the [add-on documentation](energy_mapper/DOCS.md#co
 ## Reading the panel
 
 The panel follows your Home Assistant theme (light and dark), language (English and French)
-and number and time formats, and adapts to narrow screens (mobile app). Three tabs split it:
+and number and time formats, and adapts to narrow screens (mobile app). Four tabs split it:
 **Today** (the selected day, for the whole household), **Appliances** (one card per
-appliance, and every signature) and, for administrators, **To review** with the number of signatures waiting
-for a name; *Today* shows a banner while some wait. The tab and the day are kept in the
-address, so a view can be bookmarked.
+appliance, and every signature), for administrators **To review** with the number of signatures waiting
+for a name (*Today* shows a banner while some wait), and **Live** (what the house does right
+now, below). The tab and the day are kept in the address, so a view can be bookmarked.
 
 - **Day picker**: Home Assistant's date picker, with presets *Yesterday*, *Day before
   yesterday*, *Highest use (30 days)* and *Last notable peak*. Administrators can **analyse a
@@ -323,6 +324,41 @@ address, so a view can be bookmarked.
   (under 10 min, 10 to 60 min, over 1 h, cycling) and the power when it was first seen; it
   stays the same from one night to the next.
 
+- **Live** (tab, [#17](https://github.com/sylvaing/ha-energy-mapper/issues/17)): what the
+  house does right now, to name appliances by switching them on. It runs **only while the tab
+  is open** (a pulsing dot on the tab while it streams). From top to bottom:
+  - **the curve of the last 15 minutes**: the house power, the part not identified in grey, and
+    a marker on each switch-on: **?** to label, **✓** known. Select a marker to label it;
+  - **Now**: the current power in large type, the appliances probably running (recognised
+    ones, *Looks like…* for an unnamed signature, *Unknown, +850 W*), the plugs and sensors
+    drawing power, the switches that are on, the rest (*Background and not identified*) and a
+    split bar;
+  - **What just happened**: one line per switch-on, newest first; its stop completes the line
+    (*ran for 2 min 10 s*); alternating steps of the same size are one line (*switches on and
+    off, 8 times in 6 min*). A line says *new*, *seen before* (an unnamed signature),
+    *known* or *labelled by you*, is greyed while provisional (a spike disappears), and says
+    when the solar output moved at the same time (never suggested automatically). *To label*
+    filters the lines still to name. For administrators: **It's…** opens the labelling under
+    the line (a zoom of the step, the 3 best candidates with why, such as *Seen 23 times,
+    without a name · same power · usually at this time*, and a score; a name, with frequent
+    names for that power; how to track it: curve, switch or power sensor; and a sentence
+    saying what saving will do). Naming a step that matches an unnamed signature is the
+    review's *Validate*; a known appliance gets an example. **Ignore** only hides the line;
+    the **⋯** menu's *Never propose this again* is the review's *Ignore*;
+  - **I'm switching an appliance on** (administrators): type its name, click *I'm switching
+    it on*, switch it on within 2 minutes; Energy Mapper shows the step it saw (*Detected:
+    +850 W at 14:32:05, is it?*), waits for you to switch it off (or *Finish without the
+    stop*) and saves it. Two steps at once are both offered; a change too small for the curve
+    says so and suggests a measuring plug instead (*Learn from a plug*);
+  - **Good to know**: the limits below.
+
+  Limits of the live view: a step is provisional after about 3 meter readings (5–10 s) and
+  confirmed after 20–40 s; appliances under the step threshold (300 W) make no step; two
+  appliances switched on in the same second make one step; a washing machine or dishwasher
+  shows by its first phase only (label it: the night rebuilds the whole cycle).
+
+  <img alt="The Live tab: the house curve of the last 15 minutes with markers, what just happened, what runs now and the guided mode (synthetic data)" src="https://raw.githubusercontent.com/sylvaing/ha-energy-mapper/main/docs/images/panel-live.png">
+
 Days older than the report retention keep their totals, peaks and signatures, without the
 curve.
 
@@ -369,8 +405,8 @@ learned signature to the appliance and removes the plug from its sources: unplug
 appliance is now tracked from the curve. *Stop learning* drops what was learned. An appliance
 below the step threshold (300 W by default) cannot be learned this way.
 
-**Labelled examples** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), for the
-coming *Live* tab): when you say which appliance a step was ("this is the toaster"), the use
+**Labelled examples** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), from the
+*Live* tab): when you say which appliance a step was ("this is the toaster"), the use
 (start, stop, power) is kept as a **labelled example** of that appliance, at most 20 per
 appliance, in its settings in Home Assistant (so in every backup). Naming a step that matches an
 unnamed signature is the review's *Validate*; a new appliance whose start and stop are known is
@@ -429,7 +465,7 @@ on/off states come with real-time detection
 - The add-on only **reads** Home Assistant (states, entity registry, Energy dashboard settings
   and recorder history); it never calls a service. The integration writes only its own
   devices, sensors and statistics.
-- The live view (the coming *Live* tab, #17) follows the state changes of the meters and
+- The live view (the *Live* tab, #17) follows the state changes of the meters and
   switched loads the analysis already reads, **only while the tab is open**, keeps 15 minutes
   in memory and stores nothing; it stops 2 minutes after the tab is closed. The add-on option
   `live_view: false` turns it off entirely. The uses you label there are kept with the
@@ -478,9 +514,8 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
   a benchmark on public NILM datasets ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – Live**](https://github.com/sylvaing/ha-energy-mapper/milestone/3): a *Live* tab to
   see steps as they happen and label appliances by hand
-  ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), in progress: the streamed
-  detector and the on-demand add-on service are done, labelled examples and the tab come
-  next), per-phase analysis, recognition of multi-phase appliance cycles.
+  ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), done; live entities for
+  automations come next), per-phase analysis, recognition of multi-phase appliance cycles.
 - [**v3 – Publish**](https://github.com/sylvaing/ha-energy-mapper/milestone/4): release
   process, default HACS and add-on store listing, standalone Docker image for Container/Core.
 
@@ -604,8 +639,10 @@ l'add-on).
   jamais de service, et l'intégration n'ajoute que ses propres appareils, capteurs et
   statistiques ; le seul changement qu'elle fait au tableau Énergie, *Prendre en charge le
   suivi* (plus bas), attend votre confirmation et peut être annulé ;
-- fonctionne pas en temps réel : l'analyse tourne la nuit sur la veille (la détection en
-  direct est prévue en v2).
+- fonctionne pas en temps réel pour ses chiffres : l'analyse tourne la nuit sur la veille.
+  L'onglet *En direct* montre les marches au moment où elles arrivent, pour étiqueter les
+  appareils, mais les entités de puissance et de marche des appareils ne sont pas encore en
+  direct (prévu en v2).
 
 **Ce qu'il reconnaît bien aujourd'hui :** les appareils qui consomment une puissance stable
 de quelques centaines de watts ou plus et s'allument franchement : bouilloire, four,
@@ -751,10 +788,11 @@ l'add-on), utiles sans l'intégration. Voir la
 
 Le panneau suit le thème de Home Assistant (clair et sombre), sa langue (anglais et
 français) et ses formats de nombres et d'heures, et s'adapte aux écrans étroits (application mobile).
-Trois onglets le partagent : **Ma journée** (le jour choisi, pour tout le foyer), **Appareils**
-(une carte par appareil, et toutes les signatures) et, pour les administrateurs, **À examiner** avec le
-nombre de signatures qui attendent un nom ; *Ma journée* affiche un bandeau tant qu'il y en a.
-L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en favori.
+Quatre onglets le partagent : **Ma journée** (le jour choisi, pour tout le foyer), **Appareils**
+(une carte par appareil, et toutes les signatures), pour les administrateurs **À examiner** avec le
+nombre de signatures qui attendent un nom (*Ma journée* affiche un bandeau tant qu'il y en a),
+et **En direct** (ce que fait la maison en ce moment, plus bas). L'onglet et le jour sont gardés
+dans l'adresse : une vue peut être mise en favori.
 
 - **Choix du jour** : le sélecteur de date de Home Assistant, avec les raccourcis *Hier*,
   *Avant-hier*, *Conso. max. (30 j)* et *Dernier pic notable*. Les administrateurs peuvent
@@ -886,6 +924,47 @@ L'onglet et le jour sont gardés dans l'adresse : une vue peut être mise en fav
   affiché dessous, donne la tranche de durée (moins de 10 min, 10 à 60 min, plus d'1 h,
   cyclique) et la puissance lors de sa création ; il reste le même d'une nuit à l'autre.
 
+- **En direct** (onglet, [#17](https://github.com/sylvaing/ha-energy-mapper/issues/17)) : ce
+  que fait la maison en ce moment, pour nommer les appareils en les allumant. Il ne tourne
+  **que quand l'onglet est ouvert** (un point qui pulse sur l'onglet pendant le direct). De haut
+  en bas :
+  - **la courbe des 15 dernières minutes** : la puissance de la maison, la part non identifiée
+    en gris, et un repère sur chaque démarrage : **?** à étiqueter, **✓** connu. Cliquez un
+    repère pour l'étiqueter ;
+  - **Maintenant** : la puissance actuelle en gros, les appareils probablement en marche
+    (reconnus, *Ressemble à…* pour une signature sans nom, *Inconnu, +850 W*), les prises et
+    capteurs qui consomment, les interrupteurs allumés, le reste (*Fond et non identifié*) et
+    une barre de répartition ;
+  - **Ce qui vient de se passer** : une ligne par démarrage, la plus récente en haut ; l'arrêt
+    complète la ligne (*a fonctionné 2 min 10 s*) ; des marches alternées de même taille font
+    une seule ligne (*s'allume et s'éteint, 8 fois en 6 min*). Une ligne dit *nouveau*, *déjà
+    signalé* (une signature sans nom), *connu* ou *étiqueté par vous*, est grisée tant qu'elle
+    est provisoire (un pic disparaît), et signale quand le solaire a bougé en même temps
+    (jamais suggéré automatiquement). *À étiqueter* filtre les lignes encore à nommer. Pour les
+    administrateurs : **C'est…** ouvre l'étiquetage sous la ligne (un zoom de la marche, les 3
+    meilleurs candidats avec la raison, par exemple *Déjà signalé 23 fois, sans nom · même
+    puissance · d'habitude à cette heure*, et un score ; un nom, avec les noms fréquents à
+    cette puissance ; comment le suivre : courbe, interrupteur ou capteur de puissance ; et une
+    phrase qui dit ce que fera l'enregistrement). Nommer une marche qui correspond à une
+    signature sans nom revient à la *valider* dans la revue ; un appareil connu reçoit un
+    exemple. **Ignorer** masque seulement la ligne ; *Ne plus me proposer*, dans le menu
+    **⋯**, est la décision *Ignorer* de la revue ;
+  - **J'allume un appareil** (administrateurs) : tapez son nom, cliquez *Je vais l'allumer*,
+    allumez-le dans les 2 minutes ; Energy Mapper montre la marche vue (*Détecté : +850 W à
+    14:32:05, c'est bien lui ?*), attend que vous l'éteigniez (ou *Terminer sans l'arrêt*) et
+    l'enregistre. Deux marches à la fois sont proposées toutes les deux ; une variation trop
+    faible pour la courbe est signalée, avec le conseil d'une prise de mesure (*Apprendre d'une
+    prise*) ;
+  - **À savoir** : les limites ci-dessous.
+
+  Limites du direct : une marche est provisoire après environ 3 relevés du compteur (5 à
+  10 s) et confirmée après 20 à 40 s ; un appareil sous le seuil de marche (300 W) ne fait pas
+  de marche ; deux appareils allumés à la même seconde ne font qu'une marche ; un lave-linge ou
+  un lave-vaisselle n'apparaît que par sa première phase (étiquetez-la : la nuit reconstitue le
+  cycle entier).
+
+  <img alt="L'onglet En direct : la courbe des 15 dernières minutes avec ses repères, ce qui vient de se passer, ce qui tourne et le mode guidé (données synthétiques)" src="https://raw.githubusercontent.com/sylvaing/ha-energy-mapper/main/docs/images/panel-live.png">
+
 Les jours plus anciens que la conservation des rapports gardent leurs totaux, pics et
 signatures, sans la courbe.
 
@@ -934,8 +1013,8 @@ signature apprise à l'appareil et retire la prise de ses sources : débranchez-
 est désormais suivi dans la courbe. *Arrêter l'apprentissage* oublie ce qui a été appris. Un
 appareil sous le seuil de marche (300 W par défaut) ne peut pas être appris ainsi.
 
-**Exemples étiquetés** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), pour le
-futur onglet *En direct*) : quand vous dites quel appareil a fait une marche (« c'est le
+**Exemples étiquetés** ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), depuis
+l'onglet *En direct*) : quand vous dites quel appareil a fait une marche (« c'est le
 grille-pain »), l'utilisation (début, fin, puissance) est gardée comme **exemple étiqueté** de
 cet appareil, 20 au plus par appareil, dans ses réglages de Home Assistant (donc dans toute
 sauvegarde). Nommer une marche qui correspond à une signature sans nom revient à la *valider*
@@ -1000,7 +1079,7 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
 - L'add-on ne fait que **lire** Home Assistant (états, registre des entités, réglages du
   tableau Énergie et historique du *recorder*) ; il n'appelle jamais de service.
   L'intégration n'écrit que ses propres appareils, capteurs et statistiques.
-- La vue en direct (le futur onglet *En direct*, #17) suit les changements d'état des
+- La vue en direct (l'onglet *En direct*, #17) suit les changements d'état des
   compteurs et interrupteurs que l'analyse lit déjà, **seulement quand l'onglet est ouvert**,
   garde 15 minutes en mémoire et n'enregistre rien ; elle s'arrête 2 minutes après la
   fermeture de l'onglet. L'option `live_view: false` de l'add-on la coupe complètement. Les
@@ -1053,9 +1132,9 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
   sur des jeux de données NILM publics ([#28](https://github.com/sylvaing/ha-energy-mapper/issues/28)).
 - [**v2 – En direct**](https://github.com/sylvaing/ha-energy-mapper/milestone/3) : un onglet
   *En direct* pour voir les marches au moment où elles arrivent et étiqueter les appareils à la
-  main ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), en cours : le détecteur
-  en flux et le service à la demande de l'add-on sont faits, les exemples étiquetés et l'onglet
-  suivent), analyse par phase, reconnaissance des cycles des appareils à plusieurs phases.
+  main ([#17](https://github.com/sylvaing/ha-energy-mapper/issues/17), fait ; les entités en
+  direct pour les automatisations suivent), analyse par phase, reconnaissance des cycles des
+  appareils à plusieurs phases.
 - [**v3 – Publication**](https://github.com/sylvaing/ha-energy-mapper/milestone/4) : processus
   de version, référencement par défaut dans HACS et la boutique d'add-ons, image Docker
   autonome pour Container/Core.

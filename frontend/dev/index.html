@@ -10,7 +10,9 @@
       From the repository root:
         (cd frontend && npm run build) && python3 -m http.server 8765
       then open http://localhost:8765/frontend/dev/index.html
-      (options: theme=dark, language=fr, admin=0, scenario=empty|many, tab=, bare=1)
+      (options: theme=dark, language=fr, admin=0, scenario=empty|many, tab=, bare=1,
+      live=starting|disabled|overloaded|error|addon_unavailable|addon_too_old|not_loaded,
+      random=0: no random appliance in the simulated live stream)
       The HA elements (ha-alert, ha-date-range-nav...) are not defined here:
       the panel's own fallbacks are what you see (a native date input instead
       of HA's date picker).
@@ -94,6 +96,25 @@
         </select>
       </label>
       <label><input type="checkbox" id="admin" checked /> admin</label>
+      <label>live
+        <select id="live">
+          <option value="running">streaming</option>
+          <option value="starting">starting</option>
+          <option value="disabled">disabled</option>
+          <option value="overloaded">overloaded</option>
+          <option value="error">error</option>
+          <option value="addon_unavailable">add-on unavailable</option>
+          <option value="addon_too_old">add-on too old</option>
+          <option value="not_loaded">not loaded</option>
+        </select>
+      </label>
+      <label><input type="checkbox" id="random" checked /> random appliances</label>
+      <span>switch on:
+        <button type="button" data-live="on">+850 W</button>
+        <button type="button" data-live="off">off</button>
+        <button type="button" data-live="weak">+180 W</button>
+        <button type="button" data-live="two">two at once</button>
+      </span>
     </div>
     <energy-mapper-panel></energy-mapper-panel>
 
@@ -107,10 +128,11 @@
 
       const $ = (id) => document.getElementById(id);
       const params = new URLSearchParams(location.search);
-      for (const id of ["theme", "language", "number_format", "time_format", "scenario"]) {
+      for (const id of ["theme", "language", "number_format", "time_format", "scenario", "live"]) {
         if (params.has(id)) $(id).value = params.get(id);
       }
       if (params.get("admin") === "0") $("admin").checked = false;
+      if (params.get("random") === "0") $("random").checked = false;
       // ?bare=1: without the developer bar (README screenshots)
       if (params.get("bare") === "1") $("dev").style.display = "none";
 
@@ -219,6 +241,9 @@
             delete TAKEOVERS[a.key];
             return { key: a.key };
           }
+          case "energy_mapper/live/label":
+            await sleep(400);
+            return liveLabel(msg);
           case "energy_mapper/analyze":
             await sleep(1500);
             return { day: msg.day, ok: true };
@@ -599,6 +624,363 @@
         ].map(([id, name, dc]) => [id, { entity_id: id, state: "on", attributes: { friendly_name: name, device_class: dc } }]),
       );
 
+      // -- the live view (#17): a simulated stream, invented data ----------------
+      // hass.connection.subscribeMessage("energy_mapper/live/subscribe") gets a
+      // snapshot of 15 minutes, then an update every 2 s. Appliances start at
+      // random; the dev bar adds a +850 W switch-on, its stop, a +180 W rise
+      // (too weak for a step) and two switch-ons at once (guided mode).
+      const LIVE_SIGS = {
+        "cyc-1500w": { kind: "cycling", band: "session", power_w: 1500, per_week: 4, count: 8 },
+        "medium-2100w": { kind: "steady", band: "medium", power_w: 2095, per_week: 3, count: 7 },
+        "medium-2600w": { kind: "steady", band: "medium", power_w: 2598, per_week: 2.5, count: 6 },
+        "short-2000w": { kind: "steady", band: "short", power_w: 2008, per_week: 9, count: 4 },
+        "short-500w": { kind: "steady", band: "short", power_w: 492, per_week: 1, count: 3 },
+        "short-1500w": { kind: "steady", band: "short", power_w: 1503, per_week: 2, count: 3 },
+        "long-900w": { kind: "steady", band: "long", power_w: 899, per_week: 1.5, count: 2 },
+      };
+      const ownerOf = (id) => APPLIANCE_LIST.find((a) => a.sources.some((x) => x.type === "signature" && x.id === id));
+      function cand(id, score, power) {
+        const s = LIVE_SIGS[id];
+        const owner = ownerOf(id);
+        return {
+          source: "signature",
+          signature_id: id,
+          label: null,
+          appliance: owner ? owner.key : null,
+          kind: s.kind,
+          band: s.band,
+          power_w: s.power_w,
+          score,
+          confidence: score >= 0.6 ? "likely" : score >= 0.3 ? "maybe" : "unknown",
+          reason: {
+            power_w: s.power_w,
+            distance: Math.round((Math.abs(power - s.power_w) / Math.max(60, 0.25 * s.power_w)) * 100) / 100,
+            usual_hour: score > 0.7,
+            per_week: s.per_week,
+            expected: false,
+            pv_moved: false,
+          },
+        };
+      }
+      const POOL = [
+        { w: 1960, dur: [50, 100], cands: (w) => [cand("short-2000w", 0.83, w), cand("medium-2100w", 0.31, w)] },
+        { w: 1490, dur: [40, 80], cands: (w) => [cand("short-1500w", 0.74, w), cand("cyc-1500w", 0.32, w)] },
+        { w: 2590, dur: [90, 160], cands: (w) => [cand("medium-2600w", 0.88, w)] },
+        { w: 720, dur: [30, 60], cands: () => [] },
+        { w: 2110, dur: [60, 120], cands: (w) => [cand("medium-2100w", 0.66, w), cand("short-2000w", 0.41, w)] },
+        { w: 1180, dur: [6, 8], spike: true, cands: () => [] },
+      ];
+      const sim = {
+        subs: new Set(),
+        timer: null,
+        seq: 0,
+        session: 1,
+        curve: [],
+        events: new Map(),
+        loads: [],
+        pending: [],
+        changed: new Set(),
+        sent: 0,
+        last: null,
+        nextId: 1,
+        nextSpawn: 0,
+        rnd: 11,
+      };
+      window.liveSim = sim; // for the console
+      const rand = () => ((sim.rnd = (sim.rnd * 16807) % 2147483647) / 2147483647);
+      const nowS = () => Math.round(Date.now() / 1000);
+      const loadOn = (l, ts) => ts >= l.start && (l.end === null || ts < l.end) && (!l.cycle || (ts - l.start) % (l.cycle[0] + l.cycle[1]) < l.cycle[0]);
+      const dryerW = (ts) => (Math.floor(ts / 60) % 7 < 4 ? 480 + Math.round(20 * Math.sin(ts / 9)) : 0);
+      function house(ts) {
+        const base = 330 + Math.round(25 * Math.sin(ts / 40)) + (ts % 1500 < 600 ? 90 : 0);
+        return base + dryerW(ts) + sim.loads.reduce((a, l) => a + (loadOn(l, ts) ? l.w : 0), 0);
+      }
+      function touch(ev, ts) {
+        ev.seq = sim.seq + 1;
+        sim.changed.add(ev.id);
+      }
+      function startLoad(spec, ts) {
+        const dur = spec.dur ? Math.round(spec.dur[0] + rand() * (spec.dur[1] - spec.dur[0])) : null;
+        const w = Math.round(spec.w * (0.97 + rand() * 0.06));
+        const load = { w, start: ts, end: dur ? ts + dur : null, cycle: spec.cycle ?? null, id: null };
+        sim.loads.push(load);
+        if (spec.weak) return load;
+        const id = sim.nextId++;
+        load.id = id;
+        sim.pending.push({
+          at: ts + 6,
+          fn: (now) => {
+            const ev = {
+              id,
+              seq: 0,
+              t_on: ts,
+              delta_w: w,
+              state: "provisional",
+              running: true,
+              t_off: null,
+              off_w: null,
+              duration_s: null,
+              power_w: w,
+              session: null,
+              pv_moved: false,
+              confidence: "unknown",
+              candidates: spec.cands ? spec.cands(w) : [],
+              steps: [],
+            };
+            ev.confidence = ev.candidates[0]?.confidence ?? "unknown";
+            sim.events.set(id, ev);
+            touch(ev, now);
+          },
+        });
+        sim.pending.push({
+          at: ts + (spec.spike ? 16 : 35),
+          fn: (now) => {
+            const ev = sim.events.get(id);
+            if (!ev) return;
+            ev.state = spec.spike ? "cancelled" : "confirmed";
+            ev.steps = [[ts, w]];
+            touch(ev, now);
+          },
+        });
+        if (load.end !== null && !spec.spike) scheduleStop(load);
+        return load;
+      }
+      function scheduleStop(load) {
+        sim.pending.push({
+          at: load.end + 4,
+          fn: (now) => {
+            const ev = sim.events.get(load.id);
+            if (!ev || ev.state === "cancelled") return;
+            if (load.cycle) {
+              const n = Math.ceil((load.end - load.start) / (load.cycle[0] + load.cycle[1]));
+              ev.session = { count: n, steps: 2 * n, on_s: load.cycle[0], period_s: load.cycle[0] + load.cycle[1], duty: 0.57, confirmed: n >= 3 };
+            }
+            ev.running = false;
+            ev.t_off = load.end;
+            ev.off_w = load.w;
+            ev.duration_s = load.end - load.start;
+            ev.steps = [...(ev.steps ?? []), [load.end, -load.w]];
+            touch(ev, now);
+          },
+        });
+      }
+      function step(ts) {
+        const due = sim.pending.filter((p) => p.at <= ts);
+        sim.pending = sim.pending.filter((p) => p.at > ts);
+        for (const p of due) p.fn(ts);
+        if (sim.live && ts >= sim.nextSpawn && $("random").checked) {
+          sim.nextSpawn = ts + 50 + Math.round(rand() * 40);
+          startLoad(POOL[Math.floor(rand() * POOL.length)], ts);
+        }
+        // a running session: its count grows
+        for (const l of sim.loads) {
+          const ev = l.cycle && sim.events.get(l.id);
+          if (ev && ev.running && ev.state === "confirmed") {
+            const n = Math.floor((ts - l.start) / (l.cycle[0] + l.cycle[1])) + 1;
+            if (!ev.session || ev.session.count !== n) {
+              ev.session = { count: n, steps: 2 * n - 1, on_s: l.cycle[0], period_s: l.cycle[0] + l.cycle[1], duty: 0.57, confirmed: n >= 3 };
+              touch(ev, ts);
+            }
+          }
+        }
+        const h = house(ts);
+        sim.curve.push([ts, h, h - dryerW(ts)]);
+        sim.curve = sim.curve.filter((p) => p[0] >= ts - 900);
+        // drop what ended more than 15 minutes ago (the integration forgets them)
+        for (const [id, ev] of sim.events) if (!ev.running && (ev.t_off ?? ev.t_on) < ts - 900) sim.events.delete(id);
+        sim.loads = sim.loads.filter((l) => l.end === null || l.end > ts - 60);
+        sim.last = ts;
+      }
+      function nowSummary(ts) {
+        const running = [...sim.events.values()].filter((e) => e.running && e.state !== "cancelled").sort((a, b) => b.t_on - a.t_on);
+        const h = house(ts);
+        const residual = h - dryerW(ts);
+        return {
+          ts,
+          house_w: h,
+          residual_w: residual,
+          grid_w: h,
+          pv_w: 0,
+          battery_w: 0,
+          submetered_w: dryerW(ts),
+          submeters: [{ entity_id: "sensor.dryer_power", name: "Dryer plug power", appliance: "submeter:sensor.dryer_power", estimated: false, power_w: dryerW(ts) }],
+          running: running.map((e) => e.id),
+          unidentified_w: Math.max(0, residual - running.reduce((a, e) => a + e.power_w, 0)),
+          switches: [
+            { entity_id: "switch.water_heater", name: "Water heater", appliance: "load:switch.water_heater", on: true },
+            { entity_id: "switch.radiator_bedroom", name: "Bedroom radiator", appliance: "load:switch.radiator_bedroom", on: false },
+          ],
+        };
+      }
+      function seedHistory(now) {
+        // 15 minutes ago: an unnamed 900 W appliance still running, an oven
+        // that ran 3 minutes, a hob regulating, a +850 W switch-on 20 s ago
+        sim.live = false;
+        const t0 = now - 900;
+        sim.nextSpawn = now + 25;
+        sim.pending.push({ at: now - 720, fn: (ts) => startLoad({ w: 900, cands: (w) => [cand("long-900w", 0.78, w), cand("short-500w", 0.12, w)] }, ts) });
+        sim.pending.push({ at: now - 500, fn: (ts) => startLoad({ w: 2590, dur: [180, 180], cands: (w) => [cand("medium-2600w", 0.91, w)] }, ts) });
+        sim.pending.push({
+          at: now - 400,
+          fn: (ts) => startLoad({ w: 1500, dur: [300, 300], cycle: [40, 30], cands: (w) => [cand("cyc-1500w", 0.71, w)] }, ts),
+        });
+        sim.pending.push({ at: now - 20, fn: (ts) => startLoad({ w: 850, dur: [130, 130], cands: (w) => [cand("short-500w", 0.18, w)] }, ts) });
+        for (let ts = t0; ts <= now; ts += 2) step(ts);
+        sim.changed.clear();
+        sim.live = true;
+      }
+      function snapshotMsg() {
+        sim.seq++;
+        sim.sent = sim.last;
+        const ts = sim.last;
+        return {
+          type: "snapshot",
+          available: true,
+          seq: sim.seq,
+          session: sim.session,
+          history_s: 900,
+          threshold_w: 300,
+          time_zone: "Europe/Berlin",
+          curve: sim.curve.map((p) => [...p]),
+          events: [...sim.events.values()].filter((e) => e.state !== "cancelled").map((e) => ({ ...e })).sort((a, b) => a.t_on - b.t_on),
+          now: nowSummary(ts),
+        };
+      }
+      function tickLive() {
+        const now = nowS();
+        for (let ts = (sim.last ?? now - 2) + 2; ts <= now; ts += 2) step(ts);
+        sim.seq++;
+        const events = [...sim.changed].map((id) => sim.events.get(id)).filter(Boolean).map((e) => ({ ...e, seq: sim.seq }));
+        for (const e of events) if (e.state === "cancelled") sim.events.delete(e.id);
+        sim.changed.clear();
+        const curve = sim.curve.filter((p) => p[0] > sim.sent).map((p) => [...p]);
+        sim.sent = sim.last;
+        const msg = { type: "update", seq: sim.seq, curve, events, now: nowSummary(sim.last) };
+        for (const cb of sim.subs) cb(msg);
+      }
+      function liveReady() {
+        if (sim.last === null) seedHistory(nowS());
+        else for (let ts = sim.last + 2; ts <= nowS(); ts += 2) step(ts); // the gap while nobody watched
+        sim.changed.clear();
+      }
+      async function liveSubscribe(cb, msg) {
+        if (msg.type !== "energy_mapper/live/subscribe") throw { code: "unknown_command", message: msg.type };
+        await sleep(200);
+        const mode = $("live").value;
+        if (mode === "not_loaded") throw { code: "not_loaded", message: "Energy Mapper is not set up" };
+        let alive = true;
+        const statuses = {
+          disabled: {},
+          overloaded: { retry_at: nowS() + 240 },
+          error: { error: { code: "internal", message: "history request failed (HTTP 500)" } },
+          addon_unavailable: { message: "Cannot connect to host local-energy-mapper:8099" },
+          addon_too_old: { min_version: "0.12.0", addon_version: "0.11.0" },
+        };
+        if (mode in statuses) {
+          cb({ type: "status", available: false, reason: mode, ...statuses[mode] });
+          return () => (alive = false);
+        }
+        const go = () => {
+          if (!alive) return;
+          liveReady();
+          cb(snapshotMsg());
+          sim.subs.add(cb);
+          if (!sim.timer) sim.timer = setInterval(tickLive, 2000);
+        };
+        if (mode === "starting") {
+          cb({ type: "status", available: false, reason: "starting" });
+          setTimeout(go, 3000);
+        } else go();
+        console.log("live: subscribed");
+        return () => {
+          alive = false;
+          sim.subs.delete(cb);
+          console.log("live: unsubscribed");
+          if (!sim.subs.size && sim.timer) {
+            clearInterval(sim.timer);
+            sim.timer = null;
+          }
+        };
+      }
+      // the dev bar's switch-ons
+      let manual = null;
+      function liveManual(kind) {
+        if (sim.last === null) return;
+        const ts = nowS();
+        if (kind === "on") manual = startLoad({ w: 850, cands: (w) => [cand("short-500w", 0.2, w)] }, ts);
+        else if (kind === "weak") manual = startLoad({ w: 180, weak: true }, ts);
+        else if (kind === "two") {
+          startLoad({ w: 850, dur: [90, 90], cands: () => [] }, ts);
+          startLoad({ w: 1210, dur: [70, 70], cands: () => [] }, ts + 4);
+        } else if (kind === "off" && manual && manual.end === null) {
+          manual.end = ts;
+          if (manual.id !== null) scheduleStop(manual);
+          manual = null;
+        }
+      }
+      // energy_mapper/live/label: what the integration answers, in memory
+      let liveAppliances = 0;
+      function liveLabel(msg) {
+        const ev = sim.events.get(msg.event_id);
+        const sigAnswer = (id, created = false) => {
+          const s = LIVE_SIGS[id];
+          return s ? { id, kind: s.kind, band: s.band, power_w: s.power_w, past_uses: s.count, created } : null;
+        };
+        const base = { appliance: null, signature: null, example: null, open: false, confirmed: false, other_appliance: null };
+        if (msg.target === "ignore") return { ...base, effect: "signature_ignored", signature: sigAnswer(msg.signature_id) };
+        const t_off = msg.t_off ?? (ev && !ev.running ? ev.t_off : null);
+        const example = { t_on: msg.t_on, t_off, power_w: msg.power_w, source: msg.source, created: nowS() };
+        const open = t_off === null;
+        const answer = (a, effect, extra = {}) => ({
+          ...base,
+          effect,
+          appliance: { key: a.key, name: a.name, sources: a.sources, teacher: null, examples: 1 },
+          example,
+          open,
+          ...extra,
+        });
+        const add = (key, name, sources) => {
+          const a = { key, name, subentry_id: `sub-${key}`, statistic_id: stat(key), power_w: Math.round(msg.power_w), sources };
+          APPLIANCE_LIST.push(a);
+          APPLIANCES.push({ key, name });
+          return a;
+        };
+        if (msg.target === "appliance") {
+          const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
+          if (!a) throw { code: "not_found", message: `no appliance ${msg.appliance}` };
+          const owner = msg.signature_id ? ownerOf(msg.signature_id) : undefined;
+          if (msg.signature_id && !owner) {
+            a.sources.push(sig(msg.signature_id));
+            return answer(a, "signature_merged", { signature: sigAnswer(msg.signature_id) });
+          }
+          return answer(a, "example_added", {
+            confirmed: owner?.key === a.key,
+            other_appliance: owner && owner.key !== a.key ? { key: owner.key, name: owner.name } : null,
+          });
+        }
+        if (msg.target === "signature") {
+          const owner = ownerOf(msg.signature_id);
+          if (owner) return answer(owner, "example_added", { confirmed: true, signature: sigAnswer(msg.signature_id) });
+          const a = add(`signature:${msg.signature_id}`, msg.name, [sig(msg.signature_id)]);
+          return answer(a, "signature_named", { signature: sigAnswer(msg.signature_id) });
+        }
+        if (msg.target === "new") {
+          const track = msg.track ?? "curve";
+          if (track !== "curve" && !msg.entity_id) throw { code: "invalid_format", message: `${track}: expected entity_id` };
+          if (APPLIANCE_LIST.some((a) => a.name.toLowerCase() === msg.name.trim().toLowerCase()))
+            throw { code: "conflict", message: `an appliance is already named ${msg.name}` };
+          if (track === "switch") return answer(add(`load:${msg.entity_id}`, msg.name, [load(msg.entity_id)]), "appliance_created");
+          if (track === "sensor")
+            return answer(add(`submeter:${msg.entity_id}`, msg.name, [{ type: "submeter", entity_id: msg.entity_id }]), "appliance_created");
+          const id = `live-${Math.round(msg.power_w)}w-${++liveAppliances}`;
+          const a = add(`signature:${id}`, msg.name, open ? [] : [sig(id)]);
+          return answer(a, "appliance_created", {
+            signature: open ? null : { id, kind: "steady", band: "short", power_w: Math.round(msg.power_w), past_uses: 0, created: true },
+          });
+        }
+        throw { code: "invalid_format", message: `target: ${msg.target}` };
+      }
+
       const panel = document.querySelector("energy-mapper-panel");
       function hass() {
         const dark = $("theme").value === "dark";
@@ -616,6 +998,7 @@
           themes: { theme: "default", darkMode: dark },
           states: STATES,
           callWS,
+          connection: { subscribeMessage: liveSubscribe },
         };
       }
       const mql = matchMedia("(max-width: 870px)");
@@ -626,14 +1009,15 @@
       mql.addEventListener("change", update);
       for (const el of document.querySelectorAll("#dev select, #dev input")) {
         el.addEventListener("change", () => {
-          if (el.id === "scenario") {
+          if (el.id === "scenario" || el.id === "live") {
             // reload: the panel reads the status once
             const p = new URLSearchParams(location.search);
-            p.set("scenario", el.value);
+            p.set(el.id, el.value);
             location.search = p.toString();
           } else update();
         });
       }
+      for (const b of document.querySelectorAll("[data-live]")) b.addEventListener("click", () => liveManual(b.dataset.live));
       window.addEventListener("hass-toggle-menu", () => console.log("hass-toggle-menu"));
       update();
     </script>

@@ -1,21 +1,23 @@
-// The tabs of the panel (#47): Today, Appliances and To review (administrators).
+// The tabs of the panel (#47): Today, Appliances, To review (administrators)
+// and Live (#17).
 // Pure helpers for the tab kept in the URL, unit tested.
 
 import type { ReviewListing } from "./types.ts";
 
-export type Tab = "today" | "appliances" | "review";
+export type Tab = "today" | "appliances" | "review" | "live";
 
-export const TABS: readonly Tab[] = ["today", "appliances", "review"];
+export const TABS: readonly Tab[] = ["today", "appliances", "review", "live"];
 
 const isTab = (value: string | null): value is Tab => value !== null && (TABS as readonly string[]).includes(value);
 
 /** The tabs a user sees: To review only for administrators whose add-on has
- * a review (``hasReview``: the listing could be loaded, or is still loading). */
+ * a review (``hasReview``: the listing could be loaded, or is still loading);
+ * Live for everyone (read-only for the others). */
 export function availableTabs(isAdmin: boolean, hasReview = true): Tab[] {
-  return isAdmin && hasReview ? ["today", "appliances", "review"] : ["today", "appliances"];
+  return isAdmin && hasReview ? ["today", "appliances", "review", "live"] : ["today", "appliances", "live"];
 }
 
-/** The tab asked for by the URL: ``?tab=today|appliances|review``; the link of
+/** The tab asked for by the URL: ``?tab=today|appliances|review|live``; the link of
  * the Repairs notice (``?review=1``) opens To review. Anything else: Today. */
 export function tabFromSearch(search: string): Tab {
   const params = new URLSearchParams(search);

@@ -16,6 +16,10 @@ export interface HomeAssistant {
   themes?: { darkMode?: boolean; theme?: string };
   states?: Record<string, { entity_id: string; state?: string; attributes?: Record<string, unknown> }>;
   callWS<T>(msg: Record<string, unknown>): Promise<T>;
+  /** the websocket connection: subscriptions (the live view, #17) */
+  connection?: {
+    subscribeMessage<T>(callback: (msg: T) => void, msg: Record<string, unknown>): Promise<() => unknown>;
+  };
 }
 
 export interface Status {

@@ -33,6 +33,7 @@ import { energyState, pickList, preselected, type TrackingListing } from "./take
 import { sensorChoices, teachingLines, teachState, type TeachingListing } from "./teaching.ts";
 import { selfTestHint, selfTestRows, showSelfTest, type SelfTestListing } from "./selftest.ts";
 import "./chart.ts";
+import "./live-view.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
   assignColors,
@@ -232,6 +233,7 @@ export class EnergyMapperPanel extends LitElement {
     _teaching: { state: true },
     _teach: { state: true },
     _selfTest: { state: true },
+    _liveUp: { state: true },
   };
 
   static override styles = panelStyles;
@@ -299,6 +301,8 @@ export class EnergyMapperPanel extends LitElement {
   declare _teaching: TeachingListing | null;
   /** the nightly self-test (#15; null: not available) */
   declare _selfTest: SelfTestListing | null;
+  /** the live view streams (#17): the pulsing dot of its tab */
+  declare _liveUp: boolean;
   /** the confirmation open on an appliance card: start learning (with the
    * sensor picked), finish with the learned signature, or stop */
   declare _teach: {
@@ -359,6 +363,7 @@ export class EnergyMapperPanel extends LitElement {
     this._teaching = null;
     this._teach = null;
     this._selfTest = null;
+    this._liveUp = false;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -954,7 +959,12 @@ export class EnergyMapperPanel extends LitElement {
   private renderTabs(t: Translate): TemplateResult {
     const shown = this.shownTab;
     const count = toReviewCount(this._review);
-    const labels: Record<Tab, string> = { today: t("tab_today"), appliances: t("tab_appliances"), review: t("tab_review") };
+    const labels: Record<Tab, string> = {
+      today: t("tab_today"),
+      appliances: t("tab_appliances"),
+      review: t("tab_review"),
+      live: t("tab_live"),
+    };
     return html`<div class="tabs" role="tablist" aria-label=${t("tabs")}>
       ${this.tabs.map(
         (tab) => html`<button
@@ -970,6 +980,9 @@ export class EnergyMapperPanel extends LitElement {
         >
           <span class="tab-label">${labels[tab]}</span>
           ${tab === "review" && count > 0 ? html`<span class="tab-badge">${formatNumber(count, this.info)}</span>` : nothing}
+          ${tab === "live" && shown === "live" && this._liveUp
+            ? html`<span class="tab-live" role="img" aria-label=${t("live_dot")}></span>`
+            : nothing}
         </button>`,
       )}
     </div>`;
@@ -1000,11 +1013,43 @@ export class EnergyMapperPanel extends LitElement {
     const entries = dayEntries(this._days);
     const tab = this.shownTab;
     return html`
-      ${tab !== "review" ? this.renderDayBar(entries, t, tab === "today") : nothing}
+      ${tab === "today" || tab === "appliances" ? this.renderDayBar(entries, t, tab === "today") : nothing}
       ${this._error ? this.alert("error", this._error, t("error")) : nothing}
       ${this._notice ? this.alert("success", this._notice) : nothing}
-      ${tab === "today" ? this.renderToday(entries, t) : tab === "appliances" ? this.renderAppliances(t) : this.renderReview(t)}
+      ${tab === "today"
+        ? this.renderToday(entries, t)
+        : tab === "appliances"
+          ? this.renderAppliances(t)
+          : tab === "live"
+            ? this.renderLive()
+            : this.renderReview(t)}
     `;
+  }
+
+  /** Live (#17): its own element, which streams while it is shown. */
+  private renderLive(): TemplateResult {
+    return html`<energy-mapper-live
+      .hass=${this.hass}
+      ?narrow=${this.narrow || this._single}
+      .registry=${this._registry}
+      .appliances=${this._appliances?.appliances ?? null}
+      @live-state=${(ev: CustomEvent<{ up: boolean }>) => (this._liveUp = ev.detail.up)}
+      @live-labelled=${() => void this.afterLiveLabel()}
+    ></energy-mapper-live>`;
+  }
+
+  /** A live label changed the appliances, the registry or the review. */
+  private async afterLiveLabel(): Promise<void> {
+    try {
+      const [registry] = await Promise.all([
+        this.ws<Registry>({ type: "energy_mapper/signatures" }),
+        this.loadReview(),
+        this.loadAppliances(),
+      ]);
+      this._registry = registry;
+    } catch {
+      // shown again at the next refresh
+    }
   }
 
   /** Today: the selected day, for the whole household. */
