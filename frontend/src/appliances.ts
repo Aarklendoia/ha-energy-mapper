@@ -24,6 +24,8 @@ export interface ApplianceInfo {
   statistic_id: string | null;
   power_w: number | null;
   sources: ApplianceSource[];
+  /** a power sensor teaching it its signature (#14, integration 0.9.0+) */
+  teacher?: { entity_id: string; since?: number | null } | null;
 }
 
 export interface ApplianceListing {

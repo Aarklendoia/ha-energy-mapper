@@ -20,6 +20,10 @@ GET  /api/review              {"criteria", "now", "counts", "signatures", "sugge
                               their entity "suggestions" (suggest.py)
 POST /api/review              {"id", "action": validate|wait|ignore|restore, "appliance"?}:
                               {"signature": <with its review_state>}
+GET  /api/teaching            {"teachers": [...]}: the learning status of each appliance
+                              taught by a measured device (teaching.py, #14)
+POST /api/teaching            {"appliance": key}: the signature learned for it, created in
+                              the registry when needed: {"signature", "created", "learned"}
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ from settings import SettingsError
 from settings import defaults as settings_defaults
 from settings import validate as validate_settings
 from storage import ReportStore, parse_day
+from teaching import TeachingError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,6 +127,27 @@ def _review_decision(analyzer: Analyzer, body: bytes) -> tuple[int, dict]:
     if sig is None:
         return 404, {"error": "not_found", "message": f"no signature {sid}"}
     return 200, {"signature": sig}
+
+
+def _apply_teaching(analyzer: Analyzer, body: bytes) -> tuple[int, dict]:
+    try:
+        data = json.loads(body or b"null")
+    except ValueError:
+        return 400, {"error": "invalid_json", "message": "the body is not JSON"}
+    key = data.get("appliance") if isinstance(data, dict) else None
+    if not isinstance(data, dict) or set(data) != {"appliance"} or not isinstance(key, str) or not key:
+        return 400, {"error": "invalid_teaching", "message": 'expected {"appliance": <key>}'}
+    try:
+        answer = analyzer.apply_teaching(key)
+    except TeachingError as err:
+        status = 409 if err.code == "conflict" else 422
+        out = {"error": err.code, "message": err.message}
+        if err.signature_id:
+            out["id"] = err.signature_id
+        return status, out
+    if answer is None:
+        return 404, {"error": "not_found", "message": f"no appliance {key} with a teacher"}
+    return 200, answer
 
 
 def route(
@@ -246,6 +272,12 @@ def route(
     if path == "/api/review" and method == "POST":
         return _review_decision(analyzer, body)
 
+    if path == "/api/teaching" and method == "GET":
+        return 200, analyzer.teaching()
+
+    if path == "/api/teaching" and method == "POST":
+        return _apply_teaching(analyzer, body)
+
     known = {
         "/api/health",
         "/api/days",
@@ -254,6 +286,7 @@ def route(
         "/api/settings",
         "/api/appliances",
         "/api/review",
+        "/api/teaching",
     }
     if path in known or path.startswith(("/api/report/", "/api/hourly/")):
         return 405, {"error": "method_not_allowed"}

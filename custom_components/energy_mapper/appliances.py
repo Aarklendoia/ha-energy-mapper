@@ -13,6 +13,11 @@ entry). It is made of one or more **sources**, what the add-on measures:
 
 Several sources are the result of a merge: their energy is added.
 
+An appliance may have a **teacher** for a while (#14): a power sensor that
+measures it (a temporary smart plug). The add-on does not subtract it and
+learns the appliance's signature from it; when the learning is finished the
+signature becomes a source and the teacher goes away.
+
 Identity (stable across renames, link changes and merges): the ``key`` is
 the device identifier, the subentry's ``unique_id`` and the base of the
 entity unique ids; ``statistic_id`` is the id of the hourly energy
@@ -105,6 +110,27 @@ def signature(sig: Mapping[str, Any]) -> Source:
 
 
 @dataclass(frozen=True)
+class Teacher:
+    """A power sensor teaching the appliance its signature (#14)."""
+
+    entity_id: str
+    since: float | None = None  # unix time the learning started
+
+    def as_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"entity_id": self.entity_id}
+        if self.since is not None:
+            out["since"] = self.since
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> Teacher | None:
+        if not data or not data.get("entity_id"):
+            return None
+        since = data.get("since")
+        return cls(str(data["entity_id"]), float(since) if since is not None else None)
+
+
+@dataclass(frozen=True)
 class Appliance:
     key: str
     name: str
@@ -112,6 +138,7 @@ class Appliance:
     sources: tuple[Source, ...]
     subentry_id: str | None = None
     power_w: float | None = None  # typical power learned by the add-on
+    teacher: Teacher | None = None
 
     @property
     def estimated(self) -> tuple[Source, ...]:
@@ -122,11 +149,14 @@ class Appliance:
         return any((s.type, s.id) == (source.type, source.id) for s in self.sources)
 
     def subentry_data(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "key": self.key,
             "statistic_id": self.statistic_id,
             "sources": [s.as_dict() for s in self.sources],
         }
+        if self.teacher is not None:
+            out["teacher"] = self.teacher.as_dict()
+        return out
 
     def declaration(self) -> dict[str, Any]:
         """The appliance as pushed to the add-on (``PUT /api/appliances``)."""
@@ -139,7 +169,13 @@ class Appliance:
         sources = tuple(Source.from_dict(s) for s in data.get("sources") or [])
         key = str(data["key"])
         return cls(
-            key, name, data.get("statistic_id") or key_statistic_id(key), sources, subentry_id, power_w
+            key,
+            name,
+            data.get("statistic_id") or key_statistic_id(key),
+            sources,
+            subentry_id,
+            power_w,
+            Teacher.from_dict(data.get("teacher")),
         )
 
 

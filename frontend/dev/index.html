@@ -179,6 +179,25 @@
             return statistics(msg);
           case "energy_mapper/tracking":
             return tracking();
+          // learning from a measured device (#14): the dryer learns from its plug
+          case "energy_mapper/teaching":
+            return { supported: true, teachers: APPLIANCE_LIST.filter((a) => a.teacher).map(teachingOf) };
+          case "energy_mapper/teach": {
+            const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
+            if (!a) throw { code: "not_found", message: `no appliance ${msg.appliance}` };
+            a.teacher = { entity_id: msg.entity_id, since: NOW };
+            return { key: a.key, teacher: a.teacher };
+          }
+          case "energy_mapper/stop_teaching": {
+            const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
+            if (!a?.teacher) throw { code: "not_found", message: `${msg.appliance} is not learning` };
+            if (msg.use) {
+              a.sources = [...a.sources.filter((x) => x.entity_id !== a.teacher.entity_id), sig("cycle-2400w")];
+              a.statistic_id = stat(a.key);
+            }
+            a.teacher = null;
+            return { key: a.key, sources: a.sources, signature: null, created: false };
+          }
           case "energy_mapper/take_over": {
             const a = APPLIANCE_LIST.find((x) => x.key === msg.appliance);
             const i = DASHBOARD.findIndex((d) => d.stat_consumption === msg.stat_consumption);
@@ -428,6 +447,41 @@
           sources,
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
+      APPLIANCE_LIST.find((a) => a.key === "submeter:sensor.dryer_power").teacher = {
+        entity_id: "sensor.dryer_power",
+        since: NOW - 9 * 86400,
+      };
+      function teachingOf(a) {
+        const fresh = a.teacher.since > NOW - 86400;
+        return {
+          key: a.key,
+          entity_id: a.teacher.entity_id,
+          since: a.teacher.since,
+          days: fresh ? 0 : 8,
+          uses: fresh ? 0 : 5,
+          energy_kwh: fresh ? 0 : 11.2,
+          learned: fresh
+            ? null
+            : {
+                kind: "multiphase",
+                band: "cycle",
+                power_w: 2400,
+                duration_s: 5700,
+                uses: 5,
+                runs: 5,
+                recognisable: true,
+                phases: [
+                  { kind: "heat", offset_s: 0, duration_s: 4500, power_w: 1900 },
+                  { kind: "motor", offset_s: 4500, duration_s: 720, power_w: 210 },
+                ],
+              },
+          signature: fresh ? null : { id: "cycle-2400w", in_registry: false, linked: false },
+          conflict: null,
+          evaluation: fresh
+            ? null
+            : { uses: 5, found: 4, detections: 4, correct: 4, precision: 1, recall: 0.8, f1: 0.889, energy_ratio: 0.93 },
+        };
+      }
       // the individual devices of a synthetic Energy dashboard (#13)
       const DASHBOARD = [
         { stat_consumption: "sensor.fridge_plug_energy", name: "Fridge plug" },
@@ -520,6 +574,7 @@
           ["switch.dishwasher_plug", "Dishwasher plug", null],
           ["sensor.dishwasher_plug_power", "Dishwasher plug power", "power"],
           ["sensor.heat_pump_power", "Heat pump power", "power"],
+          ["sensor.dryer_power", "Dryer plug power", "power"],
           ["sensor.outdoor_temperature", "Outdoor temperature", "temperature"],
           ["fan.attic", "Attic fan", null],
           ["sensor.washer_state", "Washing machine state", "enum"],

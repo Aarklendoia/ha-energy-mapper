@@ -22,6 +22,12 @@ list with ``PUT /api/appliances`` after every change. The add-on stores it in
 
 Several sources make one appliance (merged appliances): the integration adds
 their energy; the add-on only needs to know each source.
+
+An appliance may also have a **teacher** (``{"entity_id", "since"?}``, #14):
+a power sensor that measures it for a while (a temporary smart plug). The
+sensor is not subtracted (the appliance stays in the whole-house curve, as
+it will once the plug is gone), and each analysed day keeps the sensor's
+runs as the ground truth of the appliance (``teaching.py``).
 """
 
 from __future__ import annotations
@@ -117,7 +123,7 @@ def validate(data) -> list[dict]:
         where = f"appliances[{i}]"
         if not isinstance(item, dict):
             raise AppliancesError(f"{where}: expected an object")
-        unknown = set(item) - {"key", "name", "statistic_id", "sources"}
+        unknown = set(item) - {"key", "name", "statistic_id", "sources", "teacher"}
         if unknown:
             raise AppliancesError(f"{where}: unknown key(s) {', '.join(sorted(unknown))}")
         key = _text(f"{where}.key", item.get("key"), MAX_KEY)
@@ -136,8 +142,31 @@ def validate(data) -> list[dict]:
             if ident in owners:
                 raise AppliancesError(f"{where}: {ident[1]} is already a source of {owners[ident]!r}")
             owners[ident] = key
+        if item.get("teacher") is not None:
+            appliance["teacher"] = _teacher(f"{where}.teacher", item["teacher"])
+            ident = ("teacher", appliance["teacher"]["entity_id"])
+            if ident in owners:
+                raise AppliancesError(f"{where}: {ident[1]} already teaches {owners[ident]!r}")
+            owners[ident] = key
         out.append(appliance)
     return out
+
+
+def _teacher(where: str, item) -> dict:
+    if not isinstance(item, dict) or set(item) - {"entity_id", "since"}:
+        raise AppliancesError(f'{where}: expected {{"entity_id", "since"?}}')
+    out = {"entity_id": _entity(f"{where}.entity_id", item.get("entity_id"), "sensor")}
+    since = item.get("since")
+    if since is not None:
+        if isinstance(since, bool) or not isinstance(since, int | float) or not math.isfinite(since):
+            raise AppliancesError(f"{where}.since: expected a unix time")
+        out["since"] = float(since)
+    return out
+
+
+def teachers(appliances: Iterable[Mapping]) -> list[tuple[Mapping, Mapping]]:
+    """(appliance, teacher) of the appliances learning from a sensor."""
+    return [(a, a["teacher"]) for a in appliances or () if a.get("teacher")]
 
 
 def sources(appliances: Iterable[Mapping], kind: str) -> Iterable[tuple[Mapping, Mapping]]:
@@ -191,4 +220,8 @@ def analysis_options(options: dict, appliances: list[Mapping]) -> dict:
     extra = [(s["entity_id"], a["name"]) for a, s in sources(appliances, "submeter")]
     if extra:
         out["extra_submeters"] = extra
+    taught = [t["entity_id"] for _, t in teachers(appliances)]
+    if taught:
+        # never subtracted while they teach (#14), whatever else declares them
+        out["teachers"] = taught
     return out

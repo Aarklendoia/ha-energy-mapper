@@ -1,0 +1,497 @@
+"""Ground truth from a measured device, and the evaluation of the recognition.
+
+A power sensor that measures one appliance (a smart plug on a dishwasher,
+an oven's own meter) tells exactly when it ran. This module turns such a
+series into **runs** (one use each), learns from them the **signature** the
+engine should find in the whole-house curve, and **evaluates** the curve-based
+detections of a signature against the runs (precision, recall, energy).
+
+Used by the add-on to learn an appliance from a temporary plug (#14); the
+nightly self-test (#15) reuses :func:`runs_of`, :func:`detections` and
+:func:`evaluate` the same way (hide a measured device, find it again).
+
+1. **Runs** (:func:`runs_of`): the sensor's readings are piecewise constant
+   (Home Assistant records a state when it changes; a state holds until the
+   next one, ``unavailable`` / ``unknown`` mean no data). The device runs
+   from ``on_w``; pauses shorter than ``max_gap_s`` stay inside one run (a
+   dishwasher's pauses, an oven's thermostat). Runs shorter than
+   ``min_run_s`` or never reaching ``min_use_w`` are standby noise. The
+   periods the sensor reported are returned too (``covered``): a detection
+   outside them cannot be checked.
+2. **Kind of a run**, the engine's kinds: ``multiphase`` when it has
+   heating (from ``CycleConfig.heat_w``, at least ``heat_min_s``), low-power
+   activity (``low_w`` to ``heat_w``, at least ``min_low_s``: a pump, a
+   motor) and the duration of a cycle; its phases come from
+   :func:`.cycles.segment` on its per-minute power. ``cycling`` when its
+   high level is crossed at least ``cycling_steps`` times with a duty of at
+   most ``cycling_max_duty`` (a thermostat). ``steady`` otherwise.
+3. **Learned signature** (:func:`learn`): the most frequent kind; its power
+   (median high level), duration band, on-time, period and duty; for a
+   multi-phase appliance the template of its most frequent programme
+   (clustered and merged like the registry's, :mod:`.cycles`).
+4. **Evaluation** (:func:`evaluate`): a detection and a run match when they
+   overlap by at least ``min_overlap`` of the shorter one. Precision: the
+   share of the detections (inside the covered periods) that match a run;
+   recall: the share of the runs matched by a detection.
+
+Pure Python, standard library only, no clock, no I/O.
+"""
+
+from __future__ import annotations
+
+import statistics
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+
+from . import cycles as mp
+from .signatures import duration_band
+
+STEADY, CYCLING, MULTIPHASE = "steady", "cycling", "multiphase"
+_KIND_ORDER = (MULTIPHASE, CYCLING, STEADY)  # ties of the majority vote
+
+
+@dataclass
+class GroundTruthConfig:
+    on_w: float = 20.0  # the device runs from this power
+    min_use_w: float = 50.0  # a run must reach this power (else standby noise)
+    max_gap_s: float = 600.0  # a pause this long ends a run
+    min_run_s: float = 60.0
+    resolution_s: float = 60.0  # per-bucket power of a multi-phase run
+    cycling_steps: int = 6  # crossings of the high level of a cycling run
+    cycling_max_duty: float = 0.85
+    min_overlap: float = 0.5  # of the shorter of a detection and a run
+    cycles: mp.CycleConfig = field(default_factory=mp.CycleConfig)
+
+
+# ---------------------------------------------------------------------------
+# runs
+# ---------------------------------------------------------------------------
+@dataclass
+class Run:
+    """One use of the measured appliance."""
+
+    start: float
+    end: float
+    energy_kwh: float
+    power_w: float  # median power while on (the high level)
+    max_w: float
+    kind: str  # STEADY | CYCLING | MULTIPHASE
+    on_s: float | None = None  # cycling: median on-time
+    period_s: float | None = None  # cycling: median period
+    duty: float | None = None  # share of the run at the high level
+    phases: list[mp.Phase] = field(default_factory=list)  # multiphase only
+
+    @property
+    def duration_s(self) -> float:
+        return self.end - self.start
+
+    def to_dict(self) -> dict:
+        out = {
+            "start": round(self.start),
+            "end": round(self.end),
+            "energy_kwh": round(self.energy_kwh, 4),
+            "power_w": round(self.power_w),
+            "max_w": round(self.max_w),
+            "kind": self.kind,
+            "duty": None if self.duty is None else round(self.duty, 3),
+        }
+        if self.kind == CYCLING:
+            out["on_s"] = None if self.on_s is None else round(self.on_s)
+            out["period_s"] = None if self.period_s is None else round(self.period_s)
+        if self.phases:
+            out["phases"] = [p.to_dict() for p in self.phases]
+        return out
+
+    @classmethod
+    def from_dict(cls, d: Mapping) -> Run:
+        return cls(
+            start=float(d["start"]),
+            end=float(d["end"]),
+            energy_kwh=float(d.get("energy_kwh") or 0.0),
+            power_w=float(d.get("power_w") or 0.0),
+            max_w=float(d.get("max_w") or d.get("power_w") or 0.0),
+            kind=str(d.get("kind") or STEADY),
+            on_s=_num(d.get("on_s")),
+            period_s=_num(d.get("period_s")),
+            duty=_num(d.get("duty")),
+            phases=[mp.Phase.from_dict(p) for p in d.get("phases") or []],
+        )
+
+
+def _num(value) -> float | None:
+    return None if value is None else float(value)
+
+
+Segment = tuple[float, float, float]  # [t0, t1) at a constant power
+
+
+def segments(points: Sequence[tuple[float, float | None]], start: float, end: float) -> list[Segment]:
+    """The piecewise-constant series clipped to ``[start, end)``: each
+    reading holds until the next one; ``None`` (unavailable) is no data."""
+    out: list[Segment] = []
+    pts = sorted(points, key=lambda p: p[0])
+    for i, (t, v) in enumerate(pts):
+        t1 = pts[i + 1][0] if i + 1 < len(pts) else end
+        a, b = max(t, start), min(t1, end)
+        if v is None or b <= a:
+            continue
+        out.append((a, b, max(float(v), 0.0)))
+    return out
+
+
+def covered(segs: Sequence[Segment], gap_s: float = 0.0) -> list[tuple[float, float]]:
+    """The periods with data, joined across gaps of at most ``gap_s``."""
+    out: list[list[float]] = []
+    for a, b, _ in segs:
+        if out and a - out[-1][1] <= gap_s:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _wquantile(items: Iterable[tuple[float, float]], q: float) -> float | None:
+    """Weighted quantile of (value, weight) pairs."""
+    pairs = sorted((v, w) for v, w in items if w > 0)
+    if not pairs:
+        return None
+    total = sum(w for _, w in pairs)
+    acc = 0.0
+    for v, w in pairs:
+        acc += w
+        if acc >= q * total:
+            return v
+    return pairs[-1][0]
+
+
+def _profile(segs: Sequence[Segment], t0: float, t1: float, res: float) -> list[float]:
+    """Mean power per bucket of ``res`` seconds from ``t0`` (no data: 0)."""
+    n = max(int((t1 - t0 + res - 1e-9) // res), 1)
+    energy = [0.0] * n
+    for a, b, v in segs:
+        if v <= 0:
+            continue
+        k0 = max(int((a - t0) // res), 0)
+        k1 = min(int((b - t0) // res), n - 1)
+        for k in range(k0, k1 + 1):
+            b0 = t0 + k * res
+            lo, hi = max(a, b0), min(b, b0 + res)
+            if hi > lo:
+                energy[k] += v * (hi - lo)
+    return [e / res for e in energy]
+
+
+def _classify(segs: Sequence[Segment], start: float, end: float, cfg: GroundTruthConfig) -> Run:
+    duration = end - start
+    energy = sum(v * (b - a) for a, b, v in segs) / 3.6e6
+    active = [(v, b - a) for a, b, v in segs if v >= cfg.on_w]
+    p90 = _wquantile(active, 0.9) or 0.0
+    high = max(cfg.on_w, p90 / 2.0)
+    level = _wquantile(((v, w) for v, w in active if v >= high), 0.5) or p90
+    peak = max((v for v, _ in active), default=0.0)
+    on_s = sum(b - a for a, b, v in segs if v >= high)
+    # on runs at the high level (for a cycling run: its on-times and periods)
+    ons: list[list[float]] = []
+    for a, b, v in segs:
+        if v >= high:
+            if ons and a - ons[-1][1] <= 1e-6:
+                ons[-1][1] = b
+            else:
+                ons.append([a, b])
+    crossings = max(2 * len(ons) - 1, 0)
+    duty = on_s / duration if duration > 0 else None
+    cc = cfg.cycles
+    heat_s = sum(b - a for a, b, v in segs if v >= cc.heat_w)
+    low_s = sum(b - a for a, b, v in segs if cc.low_w <= v < cc.heat_w)
+    run = Run(start, end, energy, level, peak, STEADY, duty=duty)
+    if heat_s >= cc.heat_min_s and low_s >= cc.min_low_s and cc.min_cycle_s <= duration <= cc.max_cycle_s:
+        run.kind = MULTIPHASE
+        res = cfg.resolution_s
+        run.phases = mp.segment(_profile(segs, start, end, res), res, cc)
+        if not run.phases:
+            run.kind = STEADY
+    elif crossings >= cfg.cycling_steps and duty is not None and duty <= cfg.cycling_max_duty:
+        run.kind = CYCLING
+        run.on_s = statistics.median(b - a for a, b in ons)
+        starts = [a for a, _ in ons]
+        periods = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+        run.period_s = statistics.median(periods) if periods else None
+    return run
+
+
+def runs_of(
+    points: Sequence[tuple[float, float | None]],
+    start: float,
+    end: float,
+    config: GroundTruthConfig | None = None,
+) -> tuple[list[Run], list[tuple[float, float]]]:
+    """The runs of a measured device within ``[start, end)`` and the periods
+    its sensor reported. ``points`` are ``(timestamp, watts or None)``,
+    sorted or not, from before ``start`` (the state at ``start``)."""
+    cfg = config or GroundTruthConfig()
+    segs = segments(points, start, end)
+    spans: list[list[float]] = []
+    for a, b, v in segs:
+        if v < cfg.on_w:
+            continue
+        if spans and a - spans[-1][1] < cfg.max_gap_s:
+            spans[-1][1] = b
+        else:
+            spans.append([a, b])
+    runs = []
+    for a, b in spans:
+        if b - a < cfg.min_run_s:
+            continue
+        inside = [(max(x, a), min(y, b), v) for x, y, v in segs if y > a and x < b]
+        if max((v for _, _, v in inside), default=0.0) < cfg.min_use_w:
+            continue
+        runs.append(_classify(inside, a, b, cfg))
+    return runs, covered(segs)
+
+
+# ---------------------------------------------------------------------------
+# learned signature
+# ---------------------------------------------------------------------------
+@dataclass
+class Learned:
+    """The signature learned from the runs, in the registry's terms."""
+
+    kind: str  # registry kind: steady | cycling | multiphase
+    band: str  # short | medium | long | session | cycle
+    power_w: float  # steady/cycling: the level; multiphase: the heating power
+    duration_s: float
+    uses: int  # runs of this kind (and band, programme) it was learned from
+    runs: int  # all the runs
+    on_s: float | None = None
+    period_s: float | None = None
+    duty: float | None = None
+    phases: list[mp.Phase] = field(default_factory=list)
+    cycle_kwh: float | None = None
+    energy_kwh: float = 0.0  # median energy of one use
+    # the engine can see it: a step of at least the step threshold, or a
+    # multi-phase cycle with heating
+    recognisable: bool = True
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "band": self.band,
+            "power_w": round(self.power_w),
+            "duration_s": round(self.duration_s),
+            "uses": self.uses,
+            "runs": self.runs,
+            "on_s": None if self.on_s is None else round(self.on_s),
+            "period_s": None if self.period_s is None else round(self.period_s),
+            "duty": None if self.duty is None else round(self.duty, 3),
+            "phases": [p.to_dict() for p in self.phases],
+            "cycle_kwh": None if self.cycle_kwh is None else round(self.cycle_kwh, 3),
+            "energy_kwh": round(self.energy_kwh, 3),
+            "recognisable": self.recognisable,
+        }
+
+
+def learn(
+    runs: Sequence[Run], step_threshold_w: float = 300.0, config: GroundTruthConfig | None = None
+) -> Learned | None:
+    """The signature of the most frequent kind of run (None without runs).
+    A steady appliance whose runs fall in several duration bands keeps the
+    most frequent band; a multi-phase one its most frequent programme."""
+    cfg = config or GroundTruthConfig()
+    if not runs:
+        return None
+    counts = {k: sum(1 for r in runs if r.kind == k) for k in _KIND_ORDER}
+    kind = max(_KIND_ORDER, key=lambda k: (counts[k], -_KIND_ORDER.index(k)))
+    mine = [r for r in runs if r.kind == kind]
+    if kind == MULTIPHASE:
+        samples = [mp.Sample("", r.start, r.end, r.energy_kwh, r.phases, 1.0) for r in mine]
+        clusters = mp.cluster(samples, cfg.cycles.match_distance)
+        best = max(clusters, key=lambda m: (len(m), -m[0].start))
+        template = mp.template_of(best)
+        return Learned(
+            kind=MULTIPHASE,
+            band="cycle",
+            power_w=max((p.power_w for p in template), default=0.0),
+            duration_s=statistics.median(s.duration for s in best),
+            uses=len(best),
+            runs=len(runs),
+            phases=template,
+            cycle_kwh=statistics.median(s.energy_kwh for s in best),
+            energy_kwh=statistics.median(s.energy_kwh for s in best),
+            recognisable=any(p.kind == mp.HEAT for p in template),
+        )
+    if kind == CYCLING:
+        band = "session"
+    else:
+        bands: dict[str, int] = {}
+        for r in mine:
+            b = duration_band(r.duration_s)
+            bands[b] = bands.get(b, 0) + 1
+        band = max(("short", "medium", "long"), key=lambda b: (bands.get(b, 0), b == "medium"))
+        mine = [r for r in mine if duration_band(r.duration_s) == band]
+    power = statistics.median(r.power_w for r in mine)
+
+    def med(values):
+        values = [v for v in values if v is not None]
+        return statistics.median(values) if values else None
+
+    return Learned(
+        kind=kind,
+        band=band,
+        power_w=power,
+        duration_s=statistics.median(r.duration_s for r in mine),
+        uses=len(mine),
+        runs=len(runs),
+        on_s=med(r.on_s for r in mine) if kind == CYCLING else None,
+        period_s=med(r.period_s for r in mine) if kind == CYCLING else None,
+        duty=med(r.duty for r in mine) if kind == CYCLING else None,
+        energy_kwh=statistics.median(r.energy_kwh for r in mine),
+        recognisable=power >= step_threshold_w,
+    )
+
+
+# ---------------------------------------------------------------------------
+# evaluation
+# ---------------------------------------------------------------------------
+@dataclass
+class Interval:
+    start: float
+    end: float
+    energy_kwh: float = 0.0
+
+
+def _overlap(a: Interval, b: Interval) -> float:
+    return max(0.0, min(a.end, b.end) - max(a.start, b.start))
+
+
+def _matches(a: Interval, b: Interval, min_overlap: float) -> bool:
+    shorter = min(a.end - a.start, b.end - b.start)
+    o = _overlap(a, b)
+    return o > 0 and o >= min_overlap * shorter
+
+
+def _inside(d: Interval, periods: Sequence[tuple[float, float]]) -> bool:
+    """At least half of the detection is in the covered periods."""
+    length = d.end - d.start
+    if length <= 0:
+        return any(a <= d.start < b for a, b in periods)
+    o = sum(max(0.0, min(d.end, b) - max(d.start, a)) for a, b in periods)
+    return o >= 0.5 * length
+
+
+def evaluate(
+    truth: Sequence[Interval],
+    detected: Sequence[Interval],
+    covered_periods: Sequence[tuple[float, float]] | None = None,
+    min_overlap: float = 0.5,
+) -> dict:
+    """Detections of the curve against the true uses. Detections outside
+    ``covered_periods`` (when given) are left out: nothing can tell whether
+    they are right. Several detections may match one use (an appliance seen
+    as two activations): they all count as correct, and the use as found
+    once."""
+    dets = [d for d in detected if covered_periods is None or _inside(d, covered_periods)]
+    found = sum(1 for t in truth if any(_matches(t, d, min_overlap) for d in dets))
+    correct = sum(1 for d in dets if any(_matches(t, d, min_overlap) for t in truth))
+    precision = correct / len(dets) if dets else None
+    recall = found / len(truth) if truth else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall > 0
+        else (0.0 if precision is not None and recall is not None else None)
+    )
+    truth_kwh = sum(t.energy_kwh for t in truth)
+    detected_kwh = sum(d.energy_kwh for d in dets)
+    return {
+        "uses": len(truth),
+        "found": found,
+        "missed": len(truth) - found,
+        "detections": len(dets),
+        "correct": correct,
+        "false": len(dets) - correct,
+        "precision": None if precision is None else round(precision, 3),
+        "recall": None if recall is None else round(recall, 3),
+        "f1": None if f1 is None else round(f1, 3),
+        "truth_kwh": round(truth_kwh, 3),
+        "detected_kwh": round(detected_kwh, 3),
+        "energy_ratio": round(detected_kwh / truth_kwh, 3) if truth_kwh > 0 else None,
+    }
+
+
+def merge_evaluations(parts: Iterable[Mapping]) -> dict:
+    """The evaluation of several periods (days) from their own."""
+    keys = ("uses", "found", "missed", "detections", "correct", "false")
+    total = {k: 0 for k in keys}
+    truth_kwh = detected_kwh = 0.0
+    for p in parts:
+        for k in keys:
+            total[k] += int(p.get(k) or 0)
+        truth_kwh += float(p.get("truth_kwh") or 0.0)
+        detected_kwh += float(p.get("detected_kwh") or 0.0)
+    precision = total["correct"] / total["detections"] if total["detections"] else None
+    recall = total["found"] / total["uses"] if total["uses"] else None
+    f1 = None
+    if precision is not None and recall is not None:
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
+    return {
+        **total,
+        "precision": None if precision is None else round(precision, 3),
+        "recall": None if recall is None else round(recall, 3),
+        "f1": None if f1 is None else round(f1, 3),
+        "truth_kwh": round(truth_kwh, 3),
+        "detected_kwh": round(detected_kwh, 3),
+        "energy_ratio": round(detected_kwh / truth_kwh, 3) if truth_kwh > 0 else None,
+    }
+
+
+def activation_energy_kwh(a: Mapping) -> float:
+    """Energy of a stored activation (a session counts its duty; a
+    recognised cycle's ``power_w`` is already its mean power)."""
+    duration = float(a["end"]) - float(a["start"])
+    duty = 1.0 if a.get("multiphase") else float(a.get("duty") or 1.0)
+    return float(a.get("power_w") or 0.0) * duty * duration / 3.6e6
+
+
+def detections(
+    summary: Mapping,
+    signature_id: str,
+    match: Callable[[Mapping], str | None],
+    template: Sequence[mp.Phase] | None = None,
+    max_distance: float = 0.6,
+) -> list[Interval]:
+    """What the analysis of one stored day recognised as ``signature_id``:
+    its activations whose registry id (``match``, e.g.
+    :meth:`.registry.Matcher.match`) is that signature and, with a
+    ``template``, the candidate cycles within ``max_distance`` of it (those
+    the analysis would recognise once the template is validated)."""
+    out: list[Interval] = []
+    for a in summary.get("activations") or []:
+        try:
+            if match(a) == signature_id:
+                out.append(Interval(float(a["start"]), float(a["end"]), activation_energy_kwh(a)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if template:
+        for c in summary.get("cycles") or []:
+            try:
+                phases = [mp.Phase.from_dict(p) for p in c.get("phases") or []]
+                d = Interval(float(c["start"]), float(c["end"]), float(c.get("energy_kwh") or 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+            recognised = c.get("template") == signature_id or (
+                phases and mp.distance(phases, template) <= max_distance
+            )
+            if recognised and not any(_overlap(d, x) > 0 for x in out):
+                out.append(d)
+    out.sort(key=lambda x: x.start)
+    return out
+
+
+def truth_intervals(runs: Iterable[Mapping | Run]) -> list[Interval]:
+    """The runs as intervals (stored runs or :class:`Run`)."""
+    out = []
+    for r in runs:
+        if isinstance(r, Run):
+            out.append(Interval(r.start, r.end, r.energy_kwh))
+        else:
+            out.append(Interval(float(r["start"]), float(r["end"]), float(r.get("energy_kwh") or 0.0)))
+    return out

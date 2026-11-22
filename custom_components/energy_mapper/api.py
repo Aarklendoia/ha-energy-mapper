@@ -137,3 +137,14 @@ class EnergyMapperClient:
         if appliance:
             body["appliance"] = appliance
         return await self._request("POST", "/api/review", json=body)
+
+    async def teaching(self) -> dict[str, Any]:
+        """``{"teachers": [...]}``: the learning status of the appliances
+        taught by a measured device (add-on 0.11.0+)."""
+        return await self._request("GET", "/api/teaching")
+
+    async def apply_teaching(self, key: str) -> dict[str, Any]:
+        """The signature learned for an appliance, created when needed:
+        ``{"signature", "created", "learned"}``; errors ``not_found`` (404),
+        ``not_learned`` / ``not_recognisable`` (422), ``conflict`` (409)."""
+        return await self._request("POST", "/api/teaching", json={"appliance": key})

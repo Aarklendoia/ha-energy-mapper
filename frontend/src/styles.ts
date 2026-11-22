@@ -1791,6 +1791,16 @@ export const panelStyles = css`
   .takeover-error {
     color: var(--error-color);
   }
+  .teach-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .teach-title {
+    color: var(--primary-text-color);
+  }
   .takeover-buttons {
     display: flex;
     flex-wrap: wrap;
@@ -1799,7 +1809,10 @@ export const panelStyles = css`
   }
   .appliance-actions {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-end;
+    gap: 4px;
     border-top: 1px solid var(--divider-color);
     padding: 2px 6px;
   }

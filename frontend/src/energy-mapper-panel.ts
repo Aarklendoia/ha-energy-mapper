@@ -30,6 +30,7 @@ import {
   type Tracking,
 } from "./appliances.ts";
 import { energyState, pickList, preselected, type TrackingListing } from "./takeover.ts";
+import { sensorChoices, teachingLines, teachState, type TeachingListing } from "./teaching.ts";
 import "./chart.ts";
 import type { ChartModel, EnergyMapperChart } from "./chart.ts";
 import {
@@ -227,6 +228,8 @@ export class EnergyMapperPanel extends LitElement {
     _applianceStats: { state: true },
     _tracking: { state: true },
     _takeover: { state: true },
+    _teaching: { state: true },
+    _teach: { state: true },
   };
 
   static override styles = panelStyles;
@@ -290,6 +293,17 @@ export class EnergyMapperPanel extends LitElement {
   /** the confirmation open on an appliance card: take over (with the device
    * picked) or undo; busy while the integration applies it */
   declare _takeover: { key: string; mode: "take" | "undo"; stat: string; busy: boolean; error: string | null } | null;
+  /** learning from a measured device (#14; null: not available) */
+  declare _teaching: TeachingListing | null;
+  /** the confirmation open on an appliance card: start learning (with the
+   * sensor picked), finish with the learned signature, or stop */
+  declare _teach: {
+    key: string;
+    mode: "start" | "finish" | "stop";
+    entity: string;
+    busy: boolean;
+    error: string | null;
+  } | null;
 
   private started = false;
   private requestId = 0;
@@ -338,6 +352,8 @@ export class EnergyMapperPanel extends LitElement {
     this._applianceStats = null;
     this._tracking = null;
     this._takeover = null;
+    this._teaching = null;
+    this._teach = null;
     if (new URLSearchParams(location.search).has("review")) this.writeTab(this._tab);
     // HA elements loaded later (lazily) replace the fallbacks
     for (const tag of ["ha-menu-button", "ha-icon-button", "ha-button", "ha-alert", "ha-entity-picker"]) {
@@ -451,6 +467,7 @@ export class EnergyMapperPanel extends LitElement {
         this.loadReview(),
         this.loadAppliances(),
         this.loadTracking(),
+        this.loadTeaching(),
       ]);
       this._days = days;
       this._registry = registry;
@@ -505,6 +522,43 @@ export class EnergyMapperPanel extends LitElement {
     } catch {
       this._tracking = null;
     }
+  }
+
+  /** The learning status of the appliances taught by a sensor (#14, every
+   * user; integration 0.9.0+, else nothing is shown). */
+  private async loadTeaching(): Promise<void> {
+    try {
+      this._teaching = await this.ws<TeachingListing>({ type: "energy_mapper/teaching" });
+    } catch {
+      this._teaching = null;
+    }
+  }
+
+  /** Start, finish or stop learning, after the confirmation on the card. */
+  private async applyTeach(name: string): Promise<void> {
+    const form = this._teach;
+    if (!form || form.busy || (form.mode === "start" && !form.entity)) return;
+    const appliance = this._appliances?.appliances.find((a) => a.key === form.key);
+    const entity = form.mode === "start" ? form.entity : (appliance?.teacher?.entity_id ?? "");
+    const sensor = this.sensorName(entity);
+    this._teach = { ...form, busy: true, error: null };
+    try {
+      if (form.mode === "start") {
+        await this.ws({ type: "energy_mapper/teach", appliance: form.key, entity_id: form.entity });
+        this._notice = this.t("teach_started", { name, sensor });
+      } else {
+        await this.ws({ type: "energy_mapper/stop_teaching", appliance: form.key, use: form.mode === "finish" });
+        this._notice = form.mode === "finish" ? this.t("teach_finished", { name }) : this.t("teach_stopped", { name, sensor });
+      }
+      this._teach = null;
+    } catch (err) {
+      if (this._teach) this._teach = { ...this._teach, busy: false, error: this.errorText(err) };
+    }
+    await Promise.all([this.loadAppliances(), this.loadTeaching(), this.loadTracking()]);
+  }
+
+  private sensorName(entityId: string): string {
+    return this.friendlyName(entityId) ?? entityId;
   }
 
   /** Take over, or undo, after the confirmation on the card. */
@@ -1087,9 +1141,10 @@ export class EnergyMapperPanel extends LitElement {
             ${body}
           </button>`
         : html`<div class="appliance-main">${body}</div>`}
-      ${this.isAdmin ? this.renderTakeover(c, t) : nothing}
+      ${this.isAdmin ? this.renderTakeover(c, t) : nothing} ${this.renderTeaching(c, t, info)}
       ${this.isAdmin
         ? html`<div class="appliance-actions">
+            ${this.teachAction(c)}
             <a
               class="appliance-settings"
               href=${SETTINGS_PATH}
@@ -1172,6 +1227,107 @@ export class EnergyMapperPanel extends LitElement {
     }
     return html`<div class="appliance-takeover">
       <div class="takeover-line">${line}</div>
+      ${confirm}
+    </div>`;
+  }
+
+  /** "Learn from a plug" next to Settings (administrators), while the card
+   * is not learning and its form is closed. */
+  private teachAction(c: ApplianceCard): TemplateResult | typeof nothing {
+    const appliances = this._appliances?.appliances ?? [];
+    const state = teachState(this._teaching, appliances.find((a) => a.key === c.key));
+    if (state.kind !== "idle" || this._teach?.key === c.key) return nothing;
+    const t = this.t;
+    return this.textButton(
+      t("teach_action"),
+      () => {
+        const first = sensorChoices(this.hass?.states, appliances, c.key)[0];
+        this._teach = { key: c.key, mode: "start", entity: first?.suggested ? first.id : "", busy: false, error: null };
+      },
+      false,
+      "plain",
+      t("teach_action_hint"),
+    );
+  }
+
+  /** Learning from a measured device (#14): the status while a sensor
+   * teaches the appliance (every user), and for administrators the actions
+   * (learn from a plug, finish, stop) with their confirmation step. */
+  private renderTeaching(c: ApplianceCard, t: Translate, info: LocaleInfo): TemplateResult | typeof nothing {
+    const appliances = this._appliances?.appliances ?? [];
+    const appliance = appliances.find((a) => a.key === c.key);
+    const state = teachState(this._teaching, appliance);
+    if (state.kind === "none" || (state.kind === "idle" && !this.isAdmin)) return nothing;
+    const form = this._teach?.key === c.key ? this._teach : null;
+    const cancel = () => (this._teach = null);
+    if (state.kind === "idle") {
+      if (!form) return nothing; // the action is next to Settings
+      const choices = sensorChoices(this.hass?.states, appliances, c.key);
+      const selectId = `teach-${c.key}`;
+      const picked = choices.find((x) => x.id === form.entity);
+      return html`<div class="appliance-takeover appliance-teach">
+        <div class="takeover-confirm" role="group" aria-label=${t("teach_action")}>
+          ${choices.length
+            ? html`<label class="field" for=${selectId}>
+                <span>${t("teach_sensor")}</span>
+                <select
+                  id=${selectId}
+                  class="text-input"
+                  .value=${form.entity}
+                  ?disabled=${form.busy}
+                  @change=${(ev: Event) => {
+                    if (this._teach) this._teach = { ...this._teach, entity: (ev.target as HTMLSelectElement).value, error: null };
+                  }}
+                >
+                  <option value="" ?selected=${!form.entity}></option>
+                  ${choices.map(
+                    (x) =>
+                      html`<option value=${x.id} ?selected=${x.id === form.entity}>
+                        ${x.suggested ? t("teach_suggestion", { name: x.name }) : x.name}
+                      </option>`,
+                  )}
+                </select>
+              </label>`
+            : html`<p>${t("teach_no_sensor")}</p>`}
+          <p>${picked ? t("teach_start_confirm", { sensor: picked.name, name: c.name }) : t("teach_start_pick")}</p>
+          ${form.error ? html`<p class="takeover-error" role="alert">${form.error}</p>` : nothing}
+          <div class="takeover-buttons">
+            ${this.textButton(t("takeover_cancel"), cancel, form.busy)}
+            ${this.textButton(t("teach_start"), () => void this.applyTeach(c.name), form.busy || !picked, "accent")}
+          </div>
+        </div>
+      </div>`;
+    }
+    const sensor = this.sensorName(state.teacher.entity_id);
+    const since = state.teacher.since
+      ? t("teach_since", { day: formatDay(dayOf(state.teacher.since * 1000, info.time_zone), info, "brief") })
+      : "";
+    const nameOf = (key: string) => appliances.find((a) => a.key === key)?.name ?? key;
+    const lines = teachingLines(state, t, info, nameOf);
+    const open = (mode: "finish" | "stop") => (this._teach = { key: c.key, mode, entity: "", busy: false, error: null });
+    let confirm: TemplateResult | typeof nothing = nothing;
+    if (form && form.mode !== "start") {
+      const finish = form.mode === "finish";
+      confirm = html`<div class="takeover-confirm" role="group" aria-label=${finish ? t("teach_finish") : t("teach_stop")}>
+        <p>${finish ? t("teach_finish_confirm", { name: c.name, sensor }) : t("teach_stop_confirm", { sensor })}</p>
+        ${form.error ? html`<p class="takeover-error" role="alert">${form.error}</p>` : nothing}
+        <div class="takeover-buttons">
+          ${this.textButton(t("takeover_cancel"), cancel, form.busy)}
+          ${this.textButton(finish ? t("teach_use") : t("teach_stop_button"), () => void this.applyTeach(c.name), form.busy, "accent")}
+        </div>
+      </div>`;
+    }
+    return html`<div class="appliance-takeover appliance-teach">
+      <div class="teach-status">
+        <span class="teach-title">${t("teach_learning", { sensor })}${since ? html` · ${since}` : nothing}</span>
+        ${lines.map((l) => html`<span class="teach-line">${l}</span>`)}
+      </div>
+      ${this.isAdmin && !form
+        ? html`<div class="takeover-buttons">
+            ${this.textButton(t("teach_stop"), () => open("stop"))}
+            ${this.textButton(t("teach_finish"), () => open("finish"), state.blocker !== null, "accent")}
+          </div>`
+        : nothing}
       ${confirm}
     </div>`;
   }

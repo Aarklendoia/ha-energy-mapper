@@ -7,7 +7,7 @@ import asyncio
 import datetime as dt
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any
 
@@ -18,6 +18,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import EnergyMapperApiError, EnergyMapperClient, EnergyMapperError
 from .appliances import (
@@ -26,6 +27,7 @@ from .appliances import (
     SUBENTRY_TYPE,
     Appliance,
     Source,
+    Teacher,
     discovered,
     new_appliance,
     power_of,
@@ -40,6 +42,7 @@ from .const import (
     OPT_REVIEW_REPAIR,
     OPT_SETTINGS,
     PANEL_REVIEW_PATH,
+    POWER_UNITS,
     STATE_SENSOR_CLASS,
     SWITCH_DOMAINS,
     UPDATE_INTERVAL,
@@ -213,9 +216,7 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except (KeyError, TypeError, ValueError) as err:
                 _LOGGER.warning("Invalid appliance %s ignored: %s", sub.title, err)
                 continue
-            out[sid] = Appliance(
-                a.key, a.name, a.statistic_id, a.sources, sid, power_of(a.sources, self.powers)
-            )
+            out[sid] = replace(a, subentry_id=sid, power_w=power_of(a.sources, self.powers))
         return out
 
     def appliance(self, subentry_id: str) -> Appliance | None:
@@ -324,7 +325,7 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if others:
                 await async_merge_statistics(self.hass, target, others)
             sources = target.sources + tuple(s for s in other.sources if not target.has(s))
-            merged = Appliance(target.key, target.name, target.statistic_id, sources, target_id)
+            merged = replace(target, sources=sources)
             ends = [self.last_seen[k] for k in (target.key, other.key) if k in self.last_seen]
             if ends:
                 self.last_seen[target.key] = max(ends)
@@ -445,9 +446,7 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if owner is not None:
                 raise ReviewError("already_linked", f"{sid} is already linked to {owner.name}")
             target = current[target_id]
-            merged = Appliance(
-                target.key, target.name, target.statistic_id, (*target.sources, source), target_id
-            )
+            merged = replace(target, sources=(*target.sources, source))
             self._reimport.add(target.key)
             self.hass.config_entries.async_update_subentry(
                 entry, appliance_subentries(entry)[target_id], data=merged.subentry_data()
@@ -465,6 +464,94 @@ class EnergyMapperCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         answer = await self.client.review_decision(sid, action)
         await self.async_update_review()
         return answer
+
+    # -- learning from a measured device (#14) ---------------------------------
+    async def async_teaching(self) -> dict[str, Any]:
+        """The learning status of the taught appliances (``GET /api/teaching``);
+        ``supported`` is false for an add-on before 0.11.0."""
+        try:
+            listing = await self.client.teaching()
+        except EnergyMapperApiError as err:
+            if self._no_endpoint(err):
+                return {"supported": False, "teachers": []}
+            raise
+        return {"supported": True, "teachers": listing.get("teachers") or []}
+
+    def _target(self, key: str) -> tuple[str, Appliance]:
+        current = self.appliances_by_subentry()
+        found = next(((i, a) for i, a in current.items() if a.key == key), None)
+        if found is None:
+            raise ReviewError("not_found", f"no appliance {key}")
+        return found
+
+    async def async_teach(self, key: str, entity_id: str) -> Appliance:
+        """Learn the appliance ``key`` from a power sensor that measures it
+        (a temporary smart plug): the add-on stops subtracting the sensor and
+        keeps its runs as the appliance's ground truth."""
+        state = self.hass.states.get(entity_id)
+        attrs = state.attributes if state is not None else {}
+        if (
+            entity_id.split(".", 1)[0] != "sensor"
+            or state is None
+            or (attrs.get("device_class") != "power" and attrs.get("unit_of_measurement") not in POWER_UNITS)
+        ):
+            raise ReviewError("invalid_format", f"{entity_id}: expected a power sensor")
+        if not (await self.async_teaching())["supported"]:
+            raise ReviewError("not_supported", "the Energy Mapper add-on is too old to learn from a sensor")
+        entry = self.config_entry
+        async with self._sync_lock:
+            target_id, target = self._target(key)
+            for other in self.appliances_by_subentry().values():
+                if other.key == key:
+                    continue
+                if (other.teacher and other.teacher.entity_id == entity_id) or any(
+                    s.id == entity_id for s in other.sources
+                ):
+                    raise ReviewError("already_linked", f"{entity_id} is already linked to {other.name}")
+            taught = replace(target, teacher=Teacher(entity_id, dt_util.utcnow().timestamp()))
+            self.hass.config_entries.async_update_subentry(
+                entry, appliance_subentries(entry)[target_id], data=taught.subentry_data()
+            )
+        _LOGGER.info("%s learns from %s", target.name, entity_id)
+        await self._async_push(self.appliances_by_subentry().values())
+        return taught
+
+    async def async_stop_teaching(self, key: str, use: bool) -> tuple[Appliance, dict[str, Any] | None]:
+        """End the learning of the appliance ``key``. With ``use``, the
+        learned signature (created by the add-on when needed) becomes a
+        source of the appliance and the teaching sensor stops being one (the
+        plug goes away): the appliance is tracked from the whole-house curve,
+        and its stored days are imported again with the signature's energy."""
+        _, target = self._target(key)
+        if target.teacher is None:
+            raise ReviewError("not_found", f"{target.name} is not learning from a sensor")
+        answer = await self.client.apply_teaching(key) if use else None
+        entry = self.config_entry
+        async with self._sync_lock:
+            target_id, target = self._target(key)
+            sources = target.sources
+            if answer is not None and target.teacher is not None:
+                source = signature(answer["signature"])
+                others = [a for a in self.appliances_by_subentry().values() if a.key != key]
+                owner = next((a for a in others if a.has(source)), None)
+                if owner is not None:
+                    raise ReviewError("already_linked", f"{source.id} is already linked to {owner.name}")
+                teacher = target.teacher.entity_id
+                sources = tuple(s for s in sources if not (s.type == KIND_SUBMETER and s.id == teacher))
+                if not any((s.type, s.id) == (source.type, source.id) for s in sources):
+                    sources = (*sources, source)
+                self._reimport.add(key)
+            done = replace(target, sources=sources, teacher=None)
+            self.hass.config_entries.async_update_subentry(
+                entry, appliance_subentries(entry)[target_id], data=done.subentry_data()
+            )
+            await self._async_save()
+        _LOGGER.info("%s stopped learning (learned signature used: %s)", target.name, answer is not None)
+        await self._async_push(self.appliances_by_subentry().values())
+        if answer is not None:
+            await self.client.review_decision(answer["signature"]["id"], "validate", key)
+            await self.async_update_review()
+        return done, answer
 
     # -- take over tracking in the Energy dashboard (#13) ---------------------
     async def _async_energy_manager(self) -> Any:
