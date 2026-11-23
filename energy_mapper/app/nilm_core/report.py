@@ -12,7 +12,7 @@ from .cycles import CycleConfig, Phase, attribute, find_cycles
 from .known import RUN, KnownLoad, SwitchedLoadConfig, resolve_switched_load
 from .signal import build_samples, parse_numeric, scaled, sum_series
 from .signatures import cluster
-from .steps import PvQuiet, Step, detect_steps, night_threshold
+from .steps import PV_QUIET_W, PvQuiet, Step, detect_steps, hold_doubtful, night_threshold, solar_doubt_limit
 
 REPORT_VERSION = 1
 
@@ -101,16 +101,45 @@ def base_load(values: list[float], percentile: float = 0.05) -> float:
     return v[int(percentile * (len(v) - 1))]
 
 
-def find_steps(samples, config: AnalysisConfig) -> list[Step]:
+def find_steps(samples, config: AnalysisConfig, held: list[float] | None = None) -> list[Step]:
     """The steps of the residual load: ``step_threshold_w``, and the night
     threshold (#77) where the PV production of the samples stays near zero
-    around the step."""
+    around the step. With a PV meter, the samples whose production is in
+    doubt (a late solar reading, #86) are set aside first
+    (:func:`~.steps.hold_doubtful`; their times are added to ``held``)."""
     points = [(s.ts, s.residual) for s in samples if s.residual is not None]
+    if not config.pv_entity:
+        return detect_steps(points, threshold=config.step_threshold_w)
+    # a known residual has a known production: one value per point
+    pv = [s.pv for s in samples if s.residual is not None]
+    points = hold_doubtful(points, pv, solar_doubt_limit(config.step_threshold_w), held)
     low = config.low_step_threshold()
     if low is None:
         return detect_steps(points, threshold=config.step_threshold_w)
-    pv = PvQuiet([(s.ts, s.pv) for s in samples if s.pv is not None])
-    return detect_steps(points, threshold=config.step_threshold_w, low_threshold=low, low_ok=pv)
+    quiet = PvQuiet([(s.ts, s.pv) for s in samples if s.pv is not None])
+    return detect_steps(points, threshold=config.step_threshold_w, low_threshold=low, low_ok=quiet)
+
+
+def solar_interval(
+    pv: list[tuple[float, float | None]],
+    start: float,
+    end: float,
+    change_w: float,
+    min_changes: int = 20,
+) -> float | None:
+    """How long the solar meter takes to tell that the production moved:
+    the time since its previous reading, for the readings of the period
+    that moved by ``change_w`` or more while producing; their lower
+    quartile. Home Assistant records a state when it changes, so a stable
+    production gives long intervals whatever the meter (the night is one):
+    only the changes that matter are looked at, and the lower quartile
+    leaves out those that follow a stable production. None under
+    ``min_changes`` such readings (a clear or a dull day)."""
+    valid = [(t, v) for t, v in pv if v is not None and start <= t < end]
+    gaps = sorted(
+        b[0] - a[0] for a, b in pairwise(valid) if a[1] > PV_QUIET_W and abs(b[1] - a[1]) >= change_w
+    )
+    return gaps[(len(gaps) - 1) // 4] if len(gaps) >= min_changes else None
 
 
 def resolve_known(
@@ -160,14 +189,15 @@ def analyze(
             return None
         return scaled(parse_numeric(histories.get(entity, [])), config.scales.get(entity, 1.0), invert)
 
+    pv = None
+    if config.pv_entity:
+        pv = sum_series([series(config.pv_entity)] + [series(e) for e in config.extra_pv_entities])
     samples = build_samples(
         grid=sum_series(
             [series(config.grid_entity, config.grid_invert)]
             + [series(e, config.grid_invert) for e in config.extra_grid_entities]
         ),
-        pv=sum_series([series(config.pv_entity)] + [series(e) for e in config.extra_pv_entities])
-        if config.pv_entity
-        else None,
+        pv=pv,
         submeters=[series(s.entity_id) for s in config.submeters],
         estimated=[s.estimated for s in config.submeters],
         grid_export=series(config.grid_export_entity),
@@ -175,7 +205,8 @@ def analyze(
     )
     points = [(s.ts, s.residual) for s in samples if s.residual is not None]
 
-    steps = find_steps(samples, config)
+    held: list[float] = []  # samples set aside: their solar production was in doubt (#86)
+    steps = find_steps(samples, config, held)
     known = resolve_known(histories, config, steps, points, end)
     sessions = find_cycling_sessions(steps)
     pairs = pair_steps(steps)
@@ -209,6 +240,13 @@ def analyze(
         if a.pv is None:
             pv_unknown_s += min(b.ts - a.ts, 300)
     gaps = [b.ts - a.ts for a, b in pairwise(in_period)]
+    solar = {}
+    if config.pv_entity:  # only with a solar meter: the report is unchanged without one
+        interval = solar_interval(pv or [], start, end, solar_doubt_limit(config.step_threshold_w))
+        solar = {
+            "solar_interval_s": round(interval, 1) if interval is not None else None,
+            "solar_held": sum(1 for t in held if start <= t < end),
+        }
 
     return {
         "version": REPORT_VERSION,
@@ -242,6 +280,7 @@ def analyze(
             "steps": sum(1 for s in steps if start <= s.ts < end),
             "pv_unknown_s": round(pv_unknown_s),
             "max_gap_s": round(max(gaps)) if gaps else None,
+            **solar,
             "compute_s": round(time.perf_counter() - t0, 2),
         },
     }

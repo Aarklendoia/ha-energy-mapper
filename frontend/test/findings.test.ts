@@ -17,6 +17,7 @@ const names: Record<string, string> = {
   "sensor.roof_production": "Roof panels",
   "sensor.battery_power": "Home battery",
   "sensor.dryer_energy": "Dryer plug energy",
+  "sensor.roof_power": "Roof inverter power",
 };
 const friendly = (id: string) => names[id];
 
@@ -41,6 +42,7 @@ const ALL: Finding[] = [
     power_w: 0,
     energy_kwh: 0.6,
   }),
+  finding("slow_solar_meter", "sensor.roof_power", { interval_s: 300, limit_s: 60 }),
 ];
 
 test("findings: every kind gets a title and a sentence in English and French", () => {
@@ -65,6 +67,10 @@ test("findings: French sentences", () => {
   assert.equal(s(ALL[4]), "Home battery : vérifiez le signe, positif doit signifier décharge.");
   assert.equal(s(ALL[5]), "Dryer : capteur indisponible.");
   assert.equal(s(ALL[8]), "Dryer : 0,80 kWh déclarés, 6,10 kWh mesurés.");
+  assert.equal(
+    s(ALL[10]),
+    "Roof inverter power : ne donne une nouvelle valeur que toutes les 300 s quand les panneaux produisent. Au-delà de 60 s, un nuage qui passe ne se distingue plus d'un appareil en journée : une lecture plus rapide (locale) de la puissance de l'onduleur aide.",
+  );
 });
 
 test("findings: energies follow the number format of the profile", () => {

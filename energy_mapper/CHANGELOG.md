@@ -26,6 +26,26 @@
   one session line (the lines of its bursts leave the feed; each new burst
   shows while it is on, then joins the session). A short use of at least 600 W
   is also compared with the cycling signatures.
+- Solar: late readings no longer make false steps in the daytime (#86). The
+  house load is grid + solar, two meters that do not report together: when a
+  cloud passes, the grid reading moves at once and the solar reading comes
+  later, so a step appeared, then cancelled itself (about half of the daytime
+  steps of 300 to 600 W on the reference installation). With a PV meter, the
+  samples whose solar value is about to move (by half the step threshold or
+  more, within 60 s) are now set aside before the step detection, which gets
+  the level before the doubt instead (`steps.SolarHold`): a cloud gives no
+  step, and an appliance that switched meanwhile gives one step with its real
+  size, up to a minute late. No setting; nothing changes without a PV meter
+  nor while the panels produce nothing, and the curve and the energies are
+  unchanged.
+- The live view applies the same rule (same steps as the night): while the
+  panels produce, the steps come once the solar value has changed, a minute
+  later at most.
+- New finding `slow_solar_meter` (*Things to check*, integration 0.13.0 for
+  the translated text): the solar power sensor takes more than 60 s to report
+  a change of the production, so clouds cannot be told from appliances in the
+  daytime. The report's `quality` gets `solar_interval_s` and `solar_held`
+  (only with a PV meter).
 
 ## 0.15.0
 

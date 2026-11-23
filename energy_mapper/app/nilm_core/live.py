@@ -46,10 +46,12 @@ from .steps import (
     PV_QUIET_S,
     PV_QUIET_W,
     LiveStep,
+    SolarHold,
     Step,
     StepStream,
     meter_interval,
     pv_quiet,
+    solar_doubt_limit,
 )
 
 # score thresholds of the candidates: "looks like" / "maybe" / "unknown"
@@ -589,6 +591,12 @@ class LiveDetector:
     steps are kept where the PV production stays near zero around them, as
     the night does (:func:`~.steps.pv_quiet` on the PV of the samples); the
     steps are then confirmed once the minute of PV after them is known.
+
+    With a PV meter, the samples whose solar production is in doubt (a late
+    solar reading, #86) are set aside as the night does
+    (:class:`~.steps.SolarHold`): while the panels produce, a sample reaches
+    the step detector once its production has changed, or a minute later,
+    so the steps come that much later than the samples.
     """
 
     PV_KEEP_S = 600.0
@@ -614,6 +622,8 @@ class LiveDetector:
             low_threshold=low,
             low_ok=self._pv_quiet if low is not None else None,
         )
+        # the solar doubt (#86): the samples wait here until theirs is known
+        self.hold = SolarHold(solar_doubt_limit(config.step_threshold_w)) if config.pv_entity else None
         self.pairer = LivePairer(first_id=first_event_id)
         self.ranker = CandidateRanker(registry, local_hour)
         self.pv_moved_w = pv_moved_w if pv_moved_w is not None else 0.5 * config.step_threshold_w
@@ -683,9 +693,14 @@ class LiveDetector:
                 self._pv_v.append(s.pv)
             if s.residual is None:
                 continue
-            for st in self.stream.push(s.ts, s.residual):
-                self._handle(st, s.ts, update, changed)
+            points = self.hold.push(s.ts, s.residual, s.pv) if self.hold else [(s.ts, s.residual)]
+            for ts, value in points:
+                for st in self.stream.push(ts, value):
+                    self._handle(st, s.ts, update, changed)
         if final:
+            for ts, value in self.hold.flush() if self.hold else ():
+                for st in self.stream.push(ts, value):
+                    self._handle(st, self.now, update, changed)
             for st in self.stream.flush():
                 self._handle(st, self.now, update, changed)
         if self._pv_ts and self.now is not None:
@@ -796,7 +811,10 @@ def replay(
         det.push(entity, ts, state)
         prev = ts
     collect(det.flush())
-    steps = [u.to_step() for u in updates if u.state == CONFIRMED]
+    # in time order, as they are confirmed: an update lists a step where it
+    # first appeared (provisional), and the samples a solar reading
+    # releases together (#86) can confirm several steps in one update
+    steps = sorted((u.to_step() for u in updates if u.state == CONFIRMED), key=lambda s: s.ts)
     events = [det.events[i] for i in sorted(det.events)]
     return ReplayResult(steps, updates, events, samples, interval_s)
 

@@ -515,6 +515,11 @@ on/off states come with real-time detection
   panels, the *smallest appliance at night* lowers it only while they produce nothing.
 - The **meter rate** sets the shortest visible use: an appliance must last at least two meter
   readings.
+- With **solar panels**, the grid and the solar sensors do not report together: since add-on
+  0.16.0 the readings taken while the solar value is about to move are set aside, so a
+  passing cloud is no longer taken for an appliance. This needs a solar power sensor that
+  reports a change within a minute (else *Things to check* says so), and the *Live* tab then
+  shows a daytime step up to a minute later.
 - The analysis needs the **full day of history** of the grid power sensor in the recorder: do
   not exclude it, and keep at least a couple of days (`purge_keep_days`). A day whose history
   starts after midnight is not analysed.
@@ -1171,6 +1176,12 @@ La puissance et l'état de marche en direct viendront avec la détection en temp
   produisent rien.
 - Le **rythme du compteur** fixe l'utilisation la plus courte visible : un appareil doit
   durer au moins deux mesures.
+- Avec des **panneaux solaires**, le capteur du réseau et celui du solaire ne donnent pas
+  leurs mesures au même instant : depuis l'add-on 0.16.0, les mesures prises quand la valeur
+  du solaire est sur le point de bouger sont mises de côté, et un nuage qui passe n'est plus
+  pris pour un appareil. Il faut pour cela un capteur de puissance solaire qui signale un
+  changement en moins d'une minute (sinon *À vérifier* le dit), et l'onglet *En direct*
+  affiche alors une marche de jour jusqu'à une minute plus tard.
 - L'analyse a besoin de **toute la journée d'historique** du capteur de puissance réseau dans
   le *recorder* : ne l'excluez pas, et gardez au moins quelques jours (`purge_keep_days`). Un
   jour dont l'historique commence après minuit n'est pas analysé.

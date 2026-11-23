@@ -149,3 +149,68 @@ def solar_drift_day(
         p.append((tp, f"{house.pv_at(tp):.0f}"))
         t += dt
     return {grid: g, pv: p}
+
+
+def cloudy_day(
+    day0: float = DAY0,
+    dt: float = 10.0,
+    pv_dt: float = 30.0,
+    pv_lag_s: float = 0.0,
+    pv_peak_w: float = 3000.0,
+    loads: tuple = (),
+    clouds: bool = True,
+    noise_w: float = 10.0,
+    seed: int = 5,
+    grid: str = "sensor.grid_power",
+    pv: str = "sensor.pv_power",
+) -> tuple[dict[str, list[tuple[float, str]]], list[tuple[float, float]]]:
+    """A day of passing clouds seen by a slow solar meter (#86), from 21:00
+    the day before: the histories and the clouds' edges ``(time, watts)``.
+
+    * base load 250 W plus ``loads``; PV from 08:00 to 18:00;
+    * from 09:00 to 17:00 a cloud every 4 to 15 minutes takes 30 % to 80 %
+      of the production for 1 to 5 minutes, its edges lasting 4 to 15 s;
+    * the grid meter reports every ``dt`` and follows the clouds at once;
+    * the solar meter reports every ``pv_dt`` (10 W resolution, and only a
+      value that changed, as Home Assistant records it), ``pv_lag_s``
+      late: each cloud edge is first a step of the house load, cancelled
+      when the solar reading comes.
+    """
+    rnd = random.Random(seed)
+    house = House(base_w=250.0, pv_peak_w=pv_peak_w, noise_w=0.0)
+    passes = []  # (start, end, depth, edge)
+    t = day0 + 9 * HOUR
+    while clouds:
+        t += rnd.uniform(240, 900)
+        length = rnd.uniform(60, 300)
+        if t + length > day0 + 17 * HOUR:
+            break
+        passes.append((t, t + length, rnd.uniform(0.3, 0.8), rnd.uniform(4, 15)))
+        t += length
+
+    def production(t: float) -> float:
+        clear = house.pv_at(t)
+        for a, b, depth, edge in passes:
+            if a <= t < b:
+                shade = min(1.0, (t - a) / edge, (b - t) / edge)
+                return clear * (1 - depth * shade)
+        return clear
+
+    g, p = [], []
+    t = day0 - 3 * HOUR
+    while t < day0 + 24 * HOUR:
+        use = house.base_w + sum(load.power_at(t) for load in loads)
+        g.append((t, f"{use - production(t) + rnd.gauss(0, noise_w):.1f}"))
+        t += dt
+    last = None
+    t = day0 - 3 * HOUR + 3
+    while t < day0 + 24 * HOUR:
+        value = f"{round(production(t - pv_lag_s), -1):.0f}"
+        if value != last:
+            p.append((t, value))
+            last = value
+        t += pv_dt
+    edges = []
+    for a, b, depth, _edge in passes:
+        edges += [(a, depth * house.pv_at(a)), (b, -depth * house.pv_at(b))]
+    return {grid: g, pv: p}, edges

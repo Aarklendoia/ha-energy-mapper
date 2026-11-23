@@ -141,6 +141,25 @@ and applies to the nightly analysis and to the live view alike. **It only
 applies with a PV sensor** (Energy dashboard or `pv_entity`): without one it
 has no effect, so lower `step_threshold_w` instead.
 
+### Solar readings that come late
+
+The house load is the grid power plus the solar production, read from two
+meters that do not report at the same moment. When a cloud passes, the grid
+power moves at once and the solar value comes a few seconds later: the house
+load shows a step that is no appliance, then the opposite step. Since add-on
+0.16.0, with a PV sensor, the readings whose solar value is about to move by
+half of `step_threshold_w` or more within the next minute are set aside
+before the steps are looked for; the level before them is kept meanwhile. A
+cloud then shows no step, and an appliance switched on during a cloud is
+found with its real power, up to a minute late. There is nothing to set. In
+the live view, while the panels produce, a step shows once the solar value
+has changed (a minute later at most); at night nothing changes.
+
+This needs a solar power sensor that reports a change of the production
+within a minute. Otherwise the finding `slow_solar_meter` says how long it
+takes: prefer a local reading of the inverter (a few seconds) to a cloud
+service that updates every few minutes.
+
 ## Reports
 
 Each report is a JSON document with:
@@ -171,7 +190,11 @@ Each report is a JSON document with:
   maximum, so a normal day always has some) and what was running
   (`registry_id` on the signature parts). `notable` is `true` when the
   episode reaches `peak_threshold_w`;
-- `quality`: number of samples, longest gap, computing time;
+- `quality`: number of samples, longest gap, computing time; with a PV
+  sensor (add-on 0.16.0+), `solar_held` (the readings set aside because their
+  solar value was about to move) and `solar_interval_s` (how long the solar
+  sensor takes to report a change of the production, `null` on a day without
+  enough changes);
 - `ground_truth` (add-on 0.11.0+, only while an appliance learns from a
   sensor): per taught appliance, `key`, `entity_id`, its `runs` that day
   (`start`, `end`, `energy_kwh`, `power_w`, `max_w`, `kind`, `duty`, and

@@ -17,6 +17,7 @@ from energy_config import (
     constant_power,
     derive,
     flat_power_sensors,
+    slow_solar_meter,
     tracking_gaps,
     without_flat,
 )
@@ -512,7 +513,11 @@ class Analyzer:
         report = analyze(
             histories, cfg, start, end, local_hour=lambda ts: dt.datetime.fromtimestamp(ts, tz).hour
         )
-        findings = ctx.derived.findings + tracking_gaps(report, ctx.derived.tracked, histories)
+        findings = (
+            ctx.derived.findings
+            + tracking_gaps(report, ctx.derived.tracked, histories)
+            + slow_solar_meter(report, cfg.pv_entity)
+        )
         truth = self._ground_truth(cfg, histories, start, end, set(ctx.derived.teachers), report, ctx)
         if truth:
             report[GROUND_TRUTH_KEY] = truth

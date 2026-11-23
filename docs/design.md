@@ -356,6 +356,9 @@ flowchart TD
   and the battery keep their last value for 5 minutes, then count 0.
 - These rules are applied to one grid reading by `sample_at`, shared by the nightly
   `build_samples` and the live `SampleBuilder` (§ 4.11).
+- The grid and the solar meters do not report together: a sample whose solar value is about
+  to move is not trusted by the step detector (the *solar doubt*, § 4.2). The samples
+  themselves, the curve and the energies are unchanged.
 
 ### 4.2 Steps (`steps.py`)
 
@@ -385,6 +388,50 @@ those without the option. The option has no effect without a PV meter
 the analysis is then byte-identical. The offline comparison that chose this rule (against a
 lower threshold everywhere, and against dropping only the steps where PV jumped) is in issue
 #77.
+
+**Solar doubt** (#86, `steps.SolarHold`, always on with a PV meter). The house load is
+grid + solar, two meters that do not report together. When a cloud passes, the grid reading
+moves at once and the solar reading comes later: a step appears, then cancels itself. On the
+reference installation (8 November days, a grid meter every 15 s or faster, a solar meter
+every 6 s that skips readings), half of the daytime steps of 300 to 600 W were such
+artefacts. So before the detector sees them, the samples whose solar value is in doubt are
+set aside:
+
+- the **doubt** of a sample is how far the next different solar value of the samples is
+  from its own, when that value comes within 60 s (`PV_LATE_S`): the production may already
+  have been there, and the load with it. No doubt while the production is below 20 W
+  (`PV_QUIET_W`), nor when it does not change within the minute;
+- a sample whose doubt reaches half the step threshold (`SOLAR_DOUBT`) is not trusted: the
+  detector gets the level before the doubt instead, the median of the last three trusted
+  samples, for as long as the doubt lasts;
+- so a cloud that the solar meter tells late gives no step, and an appliance that switched
+  meanwhile gives one step with its real size, at the first trusted sample (a few seconds
+  to a minute late).
+
+Why this rule and not another: a solar value held for a long time is usually not stale,
+since Home Assistant only records a value that changed (on the reference installation the
+value changed by 10 W or less after 86 % of the silences of more than a minute), so an age
+limit would discard good data; only the next value tells. Dropping the steps that the
+doubt can explain (first prototype) left their partner steps orphan (the off-step of an
+appliance dropped, its on-step then paired with another appliance), where holding the level
+judges the step from both sides of the doubt. And a test on "the solar value moved by the
+opposite amount within 3 minutes" is not sharp enough: with the solar series shifted in
+time (a placebo), it fires on 28 % of the daytime steps of 300 to 600 W, against 32 % in
+place. The mean lag between the two meters was measured too (3 to 6 s on the reference
+installation): shifting the solar series by it changes the roughness of the load by 4 %, so
+it is not done.
+
+`report.find_steps` runs `hold_doubtful` on the residual and the `Sample.pv` of the day, then
+the detector as before; without a PV meter nothing runs and the analysis is byte-identical.
+The report's `quality` gets `solar_held` (the samples set aside) and `solar_interval_s`
+(§ 5, finding `slow_solar_meter`). On synthetic cloudy days (`tests/synth.cloudy_day`: 78
+cloud edges a day, a solar meter every 30 s) the ~105 false steps a day become none, and the
+switches of appliances turned on within 20 s of a cloud edge are found in 99 % of the cases
+(222 of 224 on 6 days; 65 % before, the cloud changing the size of the step; 95 % with a
+solar meter every 60 s). Limits: a solar meter that needs
+more than 60 s to tell a change (finding `slow_solar_meter`), or whose values are themselves
+late by more than a few seconds (a meter every 30 s whose values are 15 s old leaves 3 false
+steps a day of 160 on the same days), and the reverse case of a grid meter slower than the solar meter.
 
 Other users of the threshold: switched loads (§ 4.3) keep `step_threshold_w` in their
 tolerance (`max(20 %, threshold / 2)`), so their matching does not loosen; teaching
@@ -783,7 +830,11 @@ flowchart LR
    confirmed one can claim is **cancelled** (a spike). Provisional steps between 60 % and
    100 % of the threshold (the night threshold where PV is quiet) are flagged `small` (the
    guided mode says "too small") and never
-   open an event. The windows come from the meter interval: given (the night's: the median
+   open an event. With a PV meter, the samples pass through the same `SolarHold` as the
+   night (the solar doubt, § 4.2) before the stream: none waits while the panels produce
+   nothing; in production a sample reaches the stream once the solar value of the samples
+   has changed, or 60 s later, so the steps (provisional and confirmed) come that much later
+   than the curve. The windows come from the meter interval: given (the night's: the median
    of the day), or estimated from the last 100 readings.
 3. **Events** (`live.LivePairer`): one line of the feed. A switch-on (provisional, then
    confirmed or cancelled) opens one; a confirmed off-step closes the running event closest
@@ -830,7 +881,8 @@ Tests (`tests/test_live.py`): the samples of the stream equal those of `build_sa
 (PV dropouts, import/export, kW, several meters, battery, sub-meters); replayed synthetic
 days give exactly the steps of `detect_steps` (noise, overlapping loads, multi-phase
 appliances, motor bursts, solar with dropouts, recorder gaps, irregular readings, 2 s
-meters, the night threshold on a solar day with meter drift); closed events equal `pair_steps`; a hob is one session with the night's cycle
+meters, the night threshold on a solar day with meter drift, cloudy days with a slow or late
+solar meter in `tests/test_solar_doubt.py`); closed events equal `pair_steps`; a hob is one session with the night's cycle
 count; on 60 uses of 6 steady appliances the right one is first in ≥ 80 % and in the top 3
 in ≥ 95 %. A day of a 10 s meter replays in about 0.1 s. Burst series
 (`tests/test_bursts.py`): a 1 kW heater on for 40 s every 4 minutes for 2 hours is one
@@ -893,7 +945,7 @@ When the same relay is behind both an estimate and a statistic, it is measured o
 learned polarity.
 
 **Findings** (shown as *Things to check*): `grid_ignored`, `no_power_sensor`, `unavailable`,
-`battery_sign`, `no_grid`, `unknown_statistic`, `flat_power_sensor` (below), and `tracking_gap`: after the analysis, `tracking_gaps()` compares,
+`battery_sign`, `no_grid`, `unknown_statistic`, `flat_power_sensor` (below), `slow_solar_meter` (below) and `tracking_gap`: after the analysis, `tracking_gaps()` compares,
 for each switch-driven device, the energy declared by its sensor over the day with the energy
 measured for its switched load; a ratio of 2 or more (with at least 0.5 kWh on one side) is
 reported, typically an estimate configured at a few watts for a 2 kW water heater.
@@ -913,6 +965,17 @@ finding `flat_power_sensor`. The panel marks such a sensor in the plug picker (i
 teach) and in the connected-appliance form, and the finding points to learning the appliance
 from its state.
 
+**Slow solar meter** (#86, `slow_solar_meter`, `report.solar_interval`). The solar doubt
+(§ 4.2) waits 60 s for a late solar reading. `quality.solar_interval_s` says how long the
+meter takes to tell that the production moved: the time since its previous reading, for the
+readings of the day that moved by half the step threshold or more while producing, their
+lower quartile (Home Assistant records a value when it changes, so the plain interval
+between readings measures the sky as much as the meter: 40 s for a 10 s meter with a 10 W
+resolution under a clear sky; the lower quartile leaves out the changes that follow a
+stable production). None under 20 such readings (a clear or a dull day). Above 60 s, a
+passing cloud cannot be told from an appliance in the daytime: finding `slow_solar_meter`
+on the PV power sensor, each day it is measured.
+
 Each finding has a stable `kind`, the `entity_id` it is about, an English `detail` and, since
 add-on 0.11.0 (#34), the `params` the panel builds its own sentence from (EN/FR,
 `frontend/src/findings.ts`, unit tested):
@@ -927,6 +990,7 @@ add-on 0.11.0 (#34), the `params` the panel builds its own sentence from (EN/FR,
 | `no_grid` | – | `{}` |
 | `tracking_gap` | Energy sensor | `{name, declared_kwh, measured_kwh}` |
 | `flat_power_sensor` | Energy sensor | `{name, power_entity, power_w, energy_kwh}` (#79) |
+| `slow_solar_meter` | PV power sensor | `{interval_s, limit_s}` (#86, add-on 0.16.0+) |
 
 The panel names the device with `params.name` (the Energy dashboard's name), else the entity's
 friendly name in Home Assistant, else the entity id, formats energies with the profile's
@@ -979,7 +1043,7 @@ summary with `curve: []` and `curve_pruned: true`.
 | `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}`; a burst series (add-on 0.16.0+, § 4.5) is `cycling` and adds `blocks` (`[[start, end]]`: when it was on, bursts less than 2 minutes apart as one); a recognised multi-phase cycle (add-on 0.10.0+) adds `multiphase: true` and `phases`, its `power_w` is its mean power and its `signature` the registry id of its template |
 | `cycles` | Candidate multi-phase cycles (add-on 0.10.0+): `{start, end, power_w (heating), energy_kwh, phases: [{kind: heat\|motor, offset_s, duration_s, power_w}], members, template, distance}` |
 | `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
-| `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}` |
+| `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}`; with a PV meter (add-on 0.16.0+, § 4.2) `solar_held` (samples set aside by the solar doubt) and `solar_interval_s` (how long the solar meter takes to tell a change, `null` when not measured) |
 | `ground_truth` | Only while an appliance learns from a sensor (add-on 0.11.0+, § 8.6): `[{key, entity_id, runs: [{start, end, energy_kwh, power_w, max_w, kind, duty, on_s?, period_s?, phases?}], covered: [[start, end]], covered_s, energy_kwh}]`; from a connected appliance (0.14.0+) also `mode: "state"`, `program_recorded?`, and per run `source: "state"`, `baseline_w`, `program?`, `counter_kwh?`, `named_phases?` |
 | `config` | Sensors used: `grid_entity`, `extra_grid_entities`, `grid_export_entity`, `pv_entity`, `extra_pv_entities`, `battery_entity`, `tracked` (`{name, energy_entity, power_entity, role, source_entity}`), `findings` |
 | `findings` | `{kind, entity_id, detail, params}` (derive findings and tracking gaps); `params` (add-on 0.11.0+) per kind in § 5 *Findings*, `detail` the English fallback |
@@ -2264,6 +2328,10 @@ cannot be read).
   signature; and the live series are those of the night only as far as the live pairs are
   (§ 4.11: no validation, switched loads not taken out, sessions made on the fly): on real
   days the same heating periods are found, often with other bounds.
+- Solar (§ 4.2): clouds still make false steps in the daytime with a solar meter that takes
+  more than 60 s to tell a change (finding `slow_solar_meter`), whose values are themselves
+  late by more than a few seconds, or with a grid meter slower than the solar meter. In
+  production, the steps of the live view wait for the next solar value (a minute at most).
 - Three-phase installations are analysed on the sum of the phases.
 - The analysis depends on the recorder history; the backfill is limited by `purge_keep_days`.
 - The first backfill analyses newest first, so its days do not benefit from the peak window.
