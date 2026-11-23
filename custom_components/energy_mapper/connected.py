@@ -12,7 +12,10 @@ proposes its entities, which the user confirms.
 Nothing is specific to a vendor: a device qualifies by having an ``enum``
 sensor; the operation state is the ``enum`` whose options include a running
 word (``run``, ``running``...), a door-like ``enum`` (``open`` / ``closed`` /
-``locked``) is never one; generic words of the entity ids only break ties.
+``locked``) is never one; an alert or event ``enum`` (``off`` / ``present`` /
+``confirmed``...) is never proposed as the phase or the programme, and the
+active programme wins over the selected one; generic words of the entity ids
+only break ties.
 
 Pure: plain dicts in (entity registry entries, states, device names), plain
 dicts out; ``recorded`` tells whether the recorder keeps an entity (None:
@@ -32,10 +35,16 @@ ENERGY_UNITS = ("kWh", "Wh", "MWh")
 RUN_WORDS = ("run", "running", "on", "active", "working", "in_progress", "busy")
 # option values of a door or lock state: never an operation or a phase state
 DOOR_WORDS = frozenset({"open", "opened", "closed", "close", "locked", "unlocked", "ajar"})
+# option values of an alert or event state (Home Connect "salt nearly empty",
+# "programme finished"...): never a phase nor a programme
+ALERT_WORDS = frozenset({"off", "on", "present", "confirmed", "none", "true", "false"})
 # generic words of the entity ids, for ties only
 _OPERATION_HINTS = ("operation", "status", "state", "run")
 _PHASE_HINTS = ("phase", "job", "step", "stage", "progress", "cycle")
 _PROGRAM_HINTS = ("program", "programme", "cycle", "mode", "course")
+# the running programme rather than the one selected for the next start
+_ACTIVE_HINTS = ("active", "actif", "current", "running", "courant")
+_SELECTED_HINTS = ("selected", "selectionne", "selection", "next")
 MAX_DEVICES = 100
 
 
@@ -61,6 +70,13 @@ def run_states(options: Iterable[str]) -> list[str]:
 def is_door(options: Iterable[str]) -> bool:
     values = {o.lower() for o in options}
     return bool(values) and values <= DOOR_WORDS
+
+
+def is_alert(options: Iterable[str]) -> bool:
+    """An alert or event state (``off`` / ``present`` / ``confirmed``): it
+    tells nothing about the phase or the programme of a cycle."""
+    values = {o.lower() for o in options}
+    return bool(values) and values <= ALERT_WORDS
 
 
 def devices(
@@ -142,7 +158,8 @@ def _device(
 
     operation = max(states_ok, key=op_rank)
     on_states = forced.get(operation) or run_states(_options(_attrs(states, operation)))
-    rest = [e for e in states_ok if e != operation]
+    # alerts stay listed but are never proposed as a phase or a programme
+    rest = [e for e in states_ok if e != operation and not is_alert(_options(_attrs(states, e)))]
     phase = max(
         rest,
         key=lambda e: (
@@ -155,7 +172,16 @@ def _device(
     if phase is not None and _hint(phase, _PROGRAM_HINTS) > _hint(phase, _PHASE_HINTS):
         phase = None  # a programme state, not a phase
     programs = selects + [e for e in rest if e != phase]
-    program = max(programs, key=lambda e: (_hint(e, _PROGRAM_HINTS), e in selects, e), default=None)
+    program = max(
+        programs,
+        key=lambda e: (
+            _hint(e, _PROGRAM_HINTS),
+            e in selects,
+            _hint(e, _ACTIVE_HINTS) - _hint(e, _SELECTED_HINTS),
+            e,
+        ),
+        default=None,
+    )
     if program is not None and not _hint(program, _PROGRAM_HINTS) and program not in selects:
         program = None
     energy = max(

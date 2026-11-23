@@ -1939,7 +1939,10 @@ proposal: the operation state is the `enum` already used by an appliance (with i
 else the one whose options include a running word (`run`, `running`, `on`, `active`,
 `working`, `in_progress`, `busy`), generic words of the entity id breaking ties; the phase
 state another `enum` (most options; not one named like a programme); the programme a
-`select` (or an `enum` named like one); the counter a `total_increasing` energy sensor.
+`select` (or an `enum` named like one), the active or current one before the one selected for
+the next start; an alert or event `enum` (all its options among `off`, `on`, `present`,
+`confirmed`, `none`, `true`, `false`) is never proposed as the phase nor the programme, only
+listed; the counter a `total_increasing` energy sensor.
 `recorded` comes from the recorder's entity filter (`get_instance(hass).entity_filter`; None
 without a recorder). `energy_mapper/teach` with `mode: "state"` checks the entities exist,
 the on-states and the counter's domain, refuses an add-on older than 0.14.0 (`not_supported`,
