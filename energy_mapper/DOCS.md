@@ -1036,20 +1036,57 @@ after midnight), `ha_error` (502: Home Assistant unreachable), `internal`
 
 ## Running outside the Supervisor
 
-Home Assistant Container and Core are not supported yet: no standalone image
-is published (planned in
-[#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)). For
-development, the service runs against any Home Assistant instance with a
-long-lived access token, from a clone of the repository:
+With Home Assistant Container or Core there is no Supervisor: the service
+runs in a container of its own, built from `Dockerfile.standalone`, and talks
+to Home Assistant with a long-lived access token (your profile → Security →
+Long-lived access tokens). No image is published yet
+([#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)): build it from
+a clone of the repository.
+
+```sh
+docker build -f energy_mapper/Dockerfile.standalone -t energy-mapper energy_mapper
+```
+
+Then run it next to Home Assistant, for example with Docker Compose:
+
+```yaml
+services:
+  energy-mapper:
+    image: energy-mapper
+    container_name: energy-mapper
+    restart: unless-stopped
+    environment:
+      HA_URL: http://homeassistant:8123   # as seen from this container
+      HA_TOKEN: <long-lived access token>
+      TZ: Europe/Paris
+    volumes:
+      - ./energy_mapper:/data            # reports, registry, settings
+    ports:
+      - "8099:8099"                      # only if Home Assistant uses the host network
+```
+
+- `HA_URL` is the address of Home Assistant as seen from the container: the
+  service name when both are in the same Compose project, the address of the
+  machine when Home Assistant uses `network_mode: host`.
+- In the integration (**Add integration → Energy Mapper**), enter the address
+  of the service as seen from Home Assistant: `http://energy-mapper:8099` on a
+  shared network, `http://localhost:8099` when Home Assistant uses the host
+  network and the port is published.
+- The image runs as user 1000: the data folder must be writable by it
+  (`chown 1000 ./energy_mapper`).
+- Options are read from `/data/options.json` (same keys as above); without the
+  file the defaults apply, and the integration's options cover the rest.
+- The API has no authentication: do not publish port 8099 beyond your local
+  network.
+
+For development, the service also runs straight from a clone of the
+repository:
 
 ```sh
 cd energy_mapper/app
 HA_URL=http://homeassistant.local:8123 HA_TOKEN=<token> \
   DATA_DIR=/tmp/energy_mapper PORT=8099 python3 main.py
 ```
-
-Options are then read from `$DATA_DIR/options.json` (same keys as above), and
-the integration is set up with the address of the service.
 
 ## Limits
 

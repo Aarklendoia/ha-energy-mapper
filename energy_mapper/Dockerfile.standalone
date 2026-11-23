@@ -1,0 +1,36 @@
+# Standalone image, for Home Assistant Container and Core (no Supervisor).
+# The add-on image (Dockerfile) needs the Supervisor; this one only needs
+# HA_URL and HA_TOKEN. See "Running outside the Supervisor" in DOCS.md.
+#
+#   docker build -f energy_mapper/Dockerfile.standalone -t energy-mapper energy_mapper
+FROM python:3.13-alpine
+
+# Standard library only: no pip install. tzdata gives zoneinfo the local
+# time zone of Home Assistant (day boundaries of the reports).
+RUN apk add --no-cache tzdata \
+    && adduser -D -H -u 1000 energy_mapper \
+    && mkdir /data \
+    && chown energy_mapper /data
+
+WORKDIR /app
+COPY app/ /app/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR=/data \
+    PORT=8099
+
+USER energy_mapper
+VOLUME /data
+EXPOSE 8099
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s \
+    CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ[\"PORT\"]}/api/health', timeout=4)"
+
+CMD ["python3", "/app/main.py"]
+
+LABEL \
+    org.opencontainers.image.title="Energy Mapper (standalone)" \
+    org.opencontainers.image.description="Identify the appliances of the home from the whole-house power meter" \
+    org.opencontainers.image.source="https://github.com/sylvaing/ha-energy-mapper" \
+    org.opencontainers.image.licenses="MIT"

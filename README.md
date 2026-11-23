@@ -104,8 +104,10 @@ one cycling use too, from its fourth regular burst.
 
 - **Home Assistant OS or Supervised** (the add-on needs the Supervisor), on **amd64** or
   **aarch64** (Raspberry Pi 4/5 included: a day is analysed in a few seconds at most).
-  Home Assistant Container and Core are not supported yet: a standalone image is planned in
-  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
+  With Home Assistant Container or Core, the service runs in a standalone container built
+  from `energy_mapper/Dockerfile.standalone` (no published image yet,
+  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)): see
+  [Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor).
 - **Home Assistant 2025.10 or later** for the integration, add-on **0.14.0 or later** to
   learn from a connected appliance, 0.11.0 to
   learn an appliance from a smart plug and for the nightly self-test, 0.9.0 for the day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
@@ -740,8 +742,10 @@ quatrième rafale régulière.
 
 - **Home Assistant OS ou Supervised** (l'add-on a besoin du Supervisor), sur **amd64** ou
   **aarch64** (Raspberry Pi 4/5 compris : une journée s'analyse en quelques secondes au plus).
-  Home Assistant Container et Core ne sont pas encore pris en charge : une image autonome est
-  prévue dans [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
+  Avec Home Assistant Container ou Core, le service tourne dans un conteneur autonome
+  construit depuis `energy_mapper/Dockerfile.standalone` (pas encore d'image publiée,
+  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)) : voir
+  [Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor).
 - **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.14.0 ou plus
   récent** pour apprendre d'un appareil connecté, 0.11.0 pour apprendre un appareil d'une
   prise connectée et pour l'auto-test de nuit, 0.9.0 pour la grille jour par
