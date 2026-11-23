@@ -214,3 +214,33 @@ def cloudy_day(
     for a, b, depth, _edge in passes:
         edges += [(a, depth * house.pv_at(a)), (b, -depth * house.pv_at(b))]
     return {grid: g, pv: p}, edges
+
+
+def plug_history(
+    power_at,
+    start: float,
+    end: float,
+    every_s: float = 20.0,
+    lag_s: tuple[float, float] = (0.0, 25.0),
+    seed: int = 1,
+) -> list[tuple[float, str]]:
+    """Readings of a smart plug measuring ``power_at(t)`` (#85).
+
+    The plug reads its appliance every ``every_s`` on its own clock, and each
+    reading reaches Home Assistant after a lag drawn in ``lag_s`` (negative:
+    before the grid meter shows the change). Only changes are recorded, as
+    Home Assistant does: a switching is seen up to ``every_s + lag_s[1]``
+    after it happened.
+    """
+    rnd = random.Random(seed)
+    out: list[tuple[float, str]] = []
+    last = None
+    t = start + rnd.uniform(0, every_s)
+    while t < end:
+        v = power_at(t)
+        if v != last:
+            out.append((t + rnd.uniform(*lag_s), f"{v:.1f}"))
+            last = v
+        t += every_s
+    out.sort(key=lambda r: r[0])
+    return out

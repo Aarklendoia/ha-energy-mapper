@@ -12,7 +12,20 @@ from .cycles import CycleConfig, Phase, attribute, find_cycles
 from .known import RUN, KnownLoad, SwitchedLoadConfig, resolve_switched_load
 from .signal import build_samples, parse_numeric, scaled, sum_series
 from .signatures import cluster
-from .steps import PV_QUIET_W, PvQuiet, Step, detect_steps, hold_doubtful, night_threshold, solar_doubt_limit
+from .steps import (
+    MERGE_S,
+    PV_QUIET_W,
+    WINDOW_S,
+    PvQuiet,
+    Step,
+    adapted_windows,
+    detect_steps,
+    hold_doubtful,
+    meter_interval,
+    night_threshold,
+    solar_doubt_limit,
+)
+from .submeters import SubmeterEchoes
 
 REPORT_VERSION = 1
 
@@ -106,18 +119,41 @@ def find_steps(samples, config: AnalysisConfig, held: list[float] | None = None)
     threshold (#77) where the PV production of the samples stays near zero
     around the step. With a PV meter, the samples whose production is in
     doubt (a late solar reading, #86) are set aside first
-    (:func:`~.steps.hold_doubtful`; their times are added to ``held``)."""
-    points = [(s.ts, s.residual) for s in samples if s.residual is not None]
-    if not config.pv_entity:
-        return detect_steps(points, threshold=config.step_threshold_w)
-    # a known residual has a known production: one value per point
-    pv = [s.pv for s in samples if s.residual is not None]
-    points = hold_doubtful(points, pv, solar_doubt_limit(config.step_threshold_w), held)
-    low = config.low_step_threshold()
+    (:func:`~.steps.hold_doubtful`; their times are added to ``held``). The
+    steps a sub-meter's misaligned reports left are marked ``explained_by``
+    it (#85, :mod:`.submeters`)."""
+    return explained_steps(samples, config, held)[0]
+
+
+def explained_steps(
+    samples, config: AnalysisConfig, held: list[float] | None = None
+) -> tuple[list[Step], SubmeterEchoes | None, float]:
+    """``(steps, echoes, window_s)``: the steps of :func:`find_steps`, what
+    explained those of the sub-meters (None without a sub-meter that
+    measures) and the detector's window on these samples. The sub-meters
+    are read against the points the detector read (the solar doubt set
+    aside), each with what the sub-meters took out of its sample."""
+    known = [s for s in samples if s.residual is not None]
+    points = [(s.ts, s.residual) for s in known]
+    low = None
+    if config.pv_entity:
+        # a known residual has a known production: one value per point
+        pv = [s.pv for s in known]
+        points = hold_doubtful(points, pv, solar_doubt_limit(config.step_threshold_w), held)
+        low = config.low_step_threshold()
     if low is None:
-        return detect_steps(points, threshold=config.step_threshold_w)
-    quiet = PvQuiet([(s.ts, s.pv) for s in samples if s.pv is not None])
-    return detect_steps(points, threshold=config.step_threshold_w, low_threshold=low, low_ok=quiet)
+        steps = detect_steps(points, threshold=config.step_threshold_w)
+    else:
+        quiet = PvQuiet([(s.ts, s.pv) for s in samples if s.pv is not None])
+        steps = detect_steps(points, threshold=config.step_threshold_w, low_threshold=low, low_ok=quiet)
+    window_s, merge_s = adapted_windows(meter_interval([t for t, _ in points]), WINDOW_S, MERGE_S)
+    echoes = SubmeterEchoes.for_config(config)
+    if echoes is not None:
+        for (ts, value), sample in zip(points, known, strict=True):
+            echoes.add(ts, value, sample.subs)
+        for step in steps:
+            echoes.feed(step, window_s, merge_s)
+    return steps, echoes, window_s
 
 
 def solar_interval(
@@ -140,6 +176,33 @@ def solar_interval(
         b[0] - a[0] for a, b in pairwise(valid) if a[1] > PV_QUIET_W and abs(b[1] - a[1]) >= change_w
     )
     return gaps[(len(gaps) - 1) // 4] if len(gaps) >= min_changes else None
+
+
+def submeter_quality(
+    config: AnalysisConfig,
+    echoes: SubmeterEchoes | None,
+    readings: Callable[[str], list | None],
+    window_s: float,
+    start: float,
+    end: float,
+) -> list[dict]:
+    """Per sub-meter that measures, within ``[start, end)``: the steps its
+    reports explained and the lag of its isolated changes
+    (:meth:`SubmeterEchoes.lags`). Only those with something to say."""
+    out = []
+    if echoes is None:
+        return out
+    for i, m in enumerate(config.submeters):
+        if m.estimated:
+            continue
+        sub = echoes.indices.index(i)
+        explained = sum(1 for t, n in echoes.explained if n == sub and start <= t < end)
+        lag = echoes.lags(i, readings(m.entity_id) or [], window_s, config.smallest_step_w(), start, end)
+        if explained or lag.changes:
+            out.append(
+                {"entity_id": m.entity_id, "name": m.name, "explained_steps": explained, **lag.to_dict()}
+            )
+    return out
 
 
 def resolve_known(
@@ -206,7 +269,7 @@ def analyze(
     points = [(s.ts, s.residual) for s in samples if s.residual is not None]
 
     held: list[float] = []  # samples set aside: their solar production was in doubt (#86)
-    steps = find_steps(samples, config, held)
+    steps, echoes, window_s = explained_steps(samples, config, held)
     known = resolve_known(histories, config, steps, points, end)
     sessions = find_cycling_sessions(steps)
     pairs = pair_steps(steps)
@@ -277,7 +340,10 @@ def analyze(
         "cycles": [c.to_dict() for c in candidates],
         "quality": {
             "samples": len(in_period),
-            "steps": sum(1 for s in steps if start <= s.ts < end),
+            # without the steps the sub-meters' reports left (#85)
+            "steps": sum(1 for s in steps if start <= s.ts < end)
+            - sum(1 for t, _ in (echoes.explained if echoes else ()) if start <= t < end),
+            "submeters": submeter_quality(config, echoes, series, window_s, start, end),
             "pv_unknown_s": round(pv_unknown_s),
             "max_gap_s": round(max(gaps)) if gaps else None,
             **solar,

@@ -46,6 +46,26 @@
   a change of the production, so clouds cannot be told from appliances in the
   daytime. The report's `quality` gets `solar_interval_s` and `solar_held`
   (only with a PV meter).
+- Sub-meters that do not report with the grid meter no longer leave false
+  steps (#85). A sub-meter is subtracted reading by reading, but a smart plug
+  announces a change tens of seconds before or after the grid meter, or only
+  every 40 s, and an appliance that modulates every few seconds is read at
+  different instants by its plug and by the grid meter: the subtraction left
+  pulses and holes of the appliance's power, so phantom steps, activations
+  and signatures. The energy (curve, totals) keeps the subtraction; the
+  steps it leaves are now marked as explained by the sub-meter and ignored
+  by the pairing: a step where the sub-meter's own reading changes the other
+  way while the house does not follow (its report), the house's step of the
+  same size within 45 s of it, and the steps around a sub-meter that
+  modulates. An installation whose sub-meters report with the grid meter is
+  analysed exactly as before; estimated sub-meters explain nothing; a device
+  hidden by the self-test keeps its steps. The report's `quality` gains
+  `submeters`: per measured sub-meter, the steps explained and the measured
+  lag of its reports (`lag_s`, `lag_min_s`, `lag_max_s`); `quality.steps`
+  leaves the explained steps out. Live tab: with measured sub-meters a step
+  is confirmed once none of them can explain it any more (about a minute
+  after it, as with the night threshold), and a step made by a late report
+  is cancelled; the live steps stay those of the night.
 
 ## 0.15.0
 

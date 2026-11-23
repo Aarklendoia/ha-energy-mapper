@@ -65,6 +65,9 @@ class Sample:
     house: float | None  # grid + pv + battery
     residual: float | None  # house - submetered: what the analysis looks at
     estimated: float = 0.0  # the part of ``submetered`` that is estimated
+    # what each sub-meter took out of ``residual``, in the configured order
+    # (its sum is ``submetered``): the step explanation of #85 reads it
+    subs: tuple[float, ...] = ()
 
 
 def pv_value(pv: StepSeries | None, ts: float, hold_s: float, night_w: float) -> float | None:
@@ -166,12 +169,12 @@ def sample_at(
         g = g - (e or 0.0)
     p = pv_value(pv_s, ts, pv_hold_s, pv_night_w)
     b = held_value(bat_s, ts, hold_s) if bat_s else 0.0
-    values = [max(held_value(s, ts, hold_s), 0.0) for s in subs]
+    values = tuple(max(held_value(s, ts, hold_s), 0.0) for s in subs)
     sub = sum(values)
     est = sum(v for v, e in zip(values, estimated, strict=False) if e)
     house = g + p + b if p is not None else None
     residual = house - sub if house is not None else None
-    return Sample(ts, g, p, b, sub, house, residual, est)
+    return Sample(ts, g, p, b, sub, house, residual, est, values)
 
 
 def sum_series(

@@ -358,7 +358,9 @@ now, below). The tab and the day are kept in the address, so a view can be bookm
   - **Good to know**: the limits below.
 
   Limits of the live view: a step is provisional after about 3 meter readings (5–10 s) and
-  confirmed after 20–40 s; appliances under the step threshold (300 W) make no step; two
+  confirmed after 20–40 s (about a minute with measured sub-meters, whose late reports must
+  not be taken for an appliance, or with the night threshold); appliances under the step
+  threshold (300 W) make no step; two
   appliances switched on in the same second make one step; a washing machine or dishwasher
   shows by its first phase only (label it: the night rebuilds the whole cycle).
 
@@ -1005,7 +1007,9 @@ dans l'adresse : une vue peut être mise en favori.
   - **À savoir** : les limites ci-dessous.
 
   Limites du direct : une marche est provisoire après environ 3 relevés du compteur (5 à
-  10 s) et confirmée après 20 à 40 s ; un appareil sous le seuil de marche (300 W) ne fait pas
+  10 s) et confirmée après 20 à 40 s (environ une minute avec des sous-compteurs mesurés, dont
+  les annonces en retard ne doivent pas être prises pour un appareil, ou avec le seuil de
+  nuit) ; un appareil sous le seuil de marche (300 W) ne fait pas
   de marche ; deux appareils allumés à la même seconde ne font qu'une marche ; un lave-linge ou
   un lave-vaisselle n'apparaît que par sa première phase (étiquetez-la : la nuit reconstitue le
   cycle entier).

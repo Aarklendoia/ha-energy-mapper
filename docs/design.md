@@ -327,7 +327,8 @@ than the sample's (edit `dev/sample/*.json` locally) must wrap, not widen the pa
 flowchart TD
   H[Raw histories: grid, export, PV, battery, sub-meters, switches] --> S[build_samples: house and residual signal]
   S --> D[detect_steps: level changes >= threshold]
-  D --> K[resolve_switched_load: learn power, auto polarity, mark steps]
+  D --> SE[SubmeterEchoes: mark the steps left by misaligned sub-meters]
+  SE --> K[resolve_switched_load: learn power, auto polarity, mark steps]
   K --> C[find_cycling_sessions: alternating steps of similar size]
   C --> P[pair_steps: on-step closest in size]
   P --> V[validate_activations: drop phantom pairings]
@@ -359,6 +360,8 @@ flowchart TD
 - The grid and the solar meters do not report together: a sample whose solar value is about
   to move is not trusted by the step detector (the *solar doubt*, § 4.2). The samples
   themselves, the curve and the energies are unchanged.
+- A sample keeps what each sub-meter took out of the residual (`Sample.subs`): a sub-meter does
+  not report with the grid meter, and § 4.12 finds the steps that leaves.
 
 ### 4.2 Steps (`steps.py`)
 
@@ -369,7 +372,8 @@ compared; a difference of at least `step_threshold_w` (300 W) is a step. Windows
 side), which makes the detector robust to single-sample spikes (motor inrush, meter noise)
 and adapts it to meters reporting every 1 s to 60 s. Neighbouring candidates of the same sign
 are merged, keeping the largest.
-The live view (§ 4.11) runs the same detector on a stream (`StepStream`).
+The live view (§ 4.11) runs the same detector on a stream (`StepStream`). The steps left by
+sub-meters that do not report with the grid meter are then marked (§ 4.12).
 
 **Night threshold** (#77, `night_step_threshold_w`, empty by default). On a solar
 installation, a lower threshold also finds false steps in the daytime: the PV and grid meters
@@ -823,7 +827,10 @@ flowchart LR
    be merged into it, so `window + merge` after the step (~35 s on a 10 s meter). With the
    night threshold (§ 4.2), every jump is judged once `max(window, 60 s)` has passed, as the
    minute of PV after a small step must be known (`LiveDetector` keeps the PV of the samples
-   and gives `pv_quiet`); the order, and so the merges, stay those of the night. Before
+   and gives `pv_quiet`); the order, and so the merges, stay those of the night. With
+   sub-meters that measure, a confirmed step is held until no sub-meter can explain it any
+   more, 45 s and the merge delay after it, and a step a sub-meter explains is cancelled
+   (§ 4.12). Before
    that, a **provisional** step comes after 3 readings (or 10 s), from the median of what is
    known after the jump; neighbouring jumps of the same sign share one; the confirmed step
    takes the id of the nearest provisional one of the same sign, and a provisional step no
@@ -892,6 +899,144 @@ times, a hob session and eight synthetic days of multi-phase cycles are unchange
 dishwasher's candidate cycle is the same with a heater bursting next to it; a radiator
 behind a relay (two levels) is one use; a slow thermostat makes its series with the
 service's pruning.
+
+### 4.12 Sub-meters off the grid meter's clock (`submeters.py`, #85)
+
+The residual load subtracts each sub-meter reading by reading (§ 4.1). That is right for the
+energy, but a sub-meter does not report at the instant the grid meter sees its appliance
+switch. On the reference installation a Zigbee plug announces a change tens of seconds before
+or after the grid meter, another one only reports every 43 s, and an appliance that modulates
+every 5 s is read at different instants by its plug and by the grid meter. Between the two
+reports the subtraction is wrong by the whole power of the appliance:
+
+- a late (or early) report leaves a pulse or a hole of the appliance's power, as long as the
+  lag: two steps, and a phantom activation;
+- a start-up peak that lasts 3 s on the grid meter and 40 s on a plug that reports every 40 s
+  digs a 40 s hole: two steps where the house load had none;
+- a load that modulates faster than the meters report makes the residual jump by its power
+  levels as long as it runs.
+
+Measured on the reference installation, analysed day by day (4 days, an appliance of up to
+2.4 kW that modulates on a plug, 87 changes of 300 W or more of the plug): 53 steps of 300 W
+or more within a minute of them, against 42 when the plug is not subtracted at all. The
+subtraction added steps instead of removing them.
+
+**What is done.** The detection is left alone: the steps are those of `detect_steps` on the
+plain residual, and the curve and the totals keep the plain subtraction. The steps the
+sub-meters made are then **marked `explained_by` the sub-meter**, as a switched load marks its
+own (§ 4.3), so that pairing, sessions and signatures ignore them
+(`report.explained_steps`, `submeters.SubmeterEchoes`). Each sample keeps what each sub-meter
+took out of the residual (`Sample.subs`), so everything is read on the grid meter's own
+timeline, with the hold rules of § 4.1 already applied.
+
+The evidence is always the same, reading by reading: where the sub-meter's subtracted value
+changes, the residual load moves **against** it (the other way, by as much or more: the house
+stayed, or went the other way) instead of staying still (**followed**: it moves by less than
+40 % of the change, the house moved with the sub-meter).
+
+1. **Echo**: the step is the sub-meter's report itself. Measured as the detector measured the
+   step (medians of the windows before and after), the sub-meter's value steps the other way
+   by the step's size; and between two readings at most `merge` apart, within `merge` of the
+   step, the sub-meter makes that change while the residual makes the opposite one (within
+   `max(60 W, 25 %)`, the tolerance of the pairing). The detector's medians halve a step when
+   the lag is about half the window (an even number of readings), so an echo is a step of
+   40 % to 100 % (plus the tolerance) of the sub-meter's change. A one-reading peak of the
+   sub-meter is no change (its medians do not move).
+2. **Partner**: the house's own step, which the sub-meter reported early or late. A step of
+   the sub-meter's sign, within 45 s (`LAG_S`) plus `merge` of the echo (steps are dated by
+   grid readings), which has the size of the sub-meter's change when measured on the load
+   **with that sub-meter not subtracted** (so a halved step is recognised too). One partner
+   per echo: the nearest free step before it, else the first one after it. An echo without a
+   partner stays explained (the start-up peak: two echoes, no step of the house).
+3. **Modulated**: within the detector's windows around the step, the sub-meter moves at least
+   three times by 40 % of the step or more (two moves are one use), the house does not follow
+   it (against at two of those moves at least), and the step is no larger than twice the
+   largest move plus the tolerance (read late, a sub-meter that pulses by *A* is wrong by −*A*
+   to +*A*).
+
+Neither an echo nor a modulated step is accepted where, around the step, the house follows
+the sub-meter more often than it goes against it: a step of the house that meets, at the same
+reading, a move of a sub-meter that reports with the grid meter looks like a late report at
+that reading alone.
+
+**Unchanged where sub-meters are synchronous.** Nothing is explained without the residual
+moving against a sub-meter at the very readings where it changes; a sub-meter that reports
+with the grid meter is followed, so its installation gives the same steps and the same report
+(tested: the report is identical but for `quality.submeters`). Without a sub-meter that
+measures, the code does not run. **Estimated** sub-meters (an estimation integration's power)
+are left out: they change with the state of their entity, not with a measurement. A device
+**hidden** by the self-test (§ 8.7) or left in the curve by teaching (§ 8.6) is not a
+sub-meter of that analysis: its steps stay.
+
+**Why not re-time the subtraction** (apply each change of a sub-meter at the time of the
+matching house step, then detect). It needs the house step of every change, found on another
+signal, before the detection; on the reference installation most false steps come from a load
+that modulates, where no change can be matched to one step, and a sample-level correction
+tried offline removed 83 steps but created 44 new ones elsewhere. Marking steps can only
+remove steps, never create or move one; the detector and its live twin stay as they are; and
+a step waits for one bounded delay in the live view. Its limit: a real step of another
+appliance that falls inside a lag or a modulation is measured on a disturbed load (wrong size,
+or merged with an artefact), as before.
+
+**Live** (§ 4.11). The explanation is fed the steps in time order and looks no further than
+`LAG_S + merge` around one, so the live detector runs the same code on the same steps and
+samples: a step the stream confirmed stays provisional until every step within that reach is
+known (the stream has nothing pending before it, `StepStream.settled`), then comes out
+confirmed, or cancelled with `explained_by` (its event is cancelled). With the night
+threshold nothing changes in practice (a step already waits a minute); without it, a step is
+confirmed about a minute after it instead of 35 s. Without a sub-meter that measures, nothing
+waits.
+
+**Measured lag** (`quality.submeters`, `SubmeterEchoes.lags`). For each sub-meter that
+measures, the report gives the steps its reports explained and, for its isolated changes of
+at least the smallest step threshold (no other change of half that within the lag and the
+window), the lag between its report and the grid reading where the load without that
+sub-meter jumps by the same size: 0 when the report falls between that reading and the one
+before it (the subtraction is then right), positive when the sub-meter reports late, negative
+when early. `changes`, `located`, the median `lag_s`, `lag_min_s`, `lag_max_s`. Teaching
+(§ 8.6, #80) can read it to know how far a plug's instants are from the house's.
+
+**With the solar doubt (§ 4.2) and the burst series (§ 4.5).** The sub-meters are read against
+the points the detector read: the samples once the solar doubt is set aside, each with what
+the sub-meters took out of it, in the night (`report.explained_steps`) and live (the points
+that leave `SolarHold`). While a reading is set aside the load is held at its level, so a
+change of a sub-meter there counts as followed, never as evidence. The doubt dates a step of
+the house up to a minute late, which can put it out of an echo's reach: it then stays (a
+limit, tested). Explained steps are not paired, so they never become bursts: a plug that
+reports each burst of a thermostat 30 s late no longer makes a phantom series.
+
+Real data (reference installation, 9 days analysed day by day with the rest of 0.16.0 at
+work; the grid meter reports every 6 to 15 s, so the detector's window is 20 to 47 s depending
+on the day). Around the 87 changes above: 53 steps of 300 W or more before, 10 after (42
+without subtracting the plug), and of the 3 activations of 90 s or less that started there 1
+is left. Over the 9 days 55 steps are explained: 46 by that plug (modulation, and reports
+15 s late), 5 by a freezer's plug (its start-up peaks, 400 to 540 W held for one 43 s
+reading), 3 by a pump's meter channel (an off reported 15 s late, with the house's own step
+as partner, and the first reading after an outage) and 1 by another plug; the days go from
+2752 to 2689 steps, 363 to 360 activations (a phantom activation of 3 hours, an on-step
+closed by a plug's echo, is gone: its 0.9 kWh return to "unexplained") and 167 to 164 daily
+signatures. The measured lags of the isolated changes are 0 to 0.6 s for the meter channel
+and 2 to 6 s for the two plugs. On the 8 whole days of the benchmark (§ 8.11), against the
+same engine without the explanation, the steps go from 297.6 to 296.6 per day, the registry
+keeps its 45 signatures and the measured device its scores. The live replay gives the
+night's steps and explanations on each of the 9 days. One false explanation was found and
+fixed on the way (a pump's one-reading inrush right after another appliance switched off:
+rule 1), and a sample-level correction was dropped (see above).
+
+Tests (`tests/test_submeters.py`, synthetic): a 1.5 kW appliance on a plug that reports up to
+45 s late on a 20 s interval, or up to 45 s early, 24 switchings: every step it leaves is
+explained and the steps left are exactly those of the same house without the appliance, on
+regular and irregular grid readings; the report has the activations of the house without it;
+a freezer whose 3 s start-up peak lasts 40 s on its plug, 38 starts: the same; a hob that
+pulses every 13 s on a plug read every 5 s: at most a quarter of its steps left, and none
+explained when the plug reports with the grid meter, whatever switches during the session; a
+synchronous plug with another appliance of the same power switching within 45 s: no step
+explained, report unchanged; estimated sub-meter: nothing explained; self-test: the hidden
+device keeps its steps and is found 12 times out of 12; live equals night on all of them,
+with the night threshold and with the estimated interval too; a day of clouds seen late by
+the solar meter with the plug late or early: live equals night, and the steps left are those
+of the same day without the appliance (but for the limit above); a heater that bursts every
+5 minutes on a plug 30 s late: a phantom series without the explanation, none with it.
 
 ## 5. Using the Energy dashboard
 
@@ -1043,7 +1188,7 @@ summary with `curve: []` and `curve_pruned: true`.
 | `activations` | `{start, end, power_w, cycling, duty, on_s, period_s, signature, registry_id}`; a burst series (add-on 0.16.0+, § 4.5) is `cycling` and adds `blocks` (`[[start, end]]`: when it was on, bursts less than 2 minutes apart as one); a recognised multi-phase cycle (add-on 0.10.0+) adds `multiphase: true` and `phases`, its `power_w` is its mean power and its `signature` the registry id of its template |
 | `cycles` | Candidate multi-phase cycles (add-on 0.10.0+): `{start, end, power_w (heating), energy_kwh, phases: [{kind: heat\|motor, offset_s, duration_s, power_w}], members, template, distance}` |
 | `signatures` | Daily signatures: `{id, kind, band, power_w, count, duration_s, energy_kwh, hours, on_s, period_s, duty, examples, registry_id}`, and `phases` for kind `multiphase` |
-| `quality` | `{samples, steps, pv_unknown_s, max_gap_s, compute_s}`; with a PV meter (add-on 0.16.0+, § 4.2) `solar_held` (samples set aside by the solar doubt) and `solar_interval_s` (how long the solar meter takes to tell a change, `null` when not measured) |
+| `quality` | `{samples, steps, submeters, pv_unknown_s, max_gap_s, compute_s}`; `steps` leaves out those the sub-meters' reports made, and `submeters` (add-on 0.16.0+, § 4.12) lists, per sub-meter that measures and has something to say, `{entity_id, name, explained_steps, changes, located, lag_s, lag_min_s, lag_max_s}`; with a PV meter (add-on 0.16.0+, § 4.2) `solar_held` (samples set aside by the solar doubt) and `solar_interval_s` (how long the solar meter takes to tell a change, `null` when not measured) |
 | `ground_truth` | Only while an appliance learns from a sensor (add-on 0.11.0+, § 8.6): `[{key, entity_id, runs: [{start, end, energy_kwh, power_w, max_w, kind, duty, on_s?, period_s?, phases?}], covered: [[start, end]], covered_s, energy_kwh}]`; from a connected appliance (0.14.0+) also `mode: "state"`, `program_recorded?`, and per run `source: "state"`, `baseline_w`, `program?`, `counter_kwh?`, `named_phases?` |
 | `config` | Sensors used: `grid_entity`, `extra_grid_entities`, `grid_export_entity`, `pv_entity`, `extra_pv_entities`, `battery_entity`, `tracked` (`{name, energy_entity, power_entity, role, source_entity}`), `findings` |
 | `findings` | `{kind, entity_id, detail, params}` (derive findings and tracking gaps); `params` (add-on 0.11.0+) per kind in § 5 *Findings*, `detail` the English fallback |
@@ -2332,6 +2477,13 @@ cannot be read).
   more than 60 s to tell a change (finding `slow_solar_meter`), whose values are themselves
   late by more than a few seconds, or with a grid meter slower than the solar meter. In
   production, the steps of the live view wait for the next solar value (a minute at most).
+- Sub-meters off the grid meter's clock (§ 4.12): the steps they leave are explained, not
+  avoided, so a real step of another appliance inside a lag or a modulation is still measured
+  on a disturbed load; a lone step of the house whose echo the medians hid (a change under
+  twice the threshold, on an unlucky reading) stays; a sub-meter that modulates is explained
+  only where its plug reports often enough for the house to be seen not following it; a step
+  of the house dated late by the solar doubt (§ 4.2) can be out of its echo's reach; the
+  measured lag only uses isolated changes of at least the step threshold.
 - Three-phase installations are analysed on the sum of the phases.
 - The analysis depends on the recorder history; the backfill is limited by `purge_keep_days`.
 - The first backfill analyses newest first, so its days do not benefit from the peak window.

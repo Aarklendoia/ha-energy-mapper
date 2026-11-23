@@ -16,8 +16,12 @@ class Step:
     delta: float  # W, positive = something switched on
     before: float
     after: float
-    explained_by: str | None = None  # name of a known load, if any
+    explained_by: str | None = None  # name of a known load or of a sub-meter (#85), if any
     used: bool = False  # consumed by an activation
+
+
+WINDOW_S = 20.0  # the detector's windows on a fast meter (see adapted_windows)
+MERGE_S = 15.0
 
 
 def meter_interval(ts: Sequence[float]) -> float | None:
@@ -219,8 +223,8 @@ class Signal:
 def detect_steps(
     points: Sequence[tuple[float, float]],
     threshold: float = 300.0,
-    window_s: float = 20.0,
-    merge_s: float = 15.0,
+    window_s: float = WINDOW_S,
+    merge_s: float = MERGE_S,
     low_threshold: float | None = None,
     low_ok: Callable[[float], bool] | None = None,
 ) -> list[Step]:
@@ -288,9 +292,12 @@ class LiveStep:
     # (the guided mode says "too small")
     small: bool = False
     pv_moved: bool = False  # set by the live detector: PV jumped at the same time
+    # set by the live detector (#85): the sub-meter whose misaligned reading
+    # made this step; such a step ends cancelled
+    explained_by: str | None = None
 
     def to_step(self) -> Step:
-        return Step(self.ts, self.delta, self.before, self.after)
+        return Step(self.ts, self.delta, self.before, self.after, self.explained_by)
 
     def to_dict(self) -> dict:
         return {
@@ -302,6 +309,7 @@ class LiveStep:
             "state": self.state,
             "small": self.small,
             "pv_moved": self.pv_moved,
+            "explained_by": self.explained_by,
         }
 
 
@@ -336,8 +344,8 @@ class StepStream:
     def __init__(
         self,
         threshold: float = 300.0,
-        window_s: float = 20.0,
-        merge_s: float = 15.0,
+        window_s: float = WINDOW_S,
+        merge_s: float = MERGE_S,
         interval_s: float | None = None,
         provisional_readings: int = 3,
         provisional_s: float = 10.0,
@@ -411,6 +419,19 @@ class StepStream:
     def smallest(self) -> float:
         """The smallest step that can be kept: the night threshold when set."""
         return self.low_threshold if self.low_threshold is not None else self.threshold
+
+    @property
+    def settled(self) -> float | None:
+        """Every step before this time has been given: a step confirmed
+        later is at this time or after it (the oldest jump not judged yet,
+        the candidate that may still be merged, else the last reading).
+        None before the first reading."""
+        times = [self._ts[-1]] if self._ts else []
+        if self._jumps:
+            times.append(self._jumps[0])
+        if self._last is not None:
+            times.append(self._last.ts)
+        return min(times) if times else None
 
     # -- internals ---------------------------------------------------------
     def _delay(self) -> float:
