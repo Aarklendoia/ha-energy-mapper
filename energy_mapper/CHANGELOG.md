@@ -66,6 +66,12 @@
   is confirmed once none of them can explain it any more (about a minute
   after it, as with the night threshold), and a step made by a late report
   is cancelled; the live steps stay those of the night.
+- Learn from a connected appliance (integration 0.13.0): an alert or event
+  state (all its options among `off`, `on`, `present`, `confirmed`, `none`,
+  `true`, `false`: "salt nearly empty", "programme finished"...) is no longer
+  proposed as the phase or the programme; it stays listed for a manual
+  choice. Between two programmes, the active one wins over the one selected
+  for the next start (Home Connect `active_program` / `selected_program`).
 
 ## 0.15.0
 

@@ -12,7 +12,10 @@ proposes its entities, which the user confirms.
 Nothing is specific to a vendor: a device qualifies by having an ``enum``
 sensor; the operation state is the ``enum`` whose options include a running
 word (``run``, ``running``...), a door-like ``enum`` (``open`` / ``closed`` /
-``locked``) is never one; generic words of the entity ids only break ties.
+``locked``) is never one; an alert or event ``enum`` (``off`` / ``present`` /
+``confirmed``...) is never proposed as the phase or the programme, and the
+active programme wins over the selected one; generic words of the entity ids
+only break ties.
 
 Pure: plain dicts in (entity registry entries, states, device names), plain
 dicts out; ``recorded`` tells whether the recorder keeps an entity (None:
