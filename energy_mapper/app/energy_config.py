@@ -202,6 +202,21 @@ def power_for(energy_entity: str, idx: _Index) -> str | None:
     return None
 
 
+def declared_rate(source: Mapping[str, Any], idx: _Index) -> str | None:
+    """The power sensor declared for a source of the Energy dashboard.
+
+    Since Home Assistant 2025.11 a grid, solar or battery source may carry a
+    power statistic (``stat_rate``) in Home Assistant's sign convention: grid
+    positive when importing, battery positive when discharging. When the user
+    built it from an inverted or split sensor (``power_config``), Home
+    Assistant stores the resulting sensor in ``stat_rate`` too. Used only when
+    it is a power sensor present in the states."""
+    rate = source.get("stat_rate")
+    if isinstance(rate, str) and rate in idx.states and idx.is_power(rate):
+        return rate
+    return None
+
+
 def _flows(source: dict, key: str) -> list[str]:
     """Energy sensors of a source. Handles the flat format (``stat_energy_from``)
     and the older ``flow_from`` / ``flow_to`` lists."""
@@ -299,6 +314,11 @@ def derive(
         if _number(idx.state(energy)) == 0:
             out.findings.append(Finding("grid_ignored", energy, "grid meter that has never counted", {}))
             continue
+        power = declared_rate(src, idx)
+        if power:
+            # a net power in Home Assistant's convention: exports are its negative part
+            grids.append(power)
+            continue
         power = power_for(energy, idx)
         if not power:
             out.findings.append(
@@ -314,6 +334,10 @@ def derive(
     # --- solar and battery -------------------------------------------------
     pvs: list[str] = []
     for src in (s for s in sources if s.get("type") == "solar"):
+        declared = declared_rate(src, idx)
+        if declared:
+            pvs.append(declared)
+            continue
         for energy in _flows(src, "stat_energy_from"):
             p = power_for(energy, idx)
             if p:
@@ -324,6 +348,10 @@ def derive(
                 )
     battery = None
     for src in (s for s in sources if s.get("type") == "battery"):
+        battery = declared_rate(src, idx)
+        if battery:
+            # declared in the Energy dashboard: already positive when discharging
+            break
         energy = (_flows(src, "stat_energy_from") or _flows(src, "stat_energy_to") or [None])[0]
         battery = power_for(energy, idx) if energy else None
         if battery:

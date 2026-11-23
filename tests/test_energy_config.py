@@ -126,6 +126,45 @@ class DeriveTests(unittest.TestCase):
         self.assertEqual(d.config.battery_entity, "sensor.battery_power")
         self.assertIn("battery_sign", [f.kind for f in d.findings])
 
+    def test_declared_power_sensors_win(self):
+        """The power sensors of the Energy dashboard (stat_rate) are used as declared."""
+        h = meter_with_channels()
+        h.sources[0]["stat_rate"] = "sensor.grid_net_power"
+        h.add(power("sensor.grid_net_power", "250"))
+        h.add(energy("sensor.inverter_total_production"), "inverter")
+        h.add(power("sensor.inverter_power"), "inverter")
+        h.add(power("sensor.inverter_ac_power"))
+        h.sources.append(
+            {
+                "type": "solar",
+                "stat_energy_from": "sensor.inverter_total_production",
+                "stat_rate": "sensor.inverter_ac_power",
+            }
+        )
+        h.add(energy("sensor.battery_discharge_energy"), "bat")
+        h.add(power("sensor.battery_power", "-500"), "bat")
+        h.add(power("sensor.battery_power_inverted", "500"))
+        h.sources.append(
+            {
+                "type": "battery",
+                "stat_energy_from": "sensor.battery_discharge_energy",
+                "power_config": {"stat_rate_inverted": "sensor.battery_power"},
+                "stat_rate": "sensor.battery_power_inverted",
+            }
+        )
+        d = derive(h.prefs(), h.states, h.registry)
+        self.assertEqual(d.config.grid_entity, "sensor.grid_net_power")
+        self.assertEqual(d.config.pv_entity, "sensor.inverter_ac_power")
+        self.assertEqual(d.config.battery_entity, "sensor.battery_power_inverted")
+        self.assertNotIn("battery_sign", [f.kind for f in d.findings])
+
+    def test_declared_power_sensor_missing_falls_back(self):
+        """A stat_rate that is not a power sensor in the states is ignored."""
+        h = meter_with_channels()
+        h.sources[0]["stat_rate"] = "sensor.gone_power"
+        d = derive(h.prefs(), h.states, h.registry)
+        self.assertEqual(d.config.grid_entity, "sensor.main_meter_channel_1_power")
+
     def test_separate_import_export_meters_in_kw(self):
         h = Installation()
         h.add(energy("sensor.p1_energy_consumed"), "p1")
