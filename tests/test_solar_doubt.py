@@ -281,7 +281,8 @@ class CloudyDayTest(unittest.TestCase):
         self.assertNotIn("solar_held", report["quality"])
         self.assertNotIn("solar_interval_s", report["quality"])
         self.assertEqual(
-            sorted(report["quality"]), ["compute_s", "max_gap_s", "pv_unknown_s", "samples", "steps"]
+            sorted(report["quality"]),
+            ["compute_s", "max_gap_s", "pv_unknown_s", "samples", "steps", "submeters"],
         )
         # the live view has nothing to hold either
         self.assertIsNone(LiveDetector(cfg).hold)

@@ -123,6 +123,19 @@ A device of the Energy dashboard whose power sensor stays constant (often at
 not subtracted that day (role `energy_only`) and the finding
 `flat_power_sensor` suggests learning it from its state.
 
+A sub-meter does not report at the same instant as the grid meter: a smart
+plug announces a change tens of seconds before or after, or only every 40 s.
+Its energy is subtracted as measured, but in between the subtraction is wrong
+by the appliance's whole power and would leave false steps (a phantom use of
+the appliance's power lasting the lag, or a hole when a start-up peak is
+held for 40 s by the plug). Since add-on 0.16.0 those steps are recognised
+(the sub-meter's own reading changes while the house does not follow) and
+left out of the pairing and of the signatures, also for an appliance on a
+plug that modulates faster than the meters report (a hob). An installation
+whose sub-meters report with the grid meter is analysed as before, and
+estimated sub-meters explain nothing. The report gives, per sub-meter, the
+steps explained and the measured lag (`quality.submeters`).
+
 ### Night threshold
 
 Lowering `step_threshold_w` reveals small appliances (a TV, lighting, small
@@ -190,11 +203,16 @@ Each report is a JSON document with:
   maximum, so a normal day always has some) and what was running
   (`registry_id` on the signature parts). `notable` is `true` when the
   episode reaches `peak_threshold_w`;
-- `quality`: number of samples, longest gap, computing time; with a PV
-  sensor (add-on 0.16.0+), `solar_held` (the readings set aside because their
-  solar value was about to move) and `solar_interval_s` (how long the solar
-  sensor takes to report a change of the production, `null` on a day without
-  enough changes);
+- `quality`: number of samples, steps (without those the sub-meters'
+  reports made), longest gap, computing time; `submeters` (add-on 0.16.0+):
+  per measured sub-meter with something to say, `explained_steps` and the lag
+  of its isolated changes against the grid meter (`changes`, `located`,
+  `lag_s` the median, `lag_min_s`, `lag_max_s`; 0 when it reports between the
+  same two grid readings, positive when late); with a PV sensor (add-on
+  0.16.0+), `solar_held` (the readings set aside because their solar value
+  was about to move) and `solar_interval_s` (how long the solar sensor takes
+  to report a change of the production, `null` on a day without enough
+  changes);
 - `ground_truth` (add-on 0.11.0+, only while an appliance learns from a
   sensor): per taught appliance, `key`, `entity_id`, its `runs` that day
   (`start`, `end`, `energy_kwh`, `power_w`, `max_w`, `kind`, `duty`, and
@@ -886,6 +904,9 @@ the running session (the view restarted, or the add-on did) gets a snapshot:
   whether it applies now (the solar production of the last minute is below
   20 W; `null` when it is off or unknown). With it, a step is confirmed once
   the minute of solar production after it is known (about a minute later).
+  With sub-meters that measure (add-on 0.16.0+), a step is likewise confirmed
+  only once none of them can explain it any more (about a minute after it),
+  and a step a sub-meter's late report made is `cancelled`.
 
 When the view cannot run: `{"seq", "available": false, "reason"}` with
 `reason` `disabled` (option off), `starting` (the first snapshot is not ready

@@ -53,6 +53,7 @@ from .steps import (
     pv_quiet,
     solar_doubt_limit,
 )
+from .submeters import SubmeterEchoes
 
 # score thresholds of the candidates: "looks like" / "maybe" / "unknown"
 LIKELY = 0.6
@@ -597,9 +598,20 @@ class LiveDetector:
     (:class:`~.steps.SolarHold`): while the panels produce, a sample reaches
     the step detector once its production has changed, or a minute later,
     so the steps come that much later than the samples.
+
+    With sub-meters that measure (#85), the steps their misaligned reports
+    leave are explained as the night explains them
+    (:class:`~.submeters.SubmeterEchoes`, the same code on the same steps):
+    a step the stream confirmed stays provisional until no sub-meter can
+    explain it any more (``LAG_S`` and the merge delay after it, with
+    nothing pending in the stream before that), and then comes out
+    confirmed, or cancelled with ``explained_by`` the sub-meter. Without
+    such a sub-meter nothing waits. The sub-meters are read against the
+    points the stream read (the solar doubt set aside), as in the night.
     """
 
     PV_KEEP_S = 600.0
+    ECHO_KEEP_S = 600.0  # samples kept for the sub-meters' echoes, beyond the windows
     SWITCH_KEEP = 200
 
     def __init__(
@@ -632,6 +644,9 @@ class LiveDetector:
         self._switch_on: dict[str, bool] = {}
         self._pv_ts: list[float] = []
         self._pv_v: list[float] = []
+        self.echoes = SubmeterEchoes.for_config(config)
+        self._held: deque[LiveStep] = deque()  # confirmed by the stream, a sub-meter may explain them
+        self._subs: deque[tuple[float, ...]] = deque()  # Sample.subs of the samples the hold keeps
         self.now: float | None = None  # time of the last sample
 
     @property
@@ -693,25 +708,62 @@ class LiveDetector:
                 self._pv_v.append(s.pv)
             if s.residual is None:
                 continue
+            if self.echoes is not None:
+                self._subs.append(s.subs)
             points = self.hold.push(s.ts, s.residual, s.pv) if self.hold else [(s.ts, s.residual)]
             for ts, value in points:
-                for st in self.stream.push(ts, value):
-                    self._handle(st, s.ts, update, changed)
+                self._point(ts, value, s.ts, update, changed)
+            self._release(s.ts, update, changed, final=False)
         if final:
             for ts, value in self.hold.flush() if self.hold else ():
-                for st in self.stream.push(ts, value):
-                    self._handle(st, self.now, update, changed)
+                self._point(ts, value, self.now, update, changed)
             for st in self.stream.flush():
                 self._handle(st, self.now, update, changed)
+            self._release(self.now, update, changed, final=True)
         if self._pv_ts and self.now is not None:
             k = bisect.bisect_left(self._pv_ts, self.now - self.PV_KEEP_S)
             if k > 256:
                 del self._pv_ts[:k]
                 del self._pv_v[:k]
+        if self.echoes is not None and self.now is not None:
+            self.echoes.prune(self.now - self.ECHO_KEEP_S - 4 * self.stream.window_s)
         update.events = list(changed.values())
         return update
 
+    def _point(self, ts: float, value: float, now: float, update: LiveUpdate, changed: dict) -> None:
+        """One point for the step detector (a sample, once its solar doubt
+        is known: they come in order, each once), and for the sub-meters'
+        echoes with what the sub-meters took out of that sample."""
+        if self.echoes is not None:
+            self.echoes.add(ts, value, self._subs.popleft())
+        for st in self.stream.push(ts, value):
+            self._handle(st, now, update, changed)
+
     def _handle(self, st: LiveStep, now: float, update: LiveUpdate, changed: dict) -> None:
+        if st.state == CONFIRMED and self.echoes is not None:
+            # the night's explanation, on the same steps in the same order;
+            # held (still provisional for the feed) until it is final
+            self.echoes.feed(st, self.stream.window_s, self.stream.merge_s)
+            st.state = PROVISIONAL
+            self._held.append(st)
+            return
+        self._forward(st, now, update, changed)
+
+    def _release(self, now: float, update: LiveUpdate, changed: dict, final: bool) -> None:
+        """Give the held steps whose explanation is final, in time order: a
+        step a sub-meter explained (cancelled), or one no later echo can
+        claim (confirmed): every step within its reach is known."""
+        settled = self.stream.settled
+        reach = self.echoes.reach(self.stream.merge_s) if self.echoes is not None else 0.0
+        while self._held:
+            st = self._held[0]
+            if not (final or st.explained_by) and not (settled is not None and st.ts + reach < settled):
+                break
+            self._held.popleft()
+            st.state = CANCELLED if st.explained_by else CONFIRMED
+            self._forward(st, now, update, changed)
+
+    def _forward(self, st: LiveStep, now: float, update: LiveUpdate, changed: dict) -> None:
         if st.state != CANCELLED:
             st.pv_moved = self._pv_moved(st.ts)
         if not any(x is st for x in update.steps):
@@ -752,7 +804,9 @@ class LiveDetector:
 # ---------------------------------------------------------------------------
 @dataclass
 class ReplayResult:
-    steps: list[Step]  # the confirmed steps, in order: those of detect_steps
+    # the confirmed steps and those a sub-meter explained (``explained_by``,
+    # cancelled), in order: those of report.find_steps
+    steps: list[Step]
     updates: list[LiveStep]  # a copy of every step update, in order
     events: list[LiveEvent]  # the events at the end, by id
     samples: int
@@ -814,7 +868,9 @@ def replay(
     # in time order, as they are confirmed: an update lists a step where it
     # first appeared (provisional), and the samples a solar reading
     # releases together (#86) can confirm several steps in one update
-    steps = sorted((u.to_step() for u in updates if u.state == CONFIRMED), key=lambda s: s.ts)
+    steps = sorted(
+        (u.to_step() for u in updates if u.state == CONFIRMED or u.explained_by), key=lambda s: s.ts
+    )
     events = [det.events[i] for i in sorted(det.events)]
     return ReplayResult(steps, updates, events, samples, interval_s)
 
