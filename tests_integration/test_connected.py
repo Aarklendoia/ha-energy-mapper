@@ -15,7 +15,7 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClien
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.energy_mapper.appliances import Appliance, Source, Teacher
-from custom_components.energy_mapper.connected import devices, is_door, run_states
+from custom_components.energy_mapper.connected import devices, is_alert, is_door, run_states
 
 from .conftest import HEALTH, URL
 from .test_appliances import pushed, subentries, two_days
@@ -85,6 +85,48 @@ def test_proposal() -> None:
     assert roles[PROGRAM] == ("program", False)
     assert roles[STATE] == ("state", True)
     assert DOOR not in roles  # a door is never a state to learn from
+
+
+def test_proposal_without_a_phase_state() -> None:
+    """A Home Connect dishwasher: an operation state, alert states (salt,
+    rinse aid, programme finished) and two programme selects. No alert is
+    proposed as the phase, and the active programme wins over the selected
+    one."""
+    alert = {"device_class": "enum", "options": ["confirmed", "off", "present"]}
+    states = {
+        "sensor.dishwasher_operation_state": {
+            "state": "ready",
+            "attributes": {
+                "device_class": "enum",
+                "options": ["inactive", "ready", "delayedstart", "run", "finished"],
+            },
+        },
+        "sensor.dishwasher_salt_nearly_empty": {"state": "off", "attributes": alert},
+        "sensor.dishwasher_rinse_aid_nearly_empty": {"state": "off", "attributes": alert},
+        "sensor.dishwasher_program_finished": {"state": "off", "attributes": alert},
+        "select.dishwasher_active_program": {
+            "state": "unknown",
+            "attributes": {"options": ["eco_50", "auto_2"]},
+        },
+        "select.dishwasher_selected_program": {
+            "state": "eco_50",
+            "attributes": {"options": ["eco_50", "auto_2"]},
+        },
+    }
+    registry = [{"entity_id": e, "device_id": "dw"} for e in states]
+    (dev,) = devices(registry, states, {"dw": "Dishwasher"})
+    assert dev["proposal"]["entity_id"] == "sensor.dishwasher_operation_state"
+    assert dev["proposal"]["on_states"] == ["run"]
+    assert dev["proposal"]["phase_entity"] is None
+    assert dev["proposal"]["program_entity"] == "select.dishwasher_active_program"
+    # the alerts are still listed, for a manual choice
+    assert "sensor.dishwasher_salt_nearly_empty" in [e["entity_id"] for e in dev["entities"]]
+
+
+def test_is_alert() -> None:
+    assert is_alert(["confirmed", "off", "present"])
+    assert not is_alert(["none", "drying", "cooling"])
+    assert not is_alert([])
 
 
 def test_proposal_reuses_an_appliance() -> None:
