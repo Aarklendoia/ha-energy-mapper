@@ -77,7 +77,9 @@ Technical details: [design document](docs/design.md) and the
 or more and switch cleanly: kettle, oven, toaster, water heater, electric radiators, the
 heating phases of a dishwasher or washing machine; and **cycling** loads that switch on and
 off every minute or so at the same power (an induction hob at medium power, an oven
-thermostat), which are grouped into one session with their duty cycle.
+thermostat), which are grouped into one session with their duty cycle. A heater regulating on
+its own thermostat (on for some tens of seconds every few minutes, up to every 15 minutes) is
+one cycling use too, from its fourth regular burst.
 
 **What it recognises badly today:**
 
@@ -682,7 +684,10 @@ de quelques centaines de watts ou plus et s'allument franchement : bouilloire, f
 grille-pain, chauffe-eau, radiateurs électriques, les phases de chauffe du lave-vaisselle ou
 du lave-linge ; et les appareils **cycliques** qui s'allument et s'éteignent toutes les minutes
 environ à la même puissance (plaque à induction à puissance moyenne, thermostat du four),
-regroupés en une seule session avec leur rapport cyclique.
+regroupés en une seule session avec leur rapport cyclique. Un radiateur qui régule sur son
+propre thermostat (quelques dizaines de secondes de chauffe toutes les quelques minutes,
+jusqu'à toutes les 15 minutes) forme aussi une seule utilisation cyclique, à partir de sa
+quatrième rafale régulière.
 
 **Ce qu'il reconnaît mal aujourd'hui :**
 

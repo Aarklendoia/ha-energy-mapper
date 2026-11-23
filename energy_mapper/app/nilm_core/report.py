@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import pairwise
 
-from .activations import find_cycling_sessions, pair_steps, validate_activations
+from .activations import find_cycling_sessions, group_bursts, pair_steps, validate_activations
 from .cycles import CycleConfig, Phase, attribute, find_cycles
 from .known import RUN, KnownLoad, SwitchedLoadConfig, resolve_switched_load
 from .signal import build_samples, parse_numeric, scaled, sum_series
@@ -182,6 +182,7 @@ def analyze(
     in_period = [p for p in points if start <= p[0] < end]
     base_est = base_load(_minute_means(in_period))
     pairs = validate_activations(pairs, points, base_est)
+    sessions, pairs = group_bursts(sessions, pairs)  # a thermostat's bursts: one cycling use (#87)
     candidates = find_cycles(points, base_est, sessions + pairs, known, start, end, config.cycles)
     templates = {}
     for tid, phases in (config.cycle_templates or {}).items():
@@ -257,6 +258,10 @@ def _activation(a) -> dict:
         "period_s": a.period_s,
         "signature": a.signature,
     }
+    if getattr(a, "blocks", None):
+        # a burst series (#87): when it was on, the bursts closer than the
+        # session gap as one block
+        out["blocks"] = [[round(b0), round(b1)] for b0, b1 in a.blocks]
     if getattr(a, "multiphase", False):
         # a recognised cycle (#26): power_w is its mean power
         out["multiphase"] = True
