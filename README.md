@@ -556,7 +556,8 @@ See the [milestones](https://github.com/sylvaing/ha-energy-mapper/milestones):
 Issues and pull requests are welcome. Please open an issue first for anything large. The
 repository contains **no real consumption data**: tests and the panel's development harness
 use synthetic households only; real recorder extracts stay outside the repository (see
-`tools/replay_csv.py`).
+`tools/replay_csv.py`). `tools/benchmark.py` measures the engine on such an extract, with the
+sub-meters as ground truth: run it before and after a change of the engine.
 
 Layout: `energy_mapper/` is the add-on (with the engine library `app/nilm_core/`, standard
 library only), `custom_components/energy_mapper/` the integration, `frontend/` the panel
@@ -1212,7 +1213,9 @@ Voir les [jalons](https://github.com/sylvaing/ha-energy-mapper/milestones) :
 
 Tickets et *pull requests* bienvenus ; ouvrez d'abord un ticket pour tout changement
 important. Le dépôt ne contient **aucune donnée de consommation réelle** : les tests et le
-banc de développement du panneau n'utilisent que des foyers synthétiques. Les commandes de
+banc de développement du panneau n'utilisent que des foyers synthétiques.
+`tools/benchmark.py` mesure le moteur sur un extrait réel gardé hors du dépôt, avec les
+sous-compteurs comme vérité : à lancer avant et après un changement du moteur. Les commandes de
 test (unittest pour le moteur, pytest pour l'intégration, npm pour le panneau, ruff) et le
 fonctionnement des *pull requests* sont décrits dans la section
 [Contributing](#contributing). Code, commentaires et commits en anglais.

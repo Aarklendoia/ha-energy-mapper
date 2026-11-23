@@ -36,7 +36,8 @@ dashboard as the user names them (non-intrusive load monitoring, NILM).
   telemetry.
 - **Small hardware**: one day analysed in a few seconds at most on a Raspberry Pi 4.
 - **No real consumption data in the repository**: tests and the panel's dev harness use
-  synthetic households; real extracts stay outside (`tools/replay_csv.py`).
+  synthetic households; real extracts stay outside (`tools/replay_csv.py`, and
+  `tools/benchmark.py` to measure the engine on them, § 8.11).
 
 ## 2. Architecture
 
@@ -2017,6 +2018,44 @@ of 15 minutes (an unnamed appliance running, a named one that ran, a hob in cycl
 spike that is cancelled among them); the dev bar picks the status (`live=`), turns the random
 appliances off (`random=0`) and adds a +850 W switch-on, its stop, a +180 W rise (too weak) or
 two switch-ons at once, to try the guided mode. `live/label` answers in memory.
+
+### 8.11 Benchmark on real history (`tools/benchmark.py`, #84)
+
+The figures of § 4 come from synthetic households. On a real installation, the sub-meters are
+a ground truth: `tools/benchmark.py` (standard library, outside the add-on image) replays an
+export of raw history through `nilm_core` and runs the self-test of § 8.7 for **every**
+measured device on **every** day, so that a change of the engine can be measured before and
+after.
+
+- **Input**: the CSV export of `tools/replay_csv.py`, or a folder of `.json` / `.json.gz`
+  files `{entity_id: [[timestamp, state], ...]}`; the meters, sub-meters, estimates, switched
+  loads, unit factors and thresholds are options. Such exports stay **outside the
+  repository**. Days are the whole local days of the export (`--tz`).
+- **Real analysis**: each day is analysed with every sub-meter subtracted (on the day's own
+  slice of the history, with its 3 hours of context), and a registry is built from those days.
+- **Hide and find**: for each measured device (`selftest.candidates`: not the estimates), its
+  runs of each day (`groundtruth.runs_of`), then `selftest.hide_and_find` with the runs of the
+  **other** days as the previous ones: the signature looked for is the one a perfect teacher
+  would give. Per device, the merged evaluation of its days (`merge_evaluations`): uses,
+  found, detections, precision, recall, energy ratio. A device with no use on a day still
+  counts that day's detections as false.
+- **Below the threshold**: a device the curve cannot show (`learned.recognisable` false) is
+  `below_threshold`: its uses and energy are counted, none found, so that a lower threshold
+  (`--threshold`, `--night-threshold`) or a later detector shows its gain.
+- **Meters** (`meter_quality`): the reporting interval of the grid meter and of the solar
+  meter while it produces (median, 90th percentile), and the **noise of the residual load**:
+  the detector's own statistic (the difference between the medians of the readings before and
+  after an instant, same windows) taken every minute, summarised by its robust spread
+  (1.4826 x the median absolute value, so that the appliances that switch do not count),
+  apart from the solar hours and during them. It is what a step must exceed to be seen.
+- **Product figures**: the share of the house energy in each category (sub-metered, switched,
+  signatures, base, unexplained), the number of signatures of the registry, the steps per day.
+- **Output**: a table, and `--json` a result that `--compare` sets against a later run
+  (recall, precision and energy ratio of each device, signatures, shares).
+
+Tests (`tests/test_benchmark.py`, synthetic): a water heater is found again on each day, a
+100 W fridge is `below_threshold` with its 96 uses and found again with a 60 W threshold, a
+plug with nothing on it is `no_use`; the meters' figures; the command line.
 
 ## 9. Settings and precedence
 
