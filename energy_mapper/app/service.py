@@ -510,7 +510,9 @@ class Analyzer:
         # not sub-meters for this day
         ctx = self._without_flat(ctx, histories, start, end)
         cfg = ctx.derived.config
-        grid = [ts for ts, _ in parse_numeric(histories.get(cfg.grid_entity, [])) if ts < end]
+        # the meter that drives the timeline: the house meter when there is one (#97)
+        timeline = cfg.house_entity or cfg.grid_entity
+        grid = [ts for ts, _ in parse_numeric(histories.get(timeline, [])) if ts < end]
         in_day = [ts for ts in grid if ts >= start]
         if not in_day:
             raise AnalysisError("no_data", f"{day}: no grid data in the recorder")
