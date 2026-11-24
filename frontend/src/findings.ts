@@ -76,6 +76,12 @@ export function findingSentence(
         energy: formatEnergy(energy, info),
       });
     }
+    case "invert_ignored": {
+      // a sensor declared in the Energy dashboard already has Home Assistant's sign
+      const option = str(p.option);
+      if (!name || (option !== "grid_invert" && option !== "battery_invert")) return null;
+      return t(`finding_text_invert_ignored_${option === "grid_invert" ? "grid" : "battery"}`, { name });
+    }
     case "slow_solar_meter": {
       // a solar meter too slow to tell a cloud from an appliance (#86)
       const interval = num(p.interval_s);

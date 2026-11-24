@@ -43,6 +43,8 @@ const ALL: Finding[] = [
     energy_kwh: 0.6,
   }),
   finding("slow_solar_meter", "sensor.roof_power", { interval_s: 300, limit_s: 60 }),
+  finding("invert_ignored", "sensor.grid_net_power", { option: "grid_invert" }),
+  finding("invert_ignored", "sensor.battery_power", { option: "battery_invert" }),
 ];
 
 test("findings: every kind gets a title and a sentence in English and French", () => {
@@ -71,6 +73,19 @@ test("findings: French sentences", () => {
     s(ALL[10]),
     "Roof inverter power : ne donne une nouvelle valeur que toutes les 300 s quand les panneaux produisent. Au-delà de 60 s, un nuage qui passe ne se distingue plus d'un appareil en journée : une lecture plus rapide (locale) de la puissance de l'onduleur aide.",
   );
+});
+
+test("findings: an ignored invert option names the option to untick", () => {
+  assert.equal(
+    findingSentence(ALL[12], tEn, en, friendly),
+    'Home battery: declared in the Energy dashboard, with Home Assistant\'s sign (positive when discharging). The option "Battery sensor is positive when charging" is not applied to it: untick it.',
+  );
+  assert.equal(
+    findingSentence(ALL[11], tFr, fr, friendly)?.replace(NBSP, " "),
+    "sensor.grid_net_power : déclaré dans le tableau de bord Énergie, avec le signe de Home Assistant (positif en soutirage). L'option « Le capteur du réseau est positif en injection » ne lui est pas appliquée : décochez-la.",
+  );
+  const unknown = finding("invert_ignored", "sensor.battery_power", { option: "pv_invert" });
+  assert.equal(findingSentence(unknown, tEn, en, friendly), null);
 });
 
 test("findings: energies follow the number format of the profile", () => {

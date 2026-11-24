@@ -351,6 +351,15 @@ flowchart TD
   of their timestamps; the sum is unknown while one of them is.
 - Unit factors per entity (kW → W) come from `unit_of_measurement`; `grid_invert` and
   `battery_invert` flip a sign.
+- **Declared power sensors.** Since Home Assistant 2025.11 a grid, solar or battery source of
+  the Energy dashboard may carry its power statistic (`stat_rate`, also the sensor Home
+  Assistant generates from `power_config`: `…_inverted`, `…_net_power`), in Home Assistant's
+  sign convention. `derive()` uses it before guessing the power sensor from the energy
+  sensor's device; a declared battery raises no `battery_sign`. An invert option is not
+  applied to a declared sensor (no manual `grid_entity` / `battery_entity`; for the grid, all
+  its sensors declared): ticked after a `battery_sign` finding on the guessed raw sensor, it
+  would invert the declared one again. The finding `invert_ignored` tells the user to untick
+  it. A manual entity keeps honouring the option.
 - The grid meter drives the timeline: one sample per grid reading. Other series are
   piecewise constant (Home Assistant records a state when it changes).
 - **Unavailable sources**: PV keeps its last value for 5 minutes, then counts 0 if it was
@@ -1400,7 +1409,7 @@ When the same relay is behind both an estimate and a statistic, it is measured o
 learned polarity.
 
 **Findings** (shown as *Things to check*): `grid_ignored`, `no_power_sensor`, `unavailable`,
-`battery_sign`, `no_grid`, `unknown_statistic`, `flat_power_sensor` (below), `slow_solar_meter` (below) and `tracking_gap`: after the analysis, `tracking_gaps()` compares,
+`battery_sign`, `invert_ignored` (§ 4.1), `no_grid`, `unknown_statistic`, `flat_power_sensor` (below), `slow_solar_meter` (below) and `tracking_gap`: after the analysis, `tracking_gaps()` compares,
 for each switch-driven device, the energy declared by its sensor over the day with the energy
 measured for its switched load; a ratio of 2 or more (with at least 0.5 kWh on one side) is
 reported, typically an estimate configured at a few watts for a 2 kW water heater.
@@ -1446,6 +1455,7 @@ add-on 0.11.0 (#34), the `params` the panel builds its own sentence from (EN/FR,
 | `tracking_gap` | Energy sensor | `{name, declared_kwh, measured_kwh}` |
 | `flat_power_sensor` | Energy sensor | `{name, power_entity, power_w, energy_kwh}` (#79) |
 | `slow_solar_meter` | PV power sensor | `{interval_s, limit_s}` (#86, add-on 0.16.0+) |
+| `invert_ignored` | Declared grid or battery power sensor | `{option: grid_invert\|battery_invert}` (add-on 0.18.3+) |
 
 The panel names the device with `params.name` (the Energy dashboard's name), else the entity's
 friendly name in Home Assistant, else the entity id, formats energies with the profile's

@@ -60,7 +60,10 @@ class Finding:
     * ``tracking_gap``: ``{"name", "declared_kwh", "measured_kwh"}``
       (entity: the energy sensor);
     * ``flat_power_sensor``: ``{"name", "power_entity", "power_w",
-      "energy_kwh"}`` (entity: the energy sensor; #79).
+      "energy_kwh"}`` (entity: the energy sensor; #79);
+    * ``invert_ignored``: ``{"option": "grid_invert" | "battery_invert"}``
+      (entity: the power sensor declared in the Energy dashboard, whose sign
+      Home Assistant defines: the option is not applied to it).
     """
 
     kind: str
@@ -306,6 +309,7 @@ def derive(
     # --- grid --------------------------------------------------------------
     grids: list[str] = []
     exports: list[str] = []
+    stat_rates: set[str] = set()  # power sensors declared in the Energy dashboard
     for src in (s for s in sources if s.get("type") == "grid"):
         imports = _flows(src, "stat_energy_from")
         if not imports:
@@ -318,6 +322,7 @@ def derive(
         if power:
             # a net power in Home Assistant's convention: exports are its negative part
             grids.append(power)
+            stat_rates.add(power)
             continue
         power = power_for(energy, idx)
         if not power:
@@ -351,6 +356,7 @@ def derive(
         battery = declared_rate(src, idx)
         if battery:
             # declared in the Energy dashboard: already positive when discharging
+            stat_rates.add(battery)
             break
         energy = (_flows(src, "stat_energy_from") or _flows(src, "stat_energy_to") or [None])[0]
         battery = power_for(energy, idx) if energy else None
@@ -468,15 +474,41 @@ def derive(
         *(s.entity_id for s in submeters),
         *teachers,
     ]
+    # A sensor declared in the Energy dashboard has Home Assistant's sign (grid
+    # + import, battery + discharge): the invert option, ticked for a guessed
+    # sensor, would invert it again. Ignored, and told so the user unticks it.
+    grid_invert = bool(options.get("grid_invert"))
+    # a manual entity keeps honouring the option, even when it is the declared one
+    if grid_invert and not options.get("grid_entity") and all(e in stat_rates for e in (grid, *extra_grids)):
+        grid_invert = False
+        out.findings.append(
+            Finding(
+                "invert_ignored",
+                grid,
+                "declared in the Energy dashboard: grid_invert ignored",
+                {"option": "grid_invert"},
+            )
+        )
+    battery_invert = bool(options.get("battery_invert"))
+    if battery_invert and not options.get("battery_entity") and battery in stat_rates:
+        battery_invert = False
+        out.findings.append(
+            Finding(
+                "invert_ignored",
+                battery,
+                "declared in the Energy dashboard: battery_invert ignored",
+                {"option": "battery_invert"},
+            )
+        )
     cfg = AnalysisConfig(
         grid_entity=grid,
         extra_grid_entities=extra_grids,
         grid_export_entity=export,
-        grid_invert=bool(options.get("grid_invert")),
+        grid_invert=grid_invert,
         pv_entity=pv,
         extra_pv_entities=extra_pv,
         battery_entity=battery,
-        battery_invert=bool(options.get("battery_invert")),
+        battery_invert=battery_invert,
         submeters=submeters,
         switched_loads=switched,
         scales={e: idx.scale(e) for e in entities if e and idx.scale(e) != 1.0},

@@ -126,8 +126,10 @@ class DeriveTests(unittest.TestCase):
         self.assertEqual(d.config.battery_entity, "sensor.battery_power")
         self.assertIn("battery_sign", [f.kind for f in d.findings])
 
-    def test_declared_power_sensors_win(self):
-        """The power sensors of the Energy dashboard (stat_rate) are used as declared."""
+    @staticmethod
+    def declared_installation():
+        """Grid, solar and battery, each with a power sensor declared in the
+        Energy dashboard (the battery's built from an inverted sensor)."""
         h = meter_with_channels()
         h.sources[0]["stat_rate"] = "sensor.grid_net_power"
         h.add(power("sensor.grid_net_power", "250"))
@@ -152,11 +154,67 @@ class DeriveTests(unittest.TestCase):
                 "stat_rate": "sensor.battery_power_inverted",
             }
         )
+        return h
+
+    def test_declared_power_sensors_win(self):
+        """The power sensors of the Energy dashboard (stat_rate) are used as declared."""
+        h = self.declared_installation()
         d = derive(h.prefs(), h.states, h.registry)
         self.assertEqual(d.config.grid_entity, "sensor.grid_net_power")
         self.assertEqual(d.config.pv_entity, "sensor.inverter_ac_power")
         self.assertEqual(d.config.battery_entity, "sensor.battery_power_inverted")
         self.assertNotIn("battery_sign", [f.kind for f in d.findings])
+        self.assertNotIn("invert_ignored", [f.kind for f in d.findings])
+
+    def test_declared_battery_ignores_battery_invert(self):
+        """battery_invert, ticked for the guessed raw sensor, would invert the
+        declared one again: it is ignored and reported."""
+        h = self.declared_installation()
+        d = derive(h.prefs(), h.states, h.registry, options={"battery_invert": True})
+        self.assertEqual(d.config.battery_entity, "sensor.battery_power_inverted")
+        self.assertFalse(d.config.battery_invert)
+        self.assertIn(
+            ("invert_ignored", "sensor.battery_power_inverted", {"option": "battery_invert"}),
+            [(f.kind, f.entity_id, f.params) for f in d.findings],
+        )
+
+    def test_declared_grid_ignores_grid_invert(self):
+        h = self.declared_installation()
+        d = derive(h.prefs(), h.states, h.registry, options={"grid_invert": True})
+        self.assertEqual(d.config.grid_entity, "sensor.grid_net_power")
+        self.assertFalse(d.config.grid_invert)
+        self.assertIn(
+            ("invert_ignored", "sensor.grid_net_power", {"option": "grid_invert"}),
+            [(f.kind, f.entity_id, f.params) for f in d.findings],
+        )
+
+    def test_manual_entities_keep_the_invert_options(self):
+        """A manual grid or battery entity honours its option, even the declared one."""
+        h = self.declared_installation()
+        d = derive(
+            h.prefs(),
+            h.states,
+            h.registry,
+            options={
+                "grid_entity": "sensor.grid_net_power",
+                "grid_invert": True,
+                "battery_entity": "sensor.battery_power_inverted",
+                "battery_invert": True,
+            },
+        )
+        self.assertTrue(d.config.grid_invert)
+        self.assertTrue(d.config.battery_invert)
+        self.assertNotIn("invert_ignored", [f.kind for f in d.findings])
+
+    def test_guessed_sensors_keep_the_invert_options(self):
+        h = meter_with_channels()
+        h.add(energy("sensor.battery_discharge_energy"), "bat")
+        h.add(power("sensor.battery_power", "-500"), "bat")
+        h.sources.append({"type": "battery", "stat_energy_from": "sensor.battery_discharge_energy"})
+        d = derive(h.prefs(), h.states, h.registry, options={"grid_invert": True, "battery_invert": True})
+        self.assertTrue(d.config.grid_invert)
+        self.assertTrue(d.config.battery_invert)
+        self.assertNotIn("invert_ignored", [f.kind for f in d.findings])
 
     def test_declared_power_sensor_missing_falls_back(self):
         """A stat_rate that is not a power sensor in the states is ignored."""

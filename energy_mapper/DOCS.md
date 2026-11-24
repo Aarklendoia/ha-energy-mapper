@@ -78,10 +78,10 @@ below (see `PUT /api/settings`).
 | `self_test_devices` | `1` | Measured devices (sub-meters) hidden per night by the [self-test](#self-test); `0` disables it. |
 | `grid_entity` | Energy dashboard | Grid power sensor (W or kW), positive when importing. |
 | `grid_export_entity` | Energy dashboard | Export power sensor, for meters that report import and export separately. |
-| `grid_invert` | `false` | The grid sensor is positive when exporting. |
+| `grid_invert` | `false` | The grid sensor is positive when exporting. Not applied to a sensor declared in the Energy dashboard, which has Home Assistant's sign. |
 | `pv_entity` | Energy dashboard | Solar power sensor. |
 | `battery_entity` | Energy dashboard | Battery power sensor, positive when discharging. |
-| `battery_invert` | `false` | The battery sensor is positive when charging. |
+| `battery_invert` | `false` | The battery sensor is positive when charging. Not applied to a sensor declared in the Energy dashboard, which has Home Assistant's sign. |
 | `submeters` | Energy dashboard | Power sensors of measured appliances, subtracted before the analysis. |
 | `switched_loads` | Energy dashboard | Appliances driven by a switch. |
 | `step_threshold_w` | `300` | Smallest power change considered as an appliance switching. |
