@@ -107,7 +107,7 @@ def derive_options(options: dict) -> dict:
     """Add-on options -> ``derive()`` options. Empty values mean "derive it
     from the Energy dashboard"."""
     out: dict = {}
-    for key in ("grid_entity", "grid_export_entity", "pv_entity", "battery_entity"):
+    for key in ("grid_entity", "grid_export_entity", "pv_entity", "battery_entity", "house_entity"):
         value = (options.get(key) or "").strip()
         if value:
             out[key] = value
@@ -353,6 +353,7 @@ class Analyzer:
                 "grid_export_entity": None,
                 "pv_entity": None,
                 "battery_entity": None,
+                "house_entity": None,
                 "submeters": [],
                 "switched_loads": [],
             }
@@ -361,6 +362,7 @@ class Analyzer:
             "grid_export_entity": cfg.grid_export_entity,
             "pv_entity": cfg.pv_entity,
             "battery_entity": cfg.battery_entity,
+            "house_entity": cfg.house_entity,
             "submeters": [m.entity_id for m in cfg.submeters],
             "switched_loads": [
                 {"entity_id": x.entity_id, "name": x.name, "on_states": list(x.on_states)}
@@ -526,7 +528,8 @@ class Analyzer:
         findings = (
             ctx.derived.findings
             + tracking_gaps(report, ctx.derived.tracked, histories)
-            + slow_solar_meter(report, cfg.pv_entity)
+            # a slow solar meter only matters while the PV is in the house value (#97)
+            + (slow_solar_meter(report, cfg.pv_entity) if not cfg.house_entity else [])
         )
         truth = self._ground_truth(cfg, histories, start, end, set(ctx.derived.teachers), report, ctx)
         if truth:
