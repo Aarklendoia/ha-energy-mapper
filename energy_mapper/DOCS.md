@@ -1058,11 +1058,14 @@ services:
     environment:
       HA_URL: http://homeassistant:8123   # as seen from this container
       HA_TOKEN: <long-lived access token>
-      TZ: Europe/Paris
     volumes:
-      - ./energy_mapper:/data            # reports, registry, settings
-    ports:
-      - "8099:8099"                      # only if Home Assistant uses the host network
+      - energy_mapper_data:/data         # reports, registry, settings
+    # Only when Home Assistant uses the host network; never "8099:8099":
+    # ports:
+    #   - "127.0.0.1:8099:8099"
+
+volumes:
+  energy_mapper_data:
 ```
 
 - `HA_URL` is the address of Home Assistant as seen from the container: the
@@ -1070,14 +1073,25 @@ services:
   machine when Home Assistant uses `network_mode: host`.
 - In the integration (**Add integration → Energy Mapper**), enter the address
   of the service as seen from Home Assistant: `http://energy-mapper:8099` on a
-  shared network, `http://localhost:8099` when Home Assistant uses the host
-  network and the port is published.
-- The image runs as user 1000: the data folder must be writable by it
-  (`chown 1000 ./energy_mapper`).
+  shared network, where no `ports` are needed; `http://localhost:8099` when
+  Home Assistant uses the host network, with the port published on
+  `127.0.0.1` only.
+- The image runs as user 1000. A named volume, as above, takes the ownership
+  of the image's `/data` and works as is. With a bind mount instead
+  (`./energy_mapper:/data`), create the folder and make it writable by that
+  user first (`mkdir energy_mapper && sudo chown 1000 energy_mapper`):
+  Docker otherwise creates it owned by root, and the service stops at start
+  (`PermissionError: '/data/reports'`).
 - Options are read from `/data/options.json` (same keys as above); without the
   file the defaults apply, and the integration's options cover the rest.
-- The API has no authentication: do not publish port 8099 beyond your local
-  network.
+- The reports follow the time zone of Home Assistant; `TZ` only changes the
+  timestamps of the service's own log.
+- **The API has no authentication**: anyone who reaches port 8099 can read
+  the reports (when the household is home, asleep or away) and change the
+  settings and the appliances. Under the Supervisor it is only reachable on
+  Home Assistant's internal network; here, it must not be reachable from any
+  other machine: no `ports` on a shared network, `127.0.0.1` only otherwise,
+  never `0.0.0.0` nor a reverse proxy.
 
 For development, the service also runs straight from a clone of the
 repository:

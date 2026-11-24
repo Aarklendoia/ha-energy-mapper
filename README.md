@@ -154,7 +154,10 @@ When the add-on is installed on this Home Assistant, its address is proposed: ke
 `http://<hostname>:8099`, where `<hostname>` is shown on the add-on's *Info* page (for example
 `xxxxxxxx-energy-mapper`; `local-energy-mapper` for a local copy of the add-on). The port is
 only reachable from Home Assistant, not from your network. For a standalone container, enter
-`http://<address of the machine>:8099`.
+`http://energy-mapper:8099` on a network shared with Home Assistant, or
+`http://localhost:8099` when Home Assistant uses the host network (see
+[Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor):
+the port must not be reachable from other machines).
 
 ## Configuration
 
@@ -798,7 +801,10 @@ Energy Mapper**). Quand l'add-on est installé sur ce Home Assistant, son adress
 gardez-la. C'est `http://<nom d'hôte>:8099`, où le nom d'hôte figure sur la page *Infos* de
 l'add-on (par exemple `xxxxxxxx-energy-mapper` ; `local-energy-mapper` pour une copie locale de
 l'add-on). Le port n'est accessible que depuis Home Assistant, pas depuis votre réseau. Pour un
-conteneur autonome, saisissez `http://<adresse de la machine>:8099`.
+conteneur autonome, saisissez `http://energy-mapper:8099` sur un réseau partagé avec Home
+Assistant, ou `http://localhost:8099` quand Home Assistant utilise le réseau de l'hôte (voir
+[Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor) : le
+port ne doit pas être accessible depuis d'autres machines).
 
 ### Configuration
 

@@ -3,7 +3,7 @@
 # HA_URL and HA_TOKEN. See "Running outside the Supervisor" in DOCS.md.
 #
 #   docker build -f energy_mapper/Dockerfile.standalone -t energy-mapper energy_mapper
-FROM python:3.13-alpine
+FROM python:3.13-alpine3.24
 
 # Standard library only: no pip install. tzdata gives zoneinfo the local
 # time zone of Home Assistant (day boundaries of the reports).
