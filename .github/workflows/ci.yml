@@ -126,6 +126,18 @@ jobs:
           docker run --rm --entrypoint python3 \
             ghcr.io/${{ github.repository_owner }}/${{ matrix.arch }}-energy_mapper:test \
             -c "import sys; sys.path.insert(0, '/app'); import main, zoneinfo; zoneinfo.ZoneInfo('Europe/Paris'); print('ok')"
+      - name: Standalone image (build and health check)
+        if: steps.present.outputs.yes == '1'
+        run: |
+          docker build -f energy_mapper/Dockerfile.standalone -t energy-mapper-standalone:test energy_mapper
+          docker run -d --name em -e HA_URL=http://127.0.0.1:1 -e HA_TOKEN=test energy-mapper-standalone:test
+          for i in $(seq 1 20); do
+            docker exec em python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/api/health', timeout=2)" && ok=1 && break
+            sleep 1
+          done
+          docker logs em
+          docker rm -f em
+          [ "${ok:-0}" = 1 ]
 
   frontend:
     name: Panel build

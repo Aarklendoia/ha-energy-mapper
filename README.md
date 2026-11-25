@@ -104,8 +104,10 @@ one cycling use too, from its fourth regular burst.
 
 - **Home Assistant OS or Supervised** (the add-on needs the Supervisor), on **amd64** or
   **aarch64** (Raspberry Pi 4/5 included: a day is analysed in a few seconds at most).
-  Home Assistant Container and Core are not supported yet: a standalone image is planned in
-  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
+  With Home Assistant Container or Core, the service runs in a standalone container built
+  from `energy_mapper/Dockerfile.standalone` (no published image yet,
+  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)): see
+  [Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor).
 - **Home Assistant 2025.10 or later** for the integration, add-on **0.14.0 or later** to
   learn from a connected appliance, 0.11.0 to
   learn an appliance from a smart plug and for the nightly self-test, 0.9.0 for the day raster of the review (0.8.0 for the attribute suggestions and merges, 0.7.0 for the entity suggestions, 0.6.0 for the review of the signatures, 0.5.0 for the appliance
@@ -152,7 +154,10 @@ When the add-on is installed on this Home Assistant, its address is proposed: ke
 `http://<hostname>:8099`, where `<hostname>` is shown on the add-on's *Info* page (for example
 `xxxxxxxx-energy-mapper`; `local-energy-mapper` for a local copy of the add-on). The port is
 only reachable from Home Assistant, not from your network. For a standalone container, enter
-`http://<address of the machine>:8099`.
+`http://energy-mapper:8099` on a network shared with Home Assistant, or
+`http://localhost:8099` when Home Assistant uses the host network (see
+[Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor):
+the port must not be reachable from other machines).
 
 ## Configuration
 
@@ -740,8 +745,10 @@ quatrième rafale régulière.
 
 - **Home Assistant OS ou Supervised** (l'add-on a besoin du Supervisor), sur **amd64** ou
   **aarch64** (Raspberry Pi 4/5 compris : une journée s'analyse en quelques secondes au plus).
-  Home Assistant Container et Core ne sont pas encore pris en charge : une image autonome est
-  prévue dans [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19).
+  Avec Home Assistant Container ou Core, le service tourne dans un conteneur autonome
+  construit depuis `energy_mapper/Dockerfile.standalone` (pas encore d'image publiée,
+  [#19](https://github.com/sylvaing/ha-energy-mapper/issues/19)) : voir
+  [Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor).
 - **Home Assistant 2025.10 ou plus récent** pour l'intégration, add-on **0.14.0 ou plus
   récent** pour apprendre d'un appareil connecté, 0.11.0 pour apprendre un appareil d'une
   prise connectée et pour l'auto-test de nuit, 0.9.0 pour la grille jour par
@@ -794,7 +801,10 @@ Energy Mapper**). Quand l'add-on est installé sur ce Home Assistant, son adress
 gardez-la. C'est `http://<nom d'hôte>:8099`, où le nom d'hôte figure sur la page *Infos* de
 l'add-on (par exemple `xxxxxxxx-energy-mapper` ; `local-energy-mapper` pour une copie locale de
 l'add-on). Le port n'est accessible que depuis Home Assistant, pas depuis votre réseau. Pour un
-conteneur autonome, saisissez `http://<adresse de la machine>:8099`.
+conteneur autonome, saisissez `http://energy-mapper:8099` sur un réseau partagé avec Home
+Assistant, ou `http://localhost:8099` quand Home Assistant utilise le réseau de l'hôte (voir
+[Running outside the Supervisor](energy_mapper/DOCS.md#running-outside-the-supervisor) : le
+port ne doit pas être accessible depuis d'autres machines).
 
 ### Configuration
 
