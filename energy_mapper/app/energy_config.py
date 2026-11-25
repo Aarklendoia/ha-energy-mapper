@@ -60,7 +60,10 @@ class Finding:
     * ``tracking_gap``: ``{"name", "declared_kwh", "measured_kwh"}``
       (entity: the energy sensor);
     * ``flat_power_sensor``: ``{"name", "power_entity", "power_w",
-      "energy_kwh"}`` (entity: the energy sensor; #79).
+      "energy_kwh"}`` (entity: the energy sensor; #79);
+    * ``invert_ignored``: ``{"option": "grid_invert" | "battery_invert"}``
+      (entity: the power sensor declared in the Energy dashboard, whose sign
+      Home Assistant defines: the option is not applied to it).
     """
 
     kind: str
@@ -202,6 +205,21 @@ def power_for(energy_entity: str, idx: _Index) -> str | None:
     return None
 
 
+def declared_rate(source: Mapping[str, Any], idx: _Index) -> str | None:
+    """The power sensor declared for a source of the Energy dashboard.
+
+    Since Home Assistant 2025.11 a grid, solar or battery source may carry a
+    power statistic (``stat_rate``) in Home Assistant's sign convention: grid
+    positive when importing, battery positive when discharging. When the user
+    built it from an inverted or split sensor (``power_config``), Home
+    Assistant stores the resulting sensor in ``stat_rate`` too. Used only when
+    it is a power sensor present in the states."""
+    rate = source.get("stat_rate")
+    if isinstance(rate, str) and rate in idx.states and idx.is_power(rate):
+        return rate
+    return None
+
+
 def _flows(source: dict, key: str) -> list[str]:
     """Energy sensors of a source. Handles the flat format (``stat_energy_from``)
     and the older ``flow_from`` / ``flow_to`` lists."""
@@ -291,6 +309,7 @@ def derive(
     # --- grid --------------------------------------------------------------
     grids: list[str] = []
     exports: list[str] = []
+    stat_rates: set[str] = set()  # power sensors declared in the Energy dashboard
     for src in (s for s in sources if s.get("type") == "grid"):
         imports = _flows(src, "stat_energy_from")
         if not imports:
@@ -298,6 +317,12 @@ def derive(
         energy = imports[0]
         if _number(idx.state(energy)) == 0:
             out.findings.append(Finding("grid_ignored", energy, "grid meter that has never counted", {}))
+            continue
+        power = declared_rate(src, idx)
+        if power:
+            # a net power in Home Assistant's convention: exports are its negative part
+            grids.append(power)
+            stat_rates.add(power)
             continue
         power = power_for(energy, idx)
         if not power:
@@ -314,6 +339,10 @@ def derive(
     # --- solar and battery -------------------------------------------------
     pvs: list[str] = []
     for src in (s for s in sources if s.get("type") == "solar"):
+        declared = declared_rate(src, idx)
+        if declared:
+            pvs.append(declared)
+            continue
         for energy in _flows(src, "stat_energy_from"):
             p = power_for(energy, idx)
             if p:
@@ -324,6 +353,11 @@ def derive(
                 )
     battery = None
     for src in (s for s in sources if s.get("type") == "battery"):
+        battery = declared_rate(src, idx)
+        if battery:
+            # declared in the Energy dashboard: already positive when discharging
+            stat_rates.add(battery)
+            break
         energy = (_flows(src, "stat_energy_from") or _flows(src, "stat_energy_to") or [None])[0]
         battery = power_for(energy, idx) if energy else None
         if battery:
@@ -440,15 +474,41 @@ def derive(
         *(s.entity_id for s in submeters),
         *teachers,
     ]
+    # A sensor declared in the Energy dashboard has Home Assistant's sign (grid
+    # + import, battery + discharge): the invert option, ticked for a guessed
+    # sensor, would invert it again. Ignored, and told so the user unticks it.
+    grid_invert = bool(options.get("grid_invert"))
+    # a manual entity keeps honouring the option, even when it is the declared one
+    if grid_invert and not options.get("grid_entity") and all(e in stat_rates for e in (grid, *extra_grids)):
+        grid_invert = False
+        out.findings.append(
+            Finding(
+                "invert_ignored",
+                grid,
+                "declared in the Energy dashboard: grid_invert ignored",
+                {"option": "grid_invert"},
+            )
+        )
+    battery_invert = bool(options.get("battery_invert"))
+    if battery_invert and not options.get("battery_entity") and battery in stat_rates:
+        battery_invert = False
+        out.findings.append(
+            Finding(
+                "invert_ignored",
+                battery,
+                "declared in the Energy dashboard: battery_invert ignored",
+                {"option": "battery_invert"},
+            )
+        )
     cfg = AnalysisConfig(
         grid_entity=grid,
         extra_grid_entities=extra_grids,
         grid_export_entity=export,
-        grid_invert=bool(options.get("grid_invert")),
+        grid_invert=grid_invert,
         pv_entity=pv,
         extra_pv_entities=extra_pv,
         battery_entity=battery,
-        battery_invert=bool(options.get("battery_invert")),
+        battery_invert=battery_invert,
         submeters=submeters,
         switched_loads=switched,
         scales={e: idx.scale(e) for e in entities if e and idx.scale(e) != 1.0},

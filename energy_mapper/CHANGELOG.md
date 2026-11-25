@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.18.3
+
+- The power sensors declared in the Energy dashboard are used. Since Home
+  Assistant 2025.11 a grid, solar or battery source can carry its power
+  sensor (`stat_rate`), in Home Assistant's sign convention (grid positive
+  when importing, battery positive when discharging), including the sensor
+  Home Assistant makes from an inverted or split one. It now wins over the
+  sensor guessed from the energy sensor's device, which stays the fallback.
+  A declared battery sensor raises no "battery sign" finding.
+- `grid_invert` / `battery_invert` are not applied to a declared sensor
+  (unless the grid or battery entity is set by hand): its sign is already
+  Home Assistant's, and an option ticked for the guessed raw sensor would
+  invert it again. The new finding `invert_ignored` says so, to untick it.
+- Integration 0.15.2: the panel tells that finding in English and French.
+
 ## 0.18.2
 
 - Labelled examples: "too small" is decided from the measured noise of the

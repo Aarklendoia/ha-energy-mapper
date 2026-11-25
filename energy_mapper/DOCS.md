@@ -48,8 +48,11 @@ Days run from midnight to midnight in the time zone of Home Assistant.
 
 Nothing to configure if the **Energy dashboard** is set up: the add-on reads
 the grid meter, the solar production, the battery and the individual devices
-from it, and finds the power sensor (W) that goes with each energy sensor
-(kWh) of the dashboard.
+from it. For the grid, the solar production and the battery, it uses the
+power sensor declared in the dashboard (Home Assistant 2025.11 and later), in
+Home Assistant's sign convention (grid positive when importing, battery
+positive when discharging); otherwise, and for the devices, it finds the
+power sensor (W) that goes with each energy sensor (kWh) of the dashboard.
 
 An appliance whose estimate you replaced, in the Energy dashboard, by its
 Energy Mapper statistic (`energy_mapper:load_…_energy`) stays measured: the
@@ -75,10 +78,10 @@ below (see `PUT /api/settings`).
 | `self_test_devices` | `1` | Measured devices (sub-meters) hidden per night by the [self-test](#self-test); `0` disables it. |
 | `grid_entity` | Energy dashboard | Grid power sensor (W or kW), positive when importing. |
 | `grid_export_entity` | Energy dashboard | Export power sensor, for meters that report import and export separately. |
-| `grid_invert` | `false` | The grid sensor is positive when exporting. |
+| `grid_invert` | `false` | The grid sensor is positive when exporting. Not applied to a sensor declared in the Energy dashboard, which has Home Assistant's sign. |
 | `pv_entity` | Energy dashboard | Solar power sensor. |
 | `battery_entity` | Energy dashboard | Battery power sensor, positive when discharging. |
-| `battery_invert` | `false` | The battery sensor is positive when charging. |
+| `battery_invert` | `false` | The battery sensor is positive when charging. Not applied to a sensor declared in the Energy dashboard, which has Home Assistant's sign. |
 | `submeters` | Energy dashboard | Power sensors of measured appliances, subtracted before the analysis. |
 | `switched_loads` | Energy dashboard | Appliances driven by a switch. |
 | `step_threshold_w` | `300` | Smallest power change considered as an appliance switching. |
